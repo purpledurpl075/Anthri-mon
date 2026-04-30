@@ -1,0 +1,115 @@
+// Package model defines the unified data types produced by all pollers.
+// Every vendor-specific quirk is normalised here before it reaches the writer.
+package model
+
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// DeviceInfo holds the system identity gathered from a sysinfo poll.
+// Used to update the devices table and drive vendor auto-detection.
+type DeviceInfo struct {
+	DeviceID    uuid.UUID
+	SysDescr    string
+	SysObjectID string
+	SysName     string
+	SysLocation string
+	SysContact  string
+	// Hundredths of a second — use with PollTime to derive boot time.
+	SysUpTimeTicks uint32
+	VendorName     string // matched profile name, "" if unknown
+	DBVendorType   string // postgres vendor_type enum value
+	PollTime       time.Time
+}
+
+// InterfaceResult is a complete snapshot of one interface at a point in time.
+// HC (64-bit) counters are always populated when available; the 32-bit fallbacks
+// are used only for devices that don't support ifXTable.
+type InterfaceResult struct {
+	DeviceID   uuid.UUID
+	IfIndex    int
+	IfDescr    string  // ifDescr (raw port name from device)
+	IfName     string  // ifName (canonical name, from ifXTable)
+	IfAlias    string  // ifAlias (operator description)
+	IfType     string  // IANA type name, e.g. "ethernetCsmacd"
+	SpeedBPS   uint64  // ifHighSpeed*1e6 when available, else ifSpeed
+	MTU        int
+	MACAddress string  // "aa:bb:cc:dd:ee:ff" or ""
+	AdminStatus string // "up" | "down" | "testing"
+	OperStatus  string // "up" | "down" | "testing" | "unknown" | "dormant" | …
+
+	// Prefer HC (64-bit) counters when non-zero; the poller always fills these.
+	InOctets    uint64
+	InUcastPkts uint64
+	InDiscards  uint64
+	InErrors    uint64
+	OutOctets   uint64
+	OutUcastPkts uint64
+	OutDiscards  uint64
+	OutErrors    uint64
+
+	// ifLastChange as an absolute UTC timestamp (best-effort, derived from
+	// sysUpTime + ifLastChange timeticks). May be zero if unavailable.
+	LastChange time.Time
+	PollTime   time.Time
+}
+
+// CPUSample holds a single CPU utilisation reading.
+// Multi-CPU devices emit one sample per processor.
+type CPUSample struct {
+	CPUIndex int
+	LoadPct  float64 // 0.0 – 100.0
+}
+
+// MemorySample holds a single memory segment reading.
+type MemorySample struct {
+	Descr      string // "Physical memory", "RAM", etc.
+	Type       string // "ram" | "virtual" | "flash" | "other"
+	TotalBytes uint64
+	UsedBytes  uint64
+}
+
+// TempSample holds a single temperature sensor reading.
+type TempSample struct {
+	SensorName  string  // human-readable sensor label
+	Celsius     float64
+	StatusOK    bool // false = warning or critical threshold exceeded
+}
+
+// HealthResult is the complete health snapshot for one device from one poll.
+type HealthResult struct {
+	DeviceID    uuid.UUID
+	CPUSamples  []CPUSample
+	MemSamples  []MemorySample
+	TempSamples []TempSample
+	UptimeSecs  uint64
+	PollTime    time.Time
+}
+
+// SNMPV2cCredential is the unmarshalled form of a snmp_v2c credentials record.
+type SNMPV2cCredential struct {
+	Community string `json:"community"`
+}
+
+// SNMPV3Credential is the unmarshalled form of a snmp_v3 credentials record.
+type SNMPV3Credential struct {
+	Username     string `json:"username"`
+	AuthProtocol string `json:"auth_protocol"` // "SHA" | "MD5" | "SHA224" | "SHA256" | "SHA384" | "SHA512"
+	AuthKey      string `json:"auth_key"`
+	PrivProtocol string `json:"priv_protocol"` // "AES" | "AES192" | "AES256" | "DES"
+	PrivKey      string `json:"priv_key"`
+}
+
+// DeviceRow is a minimal database record describing a device to be polled.
+// Populated by the writer package when refreshing the device list.
+type DeviceRow struct {
+	ID                uuid.UUID
+	MgmtIP            string
+	SNMPVersion       string // "v2c" | "v3"
+	SNMPPort          int
+	PollingIntervalS  int
+	CredentialType    string // "snmp_v2c" | "snmp_v3"
+	CredentialData    []byte // raw (possibly encrypted) JSONB bytes
+}
