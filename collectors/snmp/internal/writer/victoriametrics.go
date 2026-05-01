@@ -115,7 +115,9 @@ func (w *VMWriter) Handle(_ context.Context, result *poller.PollResult) error {
 	if len(w.buf) >= w.batchSize {
 		lines := w.drain()
 		w.mu.Unlock()
-		_ = w.sendLines(context.Background(), lines)
+		if err := w.sendLines(context.Background(), lines); err != nil {
+			w.log.Error().Err(err).Msg("eager flush to VictoriaMetrics failed")
+		}
 		w.mu.Lock()
 	}
 
