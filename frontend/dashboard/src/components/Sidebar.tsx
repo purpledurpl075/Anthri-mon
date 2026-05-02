@@ -3,8 +3,18 @@ import { NavLink, useNavigate } from 'react-router-dom'
 const nav = [
   {
     to: '/',
-    label: 'Devices',
+    label: 'Overview',
     end: true,
+    icon: (
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+        <rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>
+      </svg>
+    ),
+  },
+  {
+    to: '/devices',
+    label: 'Devices',
     icon: (
       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
         <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />

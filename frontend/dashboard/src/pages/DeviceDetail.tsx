@@ -85,7 +85,7 @@ export default function DeviceDetail() {
     <div className="min-h-screen bg-slate-50">
       <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <nav className="flex items-center gap-2 text-sm">
-          <Link to="/" className="text-blue-600 hover:underline">Devices</Link>
+          <Link to="/devices" className="text-blue-600 hover:underline">Devices</Link>
           <span className="text-slate-400">/</span>
           <span className="font-medium text-slate-800">{device.fqdn ?? device.hostname}</span>
         </nav>

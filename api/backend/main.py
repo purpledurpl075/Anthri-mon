@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from .config import get_settings
 from .database import engine
 from .logging_config import configure_logging
-from .routers import alerts_router, auth_router, credentials_router, devices_router, discovery_router, interfaces_router
+from .routers import alerts_router, auth_router, credentials_router, devices_router, discovery_router, interfaces_router, overview_router
 
 configure_logging()
 logger = structlog.get_logger(__name__)
@@ -80,3 +80,4 @@ app.include_router(interfaces_router,  prefix=PREFIX)
 app.include_router(alerts_router,      prefix=PREFIX)
 app.include_router(credentials_router, prefix=PREFIX)
 app.include_router(discovery_router,   prefix=PREFIX)
+app.include_router(overview_router,    prefix=PREFIX)

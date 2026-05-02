@@ -1,6 +1,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Login from './pages/Login'
+import OverviewPage from './pages/OverviewPage'
 import DeviceList from './pages/DeviceList'
 import DeviceDetail from './pages/DeviceDetail'
 import DiscoverPage from './pages/DiscoverPage'
@@ -19,9 +20,10 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-            <Route path="/" element={<DeviceList />} />
+            <Route path="/"            element={<OverviewPage />} />
+            <Route path="/devices"     element={<DeviceList />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
-            <Route path="/discover" element={<DiscoverPage />} />
+            <Route path="/discover"    element={<DiscoverPage />} />
             <Route path="/credentials" element={<CredentialsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />

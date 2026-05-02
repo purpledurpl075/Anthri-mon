@@ -23,7 +23,11 @@ function TypeBadge({ type }: { type: string }) {
 function dataSummary(type: string, data: Record<string, unknown>): string {
   switch (type) {
     case 'snmp_v2c':  return `community: ${data.community ?? '—'}`
-    case 'snmp_v3':   return `user: ${data.username ?? '—'} · auth: ${data.auth_protocol ?? '—'}`
+    case 'snmp_v3': {
+      const level = String(data.security_level ?? 'authPriv')
+      const proto = level === 'noAuthNoPriv' ? 'no auth' : `${data.auth_protocol ?? 'SHA'}${level === 'authPriv' ? `+${data.priv_protocol ?? 'AES'}` : ''}`
+      return `user: ${data.username ?? '—'} · ${proto}`
+    }
     case 'ssh':       return `user: ${data.username ?? '—'}${data.private_key ? ' · key' : ' · password'}`
     case 'gnmi_tls':  return data.skip_verify ? 'skip verify' : 'verified TLS'
     case 'api_token': return data.base_url ? String(data.base_url) : 'token set'
@@ -91,24 +95,49 @@ function DataForm({ type, data, onChange }: {
     case 'snmp_v2c':
       return <FInput label="Community string" value={str('community')} onChange={v => set('community', v)} required />
 
-    case 'snmp_v3':
+    case 'snmp_v3': {
+      const level = str('security_level') || 'authPriv'
+      const hasAuth = level === 'authNoPriv' || level === 'authPriv'
+      const hasPriv = level === 'authPriv'
       return (
         <div className="space-y-3">
           <FInput label="Username" value={str('username')} onChange={v => set('username', v)} required />
-          <div className="grid grid-cols-2 gap-3">
-            <FSelect label="Auth protocol" value={str('auth_protocol') || 'SHA'} onChange={v => set('auth_protocol', v)}
-              options={[{value:'MD5',label:'MD5'},{value:'SHA',label:'SHA'},{value:'SHA256',label:'SHA-256'},{value:'SHA512',label:'SHA-512'}]} />
-            <FInput label="Auth key" value={str('auth_key')} onChange={v => set('auth_key', v)} type="password" required />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <FSelect label="Priv protocol" value={str('priv_protocol') || 'AES'} onChange={v => set('priv_protocol', v)}
-              options={[{value:'none',label:'None'},{value:'DES',label:'DES'},{value:'AES',label:'AES-128'},{value:'AES192',label:'AES-192'},{value:'AES256',label:'AES-256'}]} />
-            {(str('priv_protocol') || 'AES') !== 'none' && (
-              <FInput label="Priv key" value={str('priv_key')} onChange={v => set('priv_key', v)} type="password" />
-            )}
-          </div>
+
+          <FSelect label="Security level" value={level}
+            onChange={v => {
+              // Clear keys that no longer apply when downgrading level
+              const next: Record<string, unknown> = { ...data, security_level: v }
+              if (v === 'noAuthNoPriv') { delete next.auth_protocol; delete next.auth_key; delete next.priv_protocol; delete next.priv_key }
+              if (v === 'authNoPriv')   { delete next.priv_protocol; delete next.priv_key }
+              onChange(next)
+            }}
+            options={[
+              { value: 'noAuthNoPriv', label: 'noAuthNoPriv — no authentication, no encryption' },
+              { value: 'authNoPriv',   label: 'authNoPriv — authenticated, no encryption' },
+              { value: 'authPriv',     label: 'authPriv — authenticated + encrypted' },
+            ]}
+          />
+
+          {hasAuth && (
+            <div className="grid grid-cols-2 gap-3">
+              <FSelect label="Auth protocol" value={str('auth_protocol') || 'SHA'}
+                onChange={v => set('auth_protocol', v)}
+                options={[{value:'MD5',label:'MD5'},{value:'SHA',label:'SHA-1'},{value:'SHA256',label:'SHA-256'},{value:'SHA512',label:'SHA-512'}]} />
+              <FInput label="Auth key (min 8 chars)" value={str('auth_key')} onChange={v => set('auth_key', v)} type="password" required />
+            </div>
+          )}
+
+          {hasPriv && (
+            <div className="grid grid-cols-2 gap-3">
+              <FSelect label="Priv protocol" value={str('priv_protocol') || 'AES'}
+                onChange={v => set('priv_protocol', v)}
+                options={[{value:'DES',label:'DES'},{value:'AES',label:'AES-128'},{value:'AES192',label:'AES-192'},{value:'AES256',label:'AES-256'}]} />
+              <FInput label="Priv key (min 8 chars)" value={str('priv_key')} onChange={v => set('priv_key', v)} type="password" required />
+            </div>
+          )}
         </div>
       )
+    }
 
     case 'ssh':
       return (
