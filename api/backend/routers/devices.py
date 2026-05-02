@@ -135,7 +135,7 @@ async def update_device(
 
 # ── Delete ─────────────────────────────────────────────────────────────────────
 
-@router.delete("/{device_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Remove a device")
+@router.delete("/{device_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None, summary="Remove a device")
 async def delete_device(
     device_id: uuid.UUID,
     current_user: User = Depends(require_role("admin", "superadmin")),

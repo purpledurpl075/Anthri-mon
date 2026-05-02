@@ -170,7 +170,7 @@ async def update_alert_rule(
     return AlertRuleRead.model_validate(rule)
 
 
-@router.delete("/alert-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete an alert rule")
+@router.delete("/alert-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None, summary="Delete an alert rule")
 async def delete_alert_rule(
     rule_id: uuid.UUID,
     current_user: User = Depends(require_role("admin", "superadmin")),

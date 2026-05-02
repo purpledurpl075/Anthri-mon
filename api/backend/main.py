@@ -37,10 +37,15 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Allow the React dashboard (any origin in dev; lock this down in production).
+# Allow the React dev server. In production, set CORS_ORIGINS env var.
+_cors_origins = _settings.cors_origins if _settings.cors_origins else [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -21,9 +21,13 @@ class Settings(BaseSettings):
     db_name: str = "anthrimon"
     db_user: str = "anthrimon"
     db_password: str = "changeme"
+    # Set this env var to override the full connection string (e.g. Unix socket for dev).
+    database_url_override: str = ""
 
     @property
     def database_url(self) -> str:
+        if self.database_url_override:
+            return self.database_url_override
         return (
             f"postgresql+asyncpg://{self.db_user}:{self.db_password}"
             f"@{self.db_host}:{self.db_port}/{self.db_name}"
@@ -42,6 +46,10 @@ class Settings(BaseSettings):
     # ── Logging ───────────────────────────────────────────────────────────────
     log_level: str = "INFO"
     log_json: bool = True            # False for local dev to get human-readable output
+
+    # ── CORS ──────────────────────────────────────────────────────────────────
+    # Comma-separated list of allowed origins. Empty = use hardcoded dev defaults.
+    cors_origins: list[str] = []
 
     # ── Tenancy ───────────────────────────────────────────────────────────────
     # The default tenant UUID inserted by migration 001_init.sql.

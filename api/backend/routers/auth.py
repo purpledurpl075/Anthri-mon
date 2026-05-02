@@ -153,7 +153,7 @@ async def create_api_token(
     )
 
 
-@router.delete("/tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Revoke an API token")
+@router.delete("/tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None, summary="Revoke an API token")
 async def revoke_api_token(
     token_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
