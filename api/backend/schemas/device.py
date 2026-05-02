@@ -113,6 +113,7 @@ class DeviceListRead(BaseModel):
 
     id: uuid.UUID
     hostname: str
+    fqdn: Optional[str] = None
     mgmt_ip: str
 
     @field_validator("mgmt_ip", mode="before")

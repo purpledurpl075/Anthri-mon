@@ -59,8 +59,14 @@ export default function DeviceList() {
                   className="hover:bg-slate-50 cursor-pointer transition-colors"
                   onClick={() => navigate(`/devices/${d.id}`)}
                 >
-                  <td className="px-4 py-3 font-medium text-blue-600 hover:underline">
-                    <Link to={`/devices/${d.id}`} onClick={(e) => e.stopPropagation()}>{d.hostname}</Link>
+                  <td className="px-4 py-3">
+                    <Link to={`/devices/${d.id}`} onClick={(e) => e.stopPropagation()}
+                      className="font-medium text-blue-600 hover:underline">
+                      {d.fqdn ?? d.hostname}
+                    </Link>
+                    {d.fqdn && d.fqdn !== d.hostname && (
+                      <div className="text-xs text-slate-400 mt-0.5">{d.hostname}</div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-slate-600 font-mono text-xs">{d.mgmt_ip}</td>
                   <td className="px-4 py-3"><VendorBadge vendor={d.vendor} /></td>

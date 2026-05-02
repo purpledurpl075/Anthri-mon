@@ -56,7 +56,7 @@ async def overview(
 
     # ── Devices that are down or unreachable (up to 8) ────────────────────────
     problem_result = await db.execute(
-        select(Device.id, Device.hostname, Device.fqdn, Device.mgmt_ip, Device.vendor, Device.status, Device.last_seen)
+        select(Device.id, Device.hostname, Device.fqdn, Device.mgmt_ip, Device.vendor, Device.status, Device.last_seen, Device.platform)
         .where(
             Device.tenant_id == tid,
             Device.is_active == True,  # noqa: E712
@@ -69,6 +69,7 @@ async def overview(
         {
             "id": str(row.id),
             "hostname": row.fqdn or row.hostname,
+            "label": row.hostname,
             "mgmt_ip": str(row.mgmt_ip),
             "vendor": row.vendor,
             "status": row.status,

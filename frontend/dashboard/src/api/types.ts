@@ -1,6 +1,7 @@
 export interface DeviceListItem {
   id: string
   hostname: string
+  fqdn: string | null
   mgmt_ip: string
   vendor: string
   device_type: string
