@@ -85,11 +85,12 @@ func (w *PostgresWriter) upsertDevice(ctx context.Context, info *model.DeviceInf
 			sys_description = $1,
 			sys_object_id   = $2,
 			vendor          = $3::vendor_type,
+			fqdn            = NULLIF($4, ''),
 			status          = 'up'::device_status,
-			last_polled     = $4,
-			last_seen       = $4
-		WHERE id = $5
-	`, info.SysDescr, info.SysObjectID, info.DBVendorType, info.PollTime, info.DeviceID)
+			last_polled     = $5,
+			last_seen       = $5
+		WHERE id = $6
+	`, info.SysDescr, info.SysObjectID, info.DBVendorType, info.SysName, info.PollTime, info.DeviceID)
 	return err
 }
 

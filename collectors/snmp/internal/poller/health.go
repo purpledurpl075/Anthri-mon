@@ -2,6 +2,7 @@ package poller
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -319,22 +320,71 @@ func pollTempEntitySensor(s *client.Session) ([]model.TempSample, error) {
 		}
 	}
 
-	namePDUs, _ := s.BulkWalkAll(oid.EntPhysicalName)
+	// Read scale and precision so we can convert raw integer to °C correctly.
+	// RFC 3433: actual = value * 10^(scale_exp) / 10^precision
+	// scale=units(9) → 10^0; precision=1 → divide by 10 (most common for temp).
+	scaleByIdx := make(map[string]int)
+	if scalePDUs, err2 := s.BulkWalkAll(oid.EntPhySensorScale); err2 == nil {
+		for _, pdu := range scalePDUs {
+			idx := formatIndex(pdu.Name, oid.EntPhySensorScale)
+			if celsiusIndexes[idx] {
+				scaleByIdx[idx] = client.PDUInt(pdu)
+			}
+		}
+	}
+	precisionByIdx := make(map[string]int)
+	if precPDUs, err2 := s.BulkWalkAll(oid.EntPhySensorPrecision); err2 == nil {
+		for _, pdu := range precPDUs {
+			idx := formatIndex(pdu.Name, oid.EntPhySensorPrecision)
+			if celsiusIndexes[idx] {
+				precisionByIdx[idx] = client.PDUInt(pdu)
+			}
+		}
+	}
+
+	// Try entPhysicalName first; fall back to entPhysicalDescr (Arista EOS returns
+	// empty strings for Name but populates Descr with human-readable sensor labels).
 	nameByIdx := make(map[string]string)
-	for _, pdu := range namePDUs {
-		idx := formatIndex(pdu.Name, oid.EntPhysicalName)
-		nameByIdx[idx] = client.PDUString(pdu)
+	if namePDUs, err2 := s.BulkWalkAll(oid.EntPhysicalName); err2 == nil {
+		for _, pdu := range namePDUs {
+			idx := formatIndex(pdu.Name, oid.EntPhysicalName)
+			if v := client.PDUString(pdu); v != "" {
+				nameByIdx[idx] = v
+			}
+		}
+	}
+	if descrPDUs, err2 := s.BulkWalkAll(oid.EntPhysicalDescr); err2 == nil {
+		for _, pdu := range descrPDUs {
+			idx := formatIndex(pdu.Name, oid.EntPhysicalDescr)
+			if _, already := nameByIdx[idx]; !already {
+				if v := client.PDUString(pdu); v != "" {
+					nameByIdx[idx] = v
+				}
+			}
+		}
 	}
 
 	var samples []model.TempSample
-	for idx, celsius := range valueByIdx {
+	for idx, rawVal := range valueByIdx {
 		name := nameByIdx[idx]
 		if name == "" {
 			name = "Sensor " + idx
 		}
+
+		// Apply scale factor: scale enum maps to SI prefix exponents.
+		// units(9)=10^0, milli(8)=10^-3, kilo(10)=10^3, etc.
+		scaleEnum := scaleByIdx[idx]
+		if scaleEnum == 0 {
+			scaleEnum = oid.EntSensorScaleUnits // default to units if missing
+		}
+		scaleExp := scaleEnum - oid.EntSensorScaleUnits // offset from units(9)
+		precision := precisionByIdx[idx]
+
+		celsius := float64(rawVal) * math.Pow10(scaleExp) / math.Pow10(precision)
+
 		samples = append(samples, model.TempSample{
 			SensorName: name,
-			Celsius:    float64(celsius),
+			Celsius:    math.Round(celsius*10) / 10, // round to 1 decimal
 			StatusOK:   true,
 		})
 	}

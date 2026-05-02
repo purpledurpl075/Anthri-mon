@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress
+from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress, field_validator
 
 
 class DeviceCreate(BaseModel):
@@ -72,6 +72,11 @@ class DeviceRead(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     hostname: str
+
+    @field_validator("mgmt_ip", mode="before")
+    @classmethod
+    def coerce_ip(cls, v: object) -> str:
+        return str(v)
     fqdn: Optional[str] = None
     mgmt_ip: str
     vendor: str
@@ -109,6 +114,11 @@ class DeviceListRead(BaseModel):
     id: uuid.UUID
     hostname: str
     mgmt_ip: str
+
+    @field_validator("mgmt_ip", mode="before")
+    @classmethod
+    def coerce_ip(cls, v: object) -> str:
+        return str(v)
     vendor: str
     device_type: str
     platform: Optional[str] = None

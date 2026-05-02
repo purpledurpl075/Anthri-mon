@@ -22,38 +22,19 @@ export default function DeviceList() {
     refetchInterval: 30_000,
   })
 
-  function handleLogout() {
-    localStorage.removeItem('token')
-    navigate('/login')
-  }
-
   if (isLoading) return <div className="p-8 text-slate-500">Loading devices…</div>
   if (error) return <div className="p-8 text-red-600">Failed to load devices.</div>
 
   const devices = data?.items ?? []
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-lg font-bold text-slate-800">Anthrimon</span>
-          <span className="text-slate-400">|</span>
-          <span className="text-sm text-slate-600">Devices</span>
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="text-sm text-slate-500">{data?.total ?? 0} devices</span>
-          <button
-            onClick={handleLogout}
-            className="text-sm text-slate-500 hover:text-slate-800 transition-colors"
-          >
-            Sign out
-          </button>
-        </div>
-      </header>
+    <div>
+      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
+        <h1 className="text-base font-semibold text-slate-800">Devices</h1>
+        <span className="text-sm text-slate-400">{data?.total ?? 0} total</span>
+      </div>
 
-      {/* Table */}
-      <main className="p-6">
+      <div className="p-6">
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead>
@@ -69,9 +50,7 @@ export default function DeviceList() {
             <tbody className="divide-y divide-slate-100">
               {devices.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-slate-400">
-                    No devices found.
-                  </td>
+                  <td colSpan={6} className="px-4 py-8 text-center text-slate-400">No devices found.</td>
                 </tr>
               )}
               {devices.map((d) => (
@@ -81,9 +60,7 @@ export default function DeviceList() {
                   onClick={() => navigate(`/devices/${d.id}`)}
                 >
                   <td className="px-4 py-3 font-medium text-blue-600 hover:underline">
-                    <Link to={`/devices/${d.id}`} onClick={(e) => e.stopPropagation()}>
-                      {d.hostname}
-                    </Link>
+                    <Link to={`/devices/${d.id}`} onClick={(e) => e.stopPropagation()}>{d.hostname}</Link>
                   </td>
                   <td className="px-4 py-3 text-slate-600 font-mono text-xs">{d.mgmt_ip}</td>
                   <td className="px-4 py-3"><VendorBadge vendor={d.vendor} /></td>
@@ -95,7 +72,7 @@ export default function DeviceList() {
             </tbody>
           </table>
         </div>
-      </main>
+      </div>
     </div>
   )
 }

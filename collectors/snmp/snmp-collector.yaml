@@ -11,8 +11,8 @@ snmp:
   retries: 3
 
 polling:
-  default_interval_s: 60
-  health_multiplier: 5
+  default_interval_s: 15
+  health_multiplier: 1
   device_refresh_s: 300
   max_concurrent_devices: 500
 

@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import Login from './pages/Login'
 import DeviceList from './pages/DeviceList'
 import DeviceDetail from './pages/DeviceDetail'
+import DiscoverPage from './pages/DiscoverPage'
+import CredentialsPage from './pages/CredentialsPage'
+import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 
 const queryClient = new QueryClient({
@@ -15,8 +18,12 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
-          <Route path="/" element={<ProtectedRoute><DeviceList /></ProtectedRoute>} />
-          <Route path="/devices/:id" element={<ProtectedRoute><DeviceDetail /></ProtectedRoute>} />
+          <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+            <Route path="/" element={<DeviceList />} />
+            <Route path="/devices/:id" element={<DeviceDetail />} />
+            <Route path="/discover" element={<DiscoverPage />} />
+            <Route path="/credentials" element={<CredentialsPage />} />
+          </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

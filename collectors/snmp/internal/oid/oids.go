@@ -78,8 +78,8 @@ const (
 // ── ENTITY-MIB (RFC 2737) ────────────────────────────────────────────────────
 
 const (
-	EntPhysicalName  = "1.3.6.1.2.1.47.1.1.1.1.7"
-	EntPhysicalDescr = "1.3.6.1.2.1.47.1.1.1.1.2"
+	EntPhysicalDescr = "1.3.6.1.2.1.47.1.1.1.1.2" // populated on Arista/most vendors
+	EntPhysicalName  = "1.3.6.1.2.1.47.1.1.1.1.7" // often empty on Arista EOS
 )
 
 // ── ENTITY-SENSOR-MIB (RFC 3433) ─────────────────────────────────────────────
@@ -87,10 +87,13 @@ const (
 // Then read corresponding entPhySensorValue rows by matching index.
 
 const (
-	EntPhySensorType  = "1.3.6.1.2.1.99.1.1.1.1"
-	EntPhySensorValue = "1.3.6.1.2.1.99.1.1.1.4"
+	EntPhySensorType      = "1.3.6.1.2.1.99.1.1.1.1"
+	EntPhySensorScale     = "1.3.6.1.2.1.99.1.1.1.2" // SensorDataScale enum (units=9)
+	EntPhySensorPrecision = "1.3.6.1.2.1.99.1.1.1.3" // decimal places 0–9
+	EntPhySensorValue     = "1.3.6.1.2.1.99.1.1.1.4"
 
-	EntSensorTypeCelsius = 8 // entPhySensorType value indicating temperature
+	EntSensorTypeCelsius  = 8 // entPhySensorType value indicating temperature
+	EntSensorScaleUnits   = 9 // entPhySensorScale: units (10^0); most common for temp
 )
 
 // ── Cisco: CISCO-PROCESS-MIB ─────────────────────────────────────────────────

@@ -4,11 +4,12 @@ import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces } from '../api/de
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
 
-function formatUptime(secs: number | null) {
+function formatUptime(secs: number | string | null) {
   if (!secs) return '—'
-  const d = Math.floor(secs / 86400)
-  const h = Math.floor((secs % 86400) / 3600)
-  const m = Math.floor((secs % 3600) / 60)
+  const s = Number(secs)
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
   const parts = []
   if (d > 0) parts.push(`${d}d`)
   if (h > 0) parts.push(`${h}h`)
@@ -16,25 +17,26 @@ function formatUptime(secs: number | null) {
   return parts.join(' ')
 }
 
-function formatSpeed(bps: number | null) {
+function formatSpeed(bps: number | string | null) {
   if (!bps) return '—'
-  if (bps >= 1_000_000_000) return `${bps / 1_000_000_000}G`
-  if (bps >= 1_000_000) return `${bps / 1_000_000}M`
-  if (bps >= 1_000) return `${bps / 1_000}K`
-  return `${bps}`
+  const n = Number(bps)
+  if (n >= 1_000_000_000) return `${n / 1_000_000_000}G`
+  if (n >= 1_000_000) return `${n / 1_000_000}M`
+  if (n >= 1_000) return `${n / 1_000}K`
+  return `${n}`
 }
 
-function formatBytes(bytes: number | null) {
+function formatBytes(bytes: number | string | null) {
   if (!bytes) return '—'
-  const gb = bytes / 1_073_741_824
+  const gb = Number(bytes) / 1_073_741_824
   if (gb >= 1) return `${gb.toFixed(1)} GB`
-  const mb = bytes / 1_048_576
+  const mb = Number(bytes) / 1_048_576
   return `${mb.toFixed(0)} MB`
 }
 
-function MemBar({ used, total }: { used: number | null; total: number | null }) {
+function MemBar({ used, total }: { used: number | string | null; total: number | string | null }) {
   if (!used || !total) return <span className="text-slate-400 text-sm">—</span>
-  const pct = Math.round((used / total) * 100)
+  const pct = Math.round((Number(used) / Number(total)) * 100)
   const colour = pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-yellow-500' : 'bg-green-500'
   return (
     <div>
@@ -52,7 +54,7 @@ function MemBar({ used, total }: { used: number | null; total: number | null }) 
 export default function DeviceDetail() {
   const { id } = useParams<{ id: string }>()
 
-  const { data: device } = useQuery({
+  const { data: device, isLoading, isError } = useQuery({
     queryKey: ['device', id],
     queryFn: () => fetchDevice(id!),
     enabled: !!id,
@@ -73,29 +75,34 @@ export default function DeviceDetail() {
     refetchInterval: 60_000,
   })
 
-  if (!device) return <div className="p-8 text-slate-500">Loading…</div>
+  if (isLoading || !device) return <div className="p-8 text-slate-500">Loading…</div>
+  if (isError) return <div className="p-8 text-red-600">Failed to load device.</div>
 
   const upIfaces = interfaces?.filter((i) => i.oper_status === 'up').length ?? 0
   const totalIfaces = interfaces?.length ?? 0
 
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3 text-sm">
+      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
+        <nav className="flex items-center gap-2 text-sm">
           <Link to="/" className="text-blue-600 hover:underline">Devices</Link>
           <span className="text-slate-400">/</span>
-          <span className="font-medium text-slate-800">{device.hostname}</span>
-        </div>
+          <span className="font-medium text-slate-800">{device.fqdn ?? device.hostname}</span>
+        </nav>
         <StatusBadge status={device.status} />
-      </header>
+      </div>
 
       <main className="p-6 space-y-6">
         {/* Device info + health cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           {/* Device info card */}
           <div className="md:col-span-2 bg-white rounded-xl border border-slate-200 p-5">
-            <h2 className="text-base font-semibold text-slate-800 mb-3">{device.hostname}</h2>
+            <h2 className="text-base font-semibold text-slate-800 mb-3">
+              {device.fqdn ?? device.hostname}
+              {device.fqdn && device.fqdn !== device.hostname && (
+                <span className="ml-2 text-xs font-normal text-slate-400">({device.hostname})</span>
+              )}
+            </h2>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
               <dt className="text-slate-500">IP</dt>
               <dd className="font-mono text-slate-700">{device.mgmt_ip}</dd>
@@ -106,7 +113,7 @@ export default function DeviceDetail() {
               <dt className="text-slate-500">OS version</dt>
               <dd className="text-slate-700">{device.os_version ?? '—'}</dd>
               <dt className="text-slate-500">SNMP</dt>
-              <dd className="text-slate-700">{device.snmp_version.toUpperCase()} :{device.snmp_port}</dd>
+              <dd className="text-slate-700">{device.snmp_version?.toUpperCase() ?? '—'} :{device.snmp_port}</dd>
               <dt className="text-slate-500">Interfaces</dt>
               <dd className="text-slate-700">{upIfaces} up / {totalIfaces} total</dd>
             </dl>
@@ -118,12 +125,12 @@ export default function DeviceDetail() {
             {health?.cpu_util_pct != null ? (
               <>
                 <span className="text-3xl font-bold text-slate-800">
-                  {health.cpu_util_pct.toFixed(1)}%
+                  {Number(health.cpu_util_pct).toFixed(1)}%
                 </span>
                 <div className="mt-3 h-2 bg-slate-200 rounded-full overflow-hidden">
                   <div
-                    className={`h-full rounded-full ${health.cpu_util_pct > 90 ? 'bg-red-500' : health.cpu_util_pct > 70 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                    style={{ width: `${Math.min(health.cpu_util_pct, 100)}%` }}
+                    className={`h-full rounded-full ${Number(health.cpu_util_pct) > 90 ? 'bg-red-500' : Number(health.cpu_util_pct) > 70 ? 'bg-yellow-500' : 'bg-green-500'}`}
+                    style={{ width: `${Math.min(Number(health.cpu_util_pct), 100)}%` }}
                   />
                 </div>
               </>
