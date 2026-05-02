@@ -103,6 +103,7 @@ func All() []*Profile {
 func matchesOIDPrefix(oid string, prefixes []string) (matched bool, longestLen int) {
 	for _, prefix := range prefixes {
 		p := strings.TrimPrefix(prefix, ".")
+		p = strings.TrimSuffix(p, ".")
 		// Must match prefix exactly OR as a proper sub-tree (next char is ".")
 		if oid == p || strings.HasPrefix(oid, p+".") {
 			if len(p) > longestLen {

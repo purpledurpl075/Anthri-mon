@@ -63,7 +63,6 @@ func (w *VMWriter) Handle(_ context.Context, result *poller.PollResult) error {
 	deviceID := result.DeviceID.String()
 
 	w.mu.Lock()
-	defer w.mu.Unlock()
 
 	if len(result.Interfaces) > 0 {
 		ts := result.Interfaces[0].PollTime.UnixMilli()
@@ -111,16 +110,20 @@ func (w *VMWriter) Handle(_ context.Context, result *poller.PollResult) error {
 		w.appendf(`anthrimon_device_uptime_seconds{%s} %d %d`, baseLbls, h.UptimeSecs, ts)
 	}
 
-	// Flush eagerly if the buffer is full.
+	// Drain the buffer under the lock so no other goroutine can append while
+	// we're deciding to flush, then send outside the lock so we don't block
+	// concurrent Handle calls during the HTTP round-trip.
+	var toFlush []string
 	if len(w.buf) >= w.batchSize {
-		lines := w.drain()
-		w.mu.Unlock()
-		if err := w.sendLines(context.Background(), lines); err != nil {
+		toFlush = w.drain()
+	}
+	w.mu.Unlock()
+
+	if len(toFlush) > 0 {
+		if err := w.sendLines(context.Background(), toFlush); err != nil {
 			w.log.Error().Err(err).Msg("eager flush to VictoriaMetrics failed")
 		}
-		w.mu.Lock()
 	}
-
 	return nil
 }
 

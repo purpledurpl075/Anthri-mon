@@ -2,7 +2,6 @@ package poller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -178,7 +177,10 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 	}
 
 	ifaceTicker := time.NewTicker(pollInterval)
-	healthTicker := time.NewTicker(healthInterval)
+	// Offset health ticker by half a poll interval so it never fires at the
+	// same instant as the interface ticker (avoids select starvation when
+	// healthInterval is an exact multiple of pollInterval).
+	healthTicker := time.NewTicker(healthInterval + pollInterval/2)
 	defer ifaceTicker.Stop()
 	defer healthTicker.Stop()
 
@@ -310,10 +312,3 @@ type DeviceSource interface {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// prettyJSON is a debug helper that renders any value as indented JSON.
-func prettyJSON(v interface{}) string {
-	b, _ := json.MarshalIndent(v, "", "  ")
-	return string(b)
-}
-
-var _ = prettyJSON // silence unused warning; used in debug logging

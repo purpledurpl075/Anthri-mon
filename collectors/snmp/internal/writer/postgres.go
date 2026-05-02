@@ -234,7 +234,7 @@ func (w *PostgresWriter) LoadDevices(ctx context.Context) ([]model.DeviceRow, er
 	rows, err := w.pool.Query(ctx, `
 		SELECT
 			d.id,
-			d.mgmt_ip::text,
+			host(d.mgmt_ip),
 			d.snmp_version::text,
 			d.snmp_port,
 			d.polling_interval_s,

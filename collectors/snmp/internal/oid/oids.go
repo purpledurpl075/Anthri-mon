@@ -122,6 +122,20 @@ const (
 	JnxOperatingMemory = "1.3.6.1.4.1.2636.3.1.13.1.11"
 )
 
+// ── HP ProCurve / Aruba (legacy): HP-ICF-CHASSIS-MIB ─────────────────────────
+
+const (
+	// hpicfChassisCpuUtil: 1-minute CPU utilisation % scalar.
+	// Present on ProCurve/Aruba switches running YA/WA/WB firmware.
+	// hrProcessorLoad returns 0 on these devices — use this instead.
+	HpicfChassisCpuUtil = "1.3.6.1.4.1.11.2.14.11.5.1.7.1.4.0"
+
+	// hpicfMemEntry: walk from the entry-level OID so splitTableOID sees col.idx.
+	// Column 3 (hpicfMemAllocated) = bytes allocated, column 4 (hpicfMemFree) = bytes free.
+	// The parent table OID is 1.3.6.1.4.1.11.2.14.11.5.1.1.2; .1 is the entry object.
+	HpicfMemEntry = "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1"
+)
+
 // ── FortiGate: FORTINET-FORTIGATE-MIB ────────────────────────────────────────
 
 const (
@@ -152,7 +166,7 @@ var IfTypeNames = map[int]string{
 	188: "atmVciEndPt",
 }
 
-// IfTypeName returns the IANA name for an ifType integer, or "unknown(N)".
+// IfTypeName returns the IANA name for an ifType integer, or "other" if unrecognised.
 func IfTypeName(t int) string {
 	if name, ok := IfTypeNames[t]; ok {
 		return name

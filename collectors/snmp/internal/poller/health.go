@@ -1,6 +1,7 @@
 package poller
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -174,8 +175,11 @@ func pollMemoryStandard(s *client.Session) ([]model.MemorySample, error) {
 	return samples, nil
 }
 
-// pollMemoryVendor handles FortiGate scalar memory OIDs and similar patterns.
-// Convention: first scalar OID = % used, second = total capacity in KB.
+// pollMemoryVendor handles vendor-specific memory OID sets.
+//
+// Scalar convention (e.g. FortiGate): first OID = % used, second = total KB.
+// Walk convention (e.g. HP ProCurve hpicfMemEntry): each walked subtree is a
+// table where column 3 = allocated/used bytes, column 4 = free bytes per row.
 func pollMemoryVendor(s *client.Session, profile *vendor.Profile) ([]model.MemorySample, error) {
 	oset := profile.MemoryOIDs
 
@@ -199,15 +203,55 @@ func pollMemoryVendor(s *client.Session, profile *vendor.Profile) ([]model.Memor
 		}}, nil
 	}
 
-	// Generic walk fallback — treats each row as a single memory segment.
+	// Walk convention: col 3 = total bytes, col 4 = used bytes per row.
+	// Used by HP-ICF hpicfMemoryTable and any future vendor with same layout.
+	var samples []model.MemorySample
 	for _, walkOID := range oset.Walk {
 		pdus, err := s.BulkWalkAll(walkOID)
 		if err != nil {
 			return nil, err
 		}
-		_ = pdus // extend per-vendor parsing here as needed
+
+		type memRow struct{ used, free uint64 }
+		rows := make(map[int]*memRow)
+		ensureRow := func(i int) *memRow {
+			if r, ok := rows[i]; ok {
+				return r
+			}
+			r := &memRow{}
+			rows[i] = r
+			return r
+		}
+
+		for _, pdu := range pdus {
+			col, idx := splitTableOID(pdu.Name, walkOID)
+			if idx < 0 {
+				continue
+			}
+			// HP-ICF hpicfMemEntry: col 3 = allocated (used), col 4 = free.
+			// Derive total = allocated + free.
+			switch col {
+			case 3:
+				ensureRow(idx).used = client.PDUUint64(pdu)
+			case 4:
+				ensureRow(idx).free = client.PDUUint64(pdu)
+			}
+		}
+
+		for i, r := range rows {
+			total := r.used + r.free
+			if total == 0 {
+				continue
+			}
+			samples = append(samples, model.MemorySample{
+				Descr:      fmt.Sprintf("RAM%d", i),
+				Type:       "ram",
+				TotalBytes: total,
+				UsedBytes:  r.used,
+			})
+		}
 	}
-	return nil, nil
+	return samples, nil
 }
 
 func classifyStorageType(typeOID string) string {
