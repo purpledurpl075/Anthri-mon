@@ -1,4 +1,8 @@
-import { NavLink, useNavigate } from 'react-router-dom'
+import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import api from '../api/client'
+
+const fetchMe = () => api.get<{ username: string; role: string }>('/auth/me').then(r => r.data)
 
 const nav = [
   {
@@ -63,6 +67,8 @@ const soon = [
 
 export default function Sidebar() {
   const navigate = useNavigate()
+  const location = useLocation()
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: fetchMe, retry: false })
 
   function handleLogout() {
     localStorage.removeItem('token')
@@ -112,8 +118,21 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* Sign out */}
-      <div className="px-3 py-4 border-t border-slate-700">
+      {/* Account + sign out */}
+      <div className="px-3 py-4 border-t border-slate-700 space-y-0.5">
+        <NavLink
+          to="/account"
+          className={`flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm transition-colors ${
+            location.pathname === '/account'
+              ? 'bg-slate-700 text-white'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
+          </svg>
+          <span className="truncate">{me?.username ?? 'Account'}</span>
+        </NavLink>
         <button
           onClick={handleLogout}
           className="flex items-center gap-3 w-full px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"

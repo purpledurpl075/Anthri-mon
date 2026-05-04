@@ -6,6 +6,7 @@ import DeviceList from './pages/DeviceList'
 import DeviceDetail from './pages/DeviceDetail'
 import DiscoverPage from './pages/DiscoverPage'
 import CredentialsPage from './pages/CredentialsPage'
+import AccountPage from './pages/AccountPage'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 
@@ -25,6 +26,7 @@ export default function App() {
             <Route path="/devices/:id" element={<DeviceDetail />} />
             <Route path="/discover"    element={<DiscoverPage />} />
             <Route path="/credentials" element={<CredentialsPage />} />
+            <Route path="/account"     element={<AccountPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

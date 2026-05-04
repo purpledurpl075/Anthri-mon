@@ -62,6 +62,13 @@ class MeResponse(BaseModel):
     tenant_id: uuid.UUID
 
 
+class UpdateMeRequest(BaseModel):
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    current_password: Optional[str] = None
+    new_password: Optional[str] = None
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _create_jwt(user_id: uuid.UUID) -> tuple[str, datetime]:
@@ -107,6 +114,39 @@ async def login(
 
 @router.get("/me", response_model=MeResponse, summary="Return the authenticated user's profile")
 async def me(current_user: User = Depends(get_current_user)) -> MeResponse:
+    return MeResponse(
+        id=current_user.id,
+        username=current_user.username,
+        email=current_user.email,
+        full_name=current_user.full_name,
+        role=current_user.role,
+        tenant_id=current_user.tenant_id,
+    )
+
+
+@router.patch("/me", response_model=MeResponse, summary="Update the authenticated user's profile")
+async def update_me(
+    body: UpdateMeRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> MeResponse:
+    if body.new_password:
+        if not body.current_password:
+            raise HTTPException(status_code=400, detail="current_password required to set a new password")
+        if not _pwd_ctx.verify(body.current_password, current_user.password_hash):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        if len(body.new_password) < 8:
+            raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+        current_user.password_hash = _pwd_ctx.hash(body.new_password)
+
+    if body.full_name is not None:
+        current_user.full_name = body.full_name
+    if body.email is not None:
+        current_user.email = body.email
+
+    await db.commit()
+    await db.refresh(current_user)
+    logger.info("user_updated", user_id=str(current_user.id))
     return MeResponse(
         id=current_user.id,
         username=current_user.username,
