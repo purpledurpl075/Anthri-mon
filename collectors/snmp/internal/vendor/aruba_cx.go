@@ -7,6 +7,7 @@ func init() {
 	Register(&Profile{
 		Name:         "Aruba-CX",
 		DBVendorType: "aruba_cx",
+		DBDeviceType: "switch",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.47196.", // Aruba Networks (current)
 			"1.3.6.1.4.1.11.",    // HP/Agilent legacy prefix used by some Aruba hardware

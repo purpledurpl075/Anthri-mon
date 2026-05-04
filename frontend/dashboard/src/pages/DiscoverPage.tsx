@@ -33,10 +33,11 @@ export default function DiscoverPage() {
   const [addError, setAddError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const { data: credentials = [] } = useQuery({
+  const { data: allCredentials = [] } = useQuery({
     queryKey: ['credentials'],
     queryFn: fetchCredentials,
   })
+  const credentials = allCredentials.filter(c => c.type === 'snmp_v2c' || c.type === 'snmp_v3')
 
   // Poll job status while running
   useEffect(() => {
@@ -206,6 +207,8 @@ export default function DiscoverPage() {
                         >
                           View
                         </Link>
+                      ) : added.has(d.ip) ? (
+                        <span className="text-xs text-green-600 font-medium">Added</span>
                       ) : (
                         <button
                           onClick={() => handleAddDevice(d)}

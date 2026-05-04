@@ -32,7 +32,7 @@ class Device(Base):
 
     vendor: Mapped[str] = mapped_column(
         PgEnum("cisco_ios", "cisco_iosxe", "cisco_iosxr", "cisco_nxos",
-               "juniper", "arista", "aruba_cx", "fortios", "unknown",
+               "juniper", "arista", "aruba_cx", "fortios", "procurve", "unknown",
                name="vendor_type", create_type=False),
         nullable=False, default="unknown",
     )

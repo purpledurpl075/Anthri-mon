@@ -29,6 +29,11 @@ type Profile struct {
 	// the enum is extended with ALTER TYPE vendor_type ADD VALUE '...'.
 	DBVendorType string
 
+	// PostgreSQL device_type enum value inferred from the vendor profile.
+	// One of: router, switch, firewall, load_balancer, wireless_controller, unknown.
+	// Leave empty to keep the current value in the DB (no overwrite).
+	DBDeviceType string
+
 	// SysObjectID OID prefix(es) for this vendor.
 	// Detection: if the device's sysObjectID starts with ANY of these prefixes,
 	// this profile is a candidate match.

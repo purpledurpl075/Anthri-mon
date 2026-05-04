@@ -29,7 +29,7 @@ _VENDOR_PREFIXES: list[tuple[str, str]] = [
     ("1.3.6.1.4.1.30065.",  "arista"),
     ("1.3.6.1.4.1.12356.",  "fortios"),
     ("1.3.6.1.4.1.47196.",  "aruba_cx"),
-    # HP ProCurve OIDs — not a supported vendor; falls through to 'unknown'
+    ("1.3.6.1.4.1.11.",     "procurve"),  # HP ProCurve / Aruba OS (legacy)
     ("1.3.6.1.4.1.9.12.",   "cisco_nxos"),
     ("1.3.6.1.4.1.9.6.",    "cisco_iosxe"),
     ("1.3.6.1.4.1.9.1.",    "cisco_ios"),
@@ -85,10 +85,10 @@ async def _probe_v2c(ip: str, community: str, port: int, timeout: int) -> Option
         err_indication, err_status, _, var_binds = await iterator
         if err_indication or err_status:
             return None
-        values = {str(vb[0]): str(vb[1]) for vb in var_binds}
-        sys_descr = values.get(_SYS_DESCR, "")
-        sys_oid   = values.get(_SYS_OBJECT_ID, "")
-        sys_name  = values.get(_SYS_NAME, ip)
+        # Use positional indexing — str(vb[0]) varies by MIB resolution state
+        sys_descr = str(var_binds[0][1]) if len(var_binds) > 0 else ""
+        sys_oid   = str(var_binds[1][1]) if len(var_binds) > 1 else ""
+        sys_name  = str(var_binds[2][1]) if len(var_binds) > 2 else ip
         return DiscoveredDevice(
             ip=ip,
             hostname=sys_name,
@@ -122,7 +122,7 @@ async def _probe_v3(ip: str, cred_data: dict, port: int, timeout: int) -> Option
     )
     import pysnmp.hlapi.v3arch.asyncio as hlapi
 
-    auth_proto_name = _AUTH_PROTO_MAP.get(cred_data.get("auth_protocol", "sha").lower(), "usmHMACSHAAuthProtocol")
+    auth_proto_name = _AUTH_PROTO_MAP.get(cred_data.get("auth_protocol", "sha256").lower(), "usmHMAC192SHA256AuthProtocol")
     priv_proto_name = _PRIV_PROTO_MAP.get(cred_data.get("priv_protocol", "aes").lower(), "usmAesCfb128Protocol")
     auth_proto = getattr(hlapi, auth_proto_name)
     priv_proto = getattr(hlapi, priv_proto_name)
@@ -150,10 +150,9 @@ async def _probe_v3(ip: str, cred_data: dict, port: int, timeout: int) -> Option
         err_indication, err_status, _, var_binds = await iterator
         if err_indication or err_status:
             return None
-        values = {str(vb[0]): str(vb[1]) for vb in var_binds}
-        sys_descr = values.get(_SYS_DESCR, "")
-        sys_oid   = values.get(_SYS_OBJECT_ID, "")
-        sys_name  = values.get(_SYS_NAME, ip)
+        sys_descr = str(var_binds[0][1]) if len(var_binds) > 0 else ""
+        sys_oid   = str(var_binds[1][1]) if len(var_binds) > 1 else ""
+        sys_name  = str(var_binds[2][1]) if len(var_binds) > 2 else ip
         return DiscoveredDevice(
             ip=ip,
             hostname=sys_name,

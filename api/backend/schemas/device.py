@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress, field_validato
 
 _VALID_VENDORS = frozenset({
     "cisco_ios", "cisco_iosxe", "cisco_iosxr", "cisco_nxos",
-    "juniper", "arista", "aruba_cx", "fortios", "unknown",
+    "juniper", "arista", "aruba_cx", "fortios", "procurve", "unknown",
 })
 _VALID_DEVICE_TYPES = frozenset({
     "router", "switch", "firewall", "load_balancer", "wireless_controller", "unknown",

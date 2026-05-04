@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Anthrimon — developer environment installer
-# Targets Ubuntu 22.04 LTS (bare metal or VM, not WSL2)
+# Targets Ubuntu 22.04 / 24.04 LTS (bare metal or VM)
 # Usage: sudo bash infra/scripts/install-dev.sh
 #
 # What this script does:
@@ -59,9 +59,9 @@ REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME=$(eval echo "~${REAL_USER}")
 info "Installing for user: ${REAL_USER} (home: ${REAL_HOME})"
 
-# Ubuntu 22.04 check
-if ! grep -q 'Ubuntu 22.04' /etc/os-release 2>/dev/null; then
-    warn "This script targets Ubuntu 22.04 LTS. Detected:"
+# Ubuntu version check (22.04 and 24.04 supported)
+if ! grep -qE 'Ubuntu (22|24)\.04' /etc/os-release 2>/dev/null; then
+    warn "This script targets Ubuntu 22.04 / 24.04 LTS. Detected:"
     grep PRETTY_NAME /etc/os-release || true
     warn "Continuing anyway — things may break."
 fi
@@ -203,22 +203,20 @@ for f in "${PG_MIGRATIONS}"/*.sql; do
     fi
 done
 
-# ── 7. ClickHouse 26.5 ───────────────────────────────────────────────────────
+# ── 7. ClickHouse ─────────────────────────────────────────────────────────────
 
 hdr "ClickHouse"
 if ! dpkg -l clickhouse-server 2>/dev/null | grep -q '^ii'; then
     info "Adding ClickHouse apt repo..."
+    # The RPM repodata key is the correct signing key for both RPM and DEB repos
     curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' \
-        | gpg --dearmor -o /usr/share/keyrings/clickhouse.gpg 2>/dev/null || true
-    curl -fsSL 'https://packages.clickhouse.com/deb/archive-keyring.gpg' \
-        -o /usr/share/keyrings/clickhouse-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] \
+        | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
+    # ClickHouse's deb repo doesn't publish per-codename suites; use 'stable'
+    echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=amd64] \
 https://packages.clickhouse.com/deb stable main" \
         > /etc/apt/sources.list.d/clickhouse.list
     apt-get update -qq
-
-    # Pin to 26.5.x
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
         clickhouse-server \
         clickhouse-client
     ok "ClickHouse installed"

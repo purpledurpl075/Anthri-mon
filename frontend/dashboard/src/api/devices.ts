@@ -13,5 +13,11 @@ export const fetchDeviceInterfaces = (id: string) =>
 export const fetchDeviceHealth = (id: string) =>
   api.get<HealthData>(`/devices/${id}/health`).then((r) => r.data)
 
+export const deleteDevice = (id: string) =>
+  api.delete(`/devices/${id}`)
+
+export const patchDevice = (id: string, data: Record<string, unknown>) =>
+  api.patch<Device>(`/devices/${id}`, data).then((r) => r.data)
+
 export const login = (username: string, password: string) =>
   api.post<{ access_token: string }>('/auth/login', { username, password }).then((r) => r.data)

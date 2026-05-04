@@ -21,6 +21,7 @@ type DeviceInfo struct {
 	SysUpTimeTicks uint32
 	VendorName     string // matched profile name, "" if unknown
 	DBVendorType   string // postgres vendor_type enum value
+	DBDeviceType   string // postgres device_type enum value, "" = don't update
 	PollTime       time.Time
 }
 

@@ -56,12 +56,27 @@ func PollSysInfo(s *client.Session, deviceID uuid.UUID) (*model.DeviceInfo, erro
 	if p := vendor.Detect(info.SysObjectID, info.SysDescr); p != nil {
 		info.VendorName = p.Name
 		info.DBVendorType = p.DBVendorType
+		info.DBDeviceType = p.DBDeviceType
 	} else {
 		info.VendorName = "unknown"
 		info.DBVendorType = "unknown"
 	}
 
 	return info, nil
+}
+
+// PollSysUpTime fetches only the sysUpTime scalar (1.3.6.1.2.1.1.3.0).
+// Used on interface poll ticks where only the uptime counter is needed for
+// ifLastChange calculations — avoids a full 6-OID PollSysInfo round-trip.
+func PollSysUpTime(s *client.Session) (uint32, error) {
+	pdus, err := s.Get([]string{oid.SysUpTime})
+	if err != nil {
+		return 0, err
+	}
+	if len(pdus) == 0 {
+		return 0, nil
+	}
+	return uint32(client.PDUUint64(pdus[0])), nil
 }
 
 // endsWith is a loose OID suffix match that handles leading dots from gosnmp.

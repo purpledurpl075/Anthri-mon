@@ -25,6 +25,18 @@ from ..schemas.interface import InterfaceRead
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/devices", tags=["devices"])
 
+_VENDOR_DEVICE_TYPE: dict[str, str] = {
+    "arista":       "switch",
+    "aruba_cx":     "switch",
+    "procurve":     "switch",
+    "cisco_nxos":   "switch",
+    "cisco_ios":    "router",
+    "cisco_iosxe":  "router",
+    "cisco_iosxr":  "router",
+    "juniper":      "router",
+    "fortios":      "firewall",
+}
+
 
 # ── List ───────────────────────────────────────────────────────────────────────
 
@@ -72,9 +84,12 @@ async def create_device(
     current_user: User = Depends(require_role("admin", "superadmin", "operator")),
     db: AsyncSession = Depends(get_db),
 ) -> DeviceRead:
+    fields = body.model_dump(exclude_none=True, exclude={"mgmt_ip"})
+    if "device_type" not in fields and "vendor" in fields:
+        fields.setdefault("device_type", _VENDOR_DEVICE_TYPE.get(fields["vendor"], "unknown"))
     device = Device(
         tenant_id=current_user.tenant_id,
-        **body.model_dump(exclude_none=True, exclude={"mgmt_ip"}),
+        **fields,
         mgmt_ip=str(body.mgmt_ip),
     )
     db.add(device)

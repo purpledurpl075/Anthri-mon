@@ -79,7 +79,7 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 // upsertDevice updates the devices row with sysinfo data from the latest poll.
 // Only updates fields that the SNMP poller is authoritative for.
 func (w *PostgresWriter) upsertDevice(ctx context.Context, info *model.DeviceInfo) error {
-	_, err := w.pool.Exec(ctx, `
+	query := `
 		UPDATE devices
 		SET
 			sys_description = $1,
@@ -89,8 +89,26 @@ func (w *PostgresWriter) upsertDevice(ctx context.Context, info *model.DeviceInf
 			status          = 'up'::device_status,
 			last_polled     = $5,
 			last_seen       = $5
-		WHERE id = $6
-	`, info.SysDescr, info.SysObjectID, info.DBVendorType, info.SysName, info.PollTime, info.DeviceID)
+		WHERE id = $6`
+	if info.DBDeviceType != "" {
+		query = `
+		UPDATE devices
+		SET
+			sys_description = $1,
+			sys_object_id   = $2,
+			vendor          = $3::vendor_type,
+			device_type     = $7::device_type,
+			fqdn            = NULLIF($4, ''),
+			status          = 'up'::device_status,
+			last_polled     = $5,
+			last_seen       = $5
+		WHERE id = $6`
+		_, err := w.pool.Exec(ctx, query,
+			info.SysDescr, info.SysObjectID, info.DBVendorType, info.SysName, info.PollTime, info.DeviceID, info.DBDeviceType)
+		return err
+	}
+	_, err := w.pool.Exec(ctx, query,
+		info.SysDescr, info.SysObjectID, info.DBVendorType, info.SysName, info.PollTime, info.DeviceID)
 	return err
 }
 

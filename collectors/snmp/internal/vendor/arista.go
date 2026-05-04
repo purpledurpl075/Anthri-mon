@@ -7,6 +7,7 @@ func init() {
 	Register(&Profile{
 		Name:         "Arista EOS",
 		DBVendorType: "arista",
+		DBDeviceType: "switch",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.30065.", // Arista Networks enterprise OID
 		},

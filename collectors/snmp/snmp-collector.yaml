@@ -2,7 +2,7 @@ log:
   level: debug
 
 database:
-  dsn: "postgres://postgres@/anthrimon?host=/var/run/postgresql&sslmode=disable"
+  dsn: "postgres://anthrimon:changeme@127.0.0.1/anthrimon?sslmode=disable"
   max_conns: 5
   min_conns: 1
 
@@ -13,7 +13,7 @@ snmp:
 polling:
   default_interval_s: 15
   health_multiplier: 1
-  device_refresh_s: 300
+  device_refresh_s: 30
   max_concurrent_devices: 500
 
 metrics:

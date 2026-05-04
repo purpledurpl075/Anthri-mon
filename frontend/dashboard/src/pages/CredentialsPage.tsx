@@ -105,10 +105,11 @@ function DataForm({ type, data, onChange }: {
 
           <FSelect label="Security level" value={level}
             onChange={v => {
-              // Clear keys that no longer apply when downgrading level
               const next: Record<string, unknown> = { ...data, security_level: v }
               if (v === 'noAuthNoPriv') { delete next.auth_protocol; delete next.auth_key; delete next.priv_protocol; delete next.priv_key }
               if (v === 'authNoPriv')   { delete next.priv_protocol; delete next.priv_key }
+              if (v === 'authNoPriv' || v === 'authPriv') { if (!next.auth_protocol) next.auth_protocol = 'SHA256' }
+              if (v === 'authPriv')     { if (!next.priv_protocol) next.priv_protocol = 'AES' }
               onChange(next)
             }}
             options={[
@@ -216,7 +217,12 @@ function CredentialModal({ editing, onClose }: { editing: Credential | null; onC
           <FInput label="Name" value={name} onChange={setName} placeholder="lab-snmpv3-core" required />
 
           {!editing ? (
-            <FSelect label="Type" value={type} onChange={t => { setType(t); setData({}) }}
+            <FSelect label="Type" value={type} onChange={t => {
+              setType(t)
+              setData(t === 'snmp_v3'
+                ? { security_level: 'authPriv', auth_protocol: 'SHA256', priv_protocol: 'AES' }
+                : {})
+            }}
               options={ALL_TYPES.map(t => ({ value: t, label: TYPE_META[t]?.label ?? t }))} />
           ) : (
             <div>

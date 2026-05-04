@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Anthrimon dev startup script
-# Starts all required services and the app, survivng WSL2 reboots.
 # Usage:  ./start.sh          — start everything
 #         ./start.sh stop     — kill app processes (postgres/clickhouse left running)
 #         ./start.sh status   — show what is up
@@ -181,14 +180,6 @@ cmd_start() {
         mkdir -p /var/run/clickhouse-server
         chown clickhouse:clickhouse /var/run/clickhouse-server
         chmod 755 /var/run/clickhouse-server
-
-        # WSL2 has no IPv6 — patch listen.xml to use IPv4 wildcard if needed
-        local listen_xml="/etc/clickhouse-server/config.d/listen.xml"
-        if grep -q '<listen_host>::</listen_host>' "$listen_xml" 2>/dev/null; then
-            info "Patching listen.xml: IPv6 → IPv4 (WSL2 has no IPv6)..."
-            sed -i 's|<listen_host>::</listen_host>|<listen_host>0.0.0.0</listen_host>|' "$listen_xml"
-            ok "listen.xml patched"
-        fi
 
         info "Starting ClickHouse server..."
         sudo -u clickhouse clickhouse-server --config-file=/etc/clickhouse-server/config.xml \

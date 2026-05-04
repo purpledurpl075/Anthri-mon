@@ -245,10 +245,9 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 		case <-ifaceTicker.C:
 			result := &PollResult{DeviceID: dev.ID}
 
-			// Refresh sysUpTime for ifLastChange calculations.
-			if info, err := PollSysInfo(session, dev.ID); err == nil {
-				lastSysUpTime = info.SysUpTimeTicks
-				result.SysInfo = info
+			// Only fetch sysUpTime — full PollSysInfo runs on connect/reconnect only.
+			if ticks, err := PollSysUpTime(session); err == nil {
+				lastSysUpTime = ticks
 			}
 
 			ifaces, err := PollInterfaces(session, dev.ID, lastSysUpTime)

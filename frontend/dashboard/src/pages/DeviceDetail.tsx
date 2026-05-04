@@ -1,6 +1,7 @@
-import { useQuery } from '@tanstack/react-query'
-import { useParams, Link } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces } from '../api/devices'
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useParams, Link, useNavigate } from 'react-router-dom'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice } from '../api/devices'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
 
@@ -51,8 +52,74 @@ function MemBar({ used, total }: { used: number | string | null; total: number |
   )
 }
 
+function GearIcon() {
+  return (
+    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={1.75} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+    </svg>
+  )
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">{title}</p>
+      {children}
+    </div>
+  )
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="mb-3">
+      <label className="block text-xs font-medium text-slate-500 mb-1">{label}</label>
+      {children}
+    </div>
+  )
+}
+
+function Input({ value, onChange, type = 'text' }: { value: string | number; onChange: (v: string) => void; type?: string }) {
+  return (
+    <input
+      type={type} value={value} onChange={e => onChange(e.target.value)}
+      className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+    />
+  )
+}
+
+function Select({ value, onChange, options }: { value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500">
+      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  )
+}
+
+function PlaceholderSection({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="rounded-lg border border-dashed border-slate-200 px-4 py-3">
+      <p className="text-xs font-medium text-slate-400">{title}</p>
+      <p className="text-xs text-slate-300 mt-0.5">{description}</p>
+    </div>
+  )
+}
+
 export default function DeviceDetail() {
   const { id } = useParams<{ id: string }>()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const deleteMutation = useMutation({
+    mutationFn: () => deleteDevice(id!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['devices'] })
+      navigate('/devices')
+    },
+  })
 
   const { data: device, isLoading, isError } = useQuery({
     queryKey: ['device', id],
@@ -64,7 +131,7 @@ export default function DeviceDetail() {
     queryKey: ['device-health', id],
     queryFn: () => fetchDeviceHealth(id!),
     enabled: !!id,
-    refetchInterval: 60_000,
+    refetchInterval: 15_000,
     retry: false,
   })
 
@@ -72,7 +139,17 @@ export default function DeviceDetail() {
     queryKey: ['device-interfaces', id],
     queryFn: () => fetchDeviceInterfaces(id!),
     enabled: !!id,
-    refetchInterval: 60_000,
+    refetchInterval: 15_000,
+  })
+
+  // SNMP form state — initialised from device once loaded
+  const [snmpVersion, setSnmpVersion] = useState('')
+  const [snmpPort, setSnmpPort] = useState('')
+  const [pollingInterval, setPollingInterval] = useState('')
+
+  const patchMutation = useMutation({
+    mutationFn: (data: Record<string, unknown>) => patchDevice(id!, data),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['device', id] }),
   })
 
   if (isLoading || !device) return <div className="p-8 text-slate-500">Loading…</div>
@@ -80,6 +157,20 @@ export default function DeviceDetail() {
 
   const upIfaces = interfaces?.filter((i) => i.oper_status === 'up').length ?? 0
   const totalIfaces = interfaces?.length ?? 0
+
+  const openSettings = () => {
+    setSnmpVersion(device.snmp_version)
+    setSnmpPort(String(device.snmp_port))
+    setPollingInterval(String(device.polling_interval_s))
+    setConfirmDelete(false)
+    setSettingsOpen(true)
+  }
+
+  const saveSnmp = () => patchMutation.mutate({
+    snmp_version: snmpVersion,
+    snmp_port: Number(snmpPort),
+    polling_interval_s: Number(pollingInterval),
+  })
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -89,8 +180,104 @@ export default function DeviceDetail() {
           <span className="text-slate-400">/</span>
           <span className="font-medium text-slate-800">{device.fqdn ?? device.hostname}</span>
         </nav>
-        <StatusBadge status={device.status} />
+        <div className="flex items-center gap-3">
+          <StatusBadge status={device.status} />
+          <button
+            onClick={openSettings}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+            title="Device settings"
+          >
+            <GearIcon />
+          </button>
+        </div>
       </div>
+
+      {/* Settings drawer */}
+      {settingsOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/20 z-30" onClick={() => setSettingsOpen(false)} />
+          <div className="fixed top-0 right-0 h-full w-80 bg-white shadow-xl z-40 flex flex-col">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-slate-700">
+                <GearIcon />
+                <span className="text-sm font-semibold">Device settings</span>
+              </div>
+              <button onClick={() => setSettingsOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-5 space-y-6">
+
+              <Section title="SNMP">
+                <Field label="Version">
+                  <Select value={snmpVersion} onChange={setSnmpVersion} options={[
+                    { value: 'v2c', label: 'v2c' },
+                    { value: 'v3',  label: 'v3' },
+                    { value: 'v1',  label: 'v1' },
+                  ]} />
+                </Field>
+                <Field label="Port">
+                  <Input value={snmpPort} onChange={setSnmpPort} type="number" />
+                </Field>
+                <Field label="Polling interval (s)">
+                  <Input value={pollingInterval} onChange={setPollingInterval} type="number" />
+                </Field>
+                <button
+                  onClick={saveSnmp}
+                  disabled={patchMutation.isPending}
+                  className="w-full mt-1 bg-blue-600 text-white text-sm rounded-lg py-2 hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  {patchMutation.isPending ? 'Saving…' : 'Save SNMP settings'}
+                </button>
+                {patchMutation.isSuccess && <p className="text-xs text-green-600 mt-1">Saved.</p>}
+                {patchMutation.isError && <p className="text-xs text-red-600 mt-1">Save failed.</p>}
+              </Section>
+
+              <Section title="Credentials">
+                <PlaceholderSection title="Credential management" description="Assign or swap credentials for this device — coming soon" />
+              </Section>
+
+              <Section title="Alerting">
+                <PlaceholderSection title="Alert thresholds" description="Per-device CPU, memory and interface alert rules — coming soon" />
+              </Section>
+
+              <Section title="Maintenance">
+                <PlaceholderSection title="Maintenance windows" description="Schedule downtime to suppress alerts — coming soon" />
+              </Section>
+
+              <Section title="Danger zone">
+                {confirmDelete ? (
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-2">
+                    <p className="text-xs text-red-700 font-medium">Remove {device.fqdn ?? device.hostname}?</p>
+                    <p className="text-xs text-red-500">This will delete all interfaces, health data and alerts for this device.</p>
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={() => deleteMutation.mutate()}
+                        disabled={deleteMutation.isPending}
+                        className="flex-1 bg-red-600 text-white text-xs rounded-lg py-1.5 hover:bg-red-700 disabled:opacity-50"
+                      >
+                        {deleteMutation.isPending ? 'Removing…' : 'Confirm remove'}
+                      </button>
+                      <button onClick={() => setConfirmDelete(false)} className="flex-1 text-xs text-slate-500 border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDelete(true)}
+                    className="w-full text-sm text-red-600 border border-red-200 rounded-lg py-2 hover:bg-red-50 transition-colors"
+                  >
+                    Remove device
+                  </button>
+                )}
+              </Section>
+            </div>
+          </div>
+        </>
+      )}
+
 
       <main className="p-6 space-y-6">
         {/* Device info + health cards */}
