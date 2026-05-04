@@ -7,11 +7,30 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress, field_validator
 
 
+_VALID_VENDORS = frozenset({
+    "cisco_ios", "cisco_iosxe", "cisco_iosxr", "cisco_nxos",
+    "juniper", "arista", "aruba_cx", "fortios", "unknown",
+})
+_VALID_DEVICE_TYPES = frozenset({
+    "router", "switch", "firewall", "load_balancer", "wireless_controller", "unknown",
+})
+
+
 class DeviceCreate(BaseModel):
     hostname: str
     mgmt_ip: IPvAnyAddress
     vendor: str = "unknown"
     device_type: str = "unknown"
+
+    @field_validator("vendor")
+    @classmethod
+    def coerce_vendor(cls, v: str) -> str:
+        return v if v in _VALID_VENDORS else "unknown"
+
+    @field_validator("device_type")
+    @classmethod
+    def coerce_device_type(cls, v: str) -> str:
+        return v if v in _VALID_DEVICE_TYPES else "unknown"
     platform: Optional[str] = None
     os_version: Optional[str] = None
     serial_number: Optional[str] = None

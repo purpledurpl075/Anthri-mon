@@ -29,6 +29,8 @@ export default function DiscoverPage() {
   const [jobId, setJobId] = useState<string | null>(null)
   const [job, setJob] = useState<SweepJob | null>(null)
   const [adding, setAdding] = useState<Set<string>>(new Set())
+  const [added, setAdded] = useState<Set<string>>(new Set())
+  const [addError, setAddError] = useState<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const { data: credentials = [] } = useQuery({
@@ -61,23 +63,27 @@ export default function DiscoverPage() {
 
   async function handleAddDevice(d: DiscoveredDevice) {
     setAdding(prev => new Set(prev).add(d.ip))
+    setAddError(null)
     try {
-      await api.post('/api/v1/devices', {
+      const res = await api.post<{ id: string }>('/devices', {
         hostname: d.hostname,
         mgmt_ip: d.ip,
         vendor: d.vendor,
         collection_method: 'snmp',
         snmp_version: credentials.find(c => c.id === credId)?.type === 'snmp_v3' ? 'v3' : 'v2c',
       })
-      // Invalidate devices list so it refreshes
+      if (credId && res.data?.id) {
+        await api.post(`/devices/${res.data.id}/credentials`, { credential_id: credId }).catch(() => {})
+      }
+      setAdded(prev => new Set(prev).add(d.ip))
       queryClient.invalidateQueries({ queryKey: ['devices'] })
-      // Refresh job to mark as in_db
       if (jobId) {
         const j = await getSweepJob(jobId)
         setJob(j)
       }
-    } catch (e) {
-      console.error(e)
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail ?? 'Failed to add device'
+      setAddError(msg)
     } finally {
       setAdding(prev => { const s = new Set(prev); s.delete(d.ip); return s })
     }

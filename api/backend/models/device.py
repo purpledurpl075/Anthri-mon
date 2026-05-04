@@ -4,8 +4,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
+from sqlalchemy import Boolean, ForeignKey, Integer, Text, func
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum, INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
@@ -30,10 +30,18 @@ class Device(Base):
     fqdn: Mapped[Optional[str]] = mapped_column(Text)
     mgmt_ip: Mapped[str] = mapped_column(INET, nullable=False)
 
-    # Maps to PostgreSQL vendor_type enum
-    vendor: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
-    # Maps to PostgreSQL device_type enum
-    device_type: Mapped[str] = mapped_column(String(30), nullable=False, default="unknown")
+    vendor: Mapped[str] = mapped_column(
+        PgEnum("cisco_ios", "cisco_iosxe", "cisco_iosxr", "cisco_nxos",
+               "juniper", "arista", "aruba_cx", "fortios", "unknown",
+               name="vendor_type", create_type=False),
+        nullable=False, default="unknown",
+    )
+    device_type: Mapped[str] = mapped_column(
+        PgEnum("router", "switch", "firewall", "load_balancer",
+               "wireless_controller", "unknown",
+               name="device_type", create_type=False),
+        nullable=False, default="unknown",
+    )
 
     platform: Mapped[Optional[str]] = mapped_column(Text)
     os_version: Mapped[Optional[str]] = mapped_column(Text)
@@ -41,17 +49,25 @@ class Device(Base):
     sys_description: Mapped[Optional[str]] = mapped_column(Text)
     sys_object_id: Mapped[Optional[str]] = mapped_column(Text)
 
-    # Maps to PostgreSQL collection_method enum
-    collection_method: Mapped[str] = mapped_column(String(10), nullable=False, default="snmp")
-    # Maps to PostgreSQL snmp_version enum
-    snmp_version: Mapped[str] = mapped_column(String(5), nullable=False, default="v2c")
+    collection_method: Mapped[str] = mapped_column(
+        PgEnum("snmp", "gnmi", "netconf", "api", "syslog",
+               name="collection_method", create_type=False),
+        nullable=False, default="snmp",
+    )
+    snmp_version: Mapped[str] = mapped_column(
+        PgEnum("v1", "v2c", "v3", name="snmp_version", create_type=False),
+        nullable=False, default="v2c",
+    )
     snmp_port: Mapped[int] = mapped_column(Integer, nullable=False, default=161)
     gnmi_port: Mapped[int] = mapped_column(Integer, nullable=False, default=57400)
     gnmi_tls: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     polling_interval_s: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
 
-    # Maps to PostgreSQL device_status enum
-    status: Mapped[str] = mapped_column(String(15), nullable=False, default="unknown")
+    status: Mapped[str] = mapped_column(
+        PgEnum("up", "down", "degraded", "unreachable", "maintenance", "unknown",
+               name="device_status", create_type=False),
+        nullable=False, default="unknown",
+    )
     last_seen: Mapped[Optional[datetime]] = mapped_column()
     last_polled: Mapped[Optional[datetime]] = mapped_column()
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

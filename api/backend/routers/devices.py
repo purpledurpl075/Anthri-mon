@@ -5,12 +5,14 @@ from typing import List, Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from ..dependencies import get_current_user, get_db, require_role
 from ..models.alert import Alert
+from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
 from ..models.health import DeviceHealthLatest
 from ..models.interface import Interface
@@ -215,6 +217,44 @@ async def get_device_alerts(
 
     result = await db.execute(q.order_by(Alert.triggered_at.desc()))
     return [AlertRead.model_validate(a) for a in result.scalars().all()]
+
+
+# ── Credential linking ─────────────────────────────────────────────────────────
+
+class _CredentialLinkBody(BaseModel):
+    credential_id: uuid.UUID
+    priority: int = 0
+
+
+@router.post("/{device_id}/credentials", status_code=status.HTTP_204_NO_CONTENT,
+             response_model=None, summary="Attach a credential to a device")
+async def link_device_credential(
+    device_id: uuid.UUID,
+    body: _CredentialLinkBody,
+    current_user: User = Depends(require_role("admin", "superadmin", "operator")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await _assert_device_visible(device_id, current_user, db)
+
+    cred_result = await db.execute(
+        select(Credential).where(
+            Credential.id == body.credential_id,
+            Credential.tenant_id == current_user.tenant_id,
+        )
+    )
+    if cred_result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
+
+    link = DeviceCredential(
+        device_id=device_id,
+        credential_id=body.credential_id,
+        priority=body.priority,
+    )
+    db.add(link)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
 
 
 # ── Internal helper ────────────────────────────────────────────────────────────

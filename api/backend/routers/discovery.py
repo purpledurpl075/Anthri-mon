@@ -29,8 +29,7 @@ _VENDOR_PREFIXES: list[tuple[str, str]] = [
     ("1.3.6.1.4.1.30065.",  "arista"),
     ("1.3.6.1.4.1.12356.",  "fortios"),
     ("1.3.6.1.4.1.47196.",  "aruba_cx"),
-    ("1.3.6.1.4.1.11.2.3.7.", "procurve"),
-    ("1.3.6.1.4.1.11.",     "procurve"),
+    # HP ProCurve OIDs — not a supported vendor; falls through to 'unknown'
     ("1.3.6.1.4.1.9.12.",   "cisco_nxos"),
     ("1.3.6.1.4.1.9.6.",    "cisco_iosxe"),
     ("1.3.6.1.4.1.9.1.",    "cisco_ios"),
@@ -41,7 +40,6 @@ _SYSDESCR_OVERRIDES: list[tuple[str, str, str]] = [
     # (vendor_from_oid, pattern, corrected_vendor)
     ("cisco_ios",  r"NX-OS",      "cisco_nxos"),
     ("cisco_ios",  r"IOS-XR",     "cisco_iosxr"),
-    ("procurve",   r"HP J\d",     "procurve"),
 ]
 
 
