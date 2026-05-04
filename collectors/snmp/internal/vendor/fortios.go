@@ -9,6 +9,7 @@ func init() {
 	Register(&Profile{
 		Name:         "FortiGate / FortiOS",
 		DBVendorType: "fortios",
+		DBDeviceType: "firewall",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.12356.", // Fortinet enterprise OID
 		},

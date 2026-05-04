@@ -9,6 +9,7 @@ func init() {
 	Register(&Profile{
 		Name:         "Cisco IOS-XR",
 		DBVendorType: "cisco_iosxr",
+		DBDeviceType: "router",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.9.1.",
 		},

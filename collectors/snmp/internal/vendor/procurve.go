@@ -21,6 +21,7 @@ func init() {
 	Register(&Profile{
 		Name:         "HP ProCurve / Aruba (legacy)",
 		DBVendorType: "procurve",
+		DBDeviceType: "switch",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.11.2.3.7.", // HP ProCurve switch-specific sub-tree
 			"1.3.6.1.4.1.11.",       // HP/Agilent enterprise fallback

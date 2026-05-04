@@ -8,6 +8,7 @@ func init() {
 	Register(&Profile{
 		Name:         "Cisco NX-OS",
 		DBVendorType: "cisco_nxos",
+		DBDeviceType: "switch",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.9.12.", // Nexus platform OID space
 			"1.3.6.1.4.1.9.1.",  // Some NX-OS devices use the generic Cisco prefix

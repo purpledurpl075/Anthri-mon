@@ -9,6 +9,7 @@ func init() {
 	Register(&Profile{
 		Name:         "Juniper JunOS",
 		DBVendorType: "juniper",
+		DBDeviceType: "router",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.2636.", // Juniper Networks enterprise OID
 		},
