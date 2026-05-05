@@ -22,6 +22,10 @@ type DeviceInfo struct {
 	VendorName     string // matched profile name, "" if unknown
 	DBVendorType   string // postgres vendor_type enum value
 	DBDeviceType   string // postgres device_type enum value, "" = don't update
+	OSVersion      string // parsed from sysDescr, "" if unknown
+	Platform       string // parsed from sysDescr, "" if unknown
+	SysLocationStr string // sysLocation value
+	SysContactStr  string // sysContact value
 	PollTime       time.Time
 }
 

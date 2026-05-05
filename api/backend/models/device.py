@@ -48,6 +48,8 @@ class Device(Base):
     serial_number: Mapped[Optional[str]] = mapped_column(Text)
     sys_description: Mapped[Optional[str]] = mapped_column(Text)
     sys_object_id: Mapped[Optional[str]] = mapped_column(Text)
+    sys_location: Mapped[Optional[str]] = mapped_column(Text)
+    sys_contact: Mapped[Optional[str]] = mapped_column(Text)
 
     collection_method: Mapped[str] = mapped_column(
         PgEnum("snmp", "gnmi", "netconf", "api", "syslog",
@@ -72,6 +74,8 @@ class Device(Base):
     last_polled: Mapped[Optional[datetime]] = mapped_column()
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     tags: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    alert_exclusions: Mapped[dict] = mapped_column(JSONB, nullable=False,
+        server_default='{"metrics":[],"interface_ids":[]}')
     notes: Mapped[Optional[str]] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())

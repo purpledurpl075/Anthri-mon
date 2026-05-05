@@ -234,6 +234,26 @@ async def get_device_alerts(
     return [AlertRead.model_validate(a) for a in result.scalars().all()]
 
 
+# ── Alert exclusions ───────────────────────────────────────────────────────────
+
+class _AlertExclusionsBody(BaseModel):
+    metrics: list[str] = []
+    interface_ids: list[str] = []
+
+
+@router.put("/{device_id}/alert-exclusions", summary="Set alert exclusions for a device")
+async def set_alert_exclusions(
+    device_id: uuid.UUID,
+    body: _AlertExclusionsBody,
+    current_user: User = Depends(require_role("admin", "superadmin", "operator")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    device = await _assert_device_visible(device_id, current_user, db)
+    device.alert_exclusions = {"metrics": body.metrics, "interface_ids": body.interface_ids}
+    await db.commit()
+    return device.alert_exclusions
+
+
 # ── Credential linking ─────────────────────────────────────────────────────────
 
 class _CredentialLinkBody(BaseModel):

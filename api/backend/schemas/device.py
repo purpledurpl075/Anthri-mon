@@ -39,7 +39,7 @@ class DeviceCreate(BaseModel):
     snmp_port: int = 161
     gnmi_port: int = 57400
     gnmi_tls: bool = True
-    polling_interval_s: int = Field(default=300, ge=10, le=86400)
+    polling_interval_s: int = Field(default=15, ge=10, le=86400)
     site_id: Optional[uuid.UUID] = None
     collector_id: Optional[uuid.UUID] = None
     tags: list[str] = []
@@ -104,6 +104,8 @@ class DeviceRead(BaseModel):
     os_version: Optional[str] = None
     serial_number: Optional[str] = None
     sys_description: Optional[str] = None
+    sys_location: Optional[str] = None
+    sys_contact: Optional[str] = None
     collection_method: str
     snmp_version: str
     snmp_port: int
@@ -116,6 +118,7 @@ class DeviceRead(BaseModel):
     is_active: bool
     tags: list[Any] = []
     notes: Optional[str] = None
+    alert_exclusions: dict = {}
     site_id: Optional[uuid.UUID] = None
     collector_id: Optional[uuid.UUID] = None
     created_at: datetime

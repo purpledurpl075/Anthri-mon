@@ -19,5 +19,8 @@ export const deleteDevice = (id: string) =>
 export const patchDevice = (id: string, data: Record<string, unknown>) =>
   api.patch<Device>(`/devices/${id}`, data).then((r) => r.data)
 
+export const setAlertExclusions = (id: string, metrics: string[], interface_ids: string[]) =>
+  api.put(`/devices/${id}/alert-exclusions`, { metrics, interface_ids }).then(r => r.data)
+
 export const login = (username: string, password: string) =>
   api.post<{ access_token: string }>('/auth/login', { username, password }).then((r) => r.data)

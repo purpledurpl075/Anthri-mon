@@ -5,5 +5,6 @@ from .alerts import router as alerts_router
 from .credentials import router as credentials_router
 from .discovery import router as discovery_router
 from .overview import router as overview_router
+from .policies import router as policies_router
 
-__all__ = ["auth_router", "devices_router", "interfaces_router", "alerts_router", "credentials_router", "discovery_router", "overview_router"]
+__all__ = ["auth_router", "devices_router", "interfaces_router", "alerts_router", "credentials_router", "discovery_router", "overview_router", "policies_router"]

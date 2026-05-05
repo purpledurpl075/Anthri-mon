@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions } from '../api/devices'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
 
@@ -146,6 +146,29 @@ export default function DeviceDetail() {
   const [snmpVersion, setSnmpVersion] = useState('')
   const [snmpPort, setSnmpPort] = useState('')
   const [pollingInterval, setPollingInterval] = useState('')
+  const [tagInput, setTagInput] = useState('')
+  const [tagError, setTagError] = useState('')
+  const [ignoredMetrics, setIgnoredMetrics] = useState<string[]>([])
+  const [ignoredIfaces, setIgnoredIfaces] = useState<string[]>([])
+  const [overrideMetric, setOverrideMetric] = useState('cpu_util_pct')
+  const [overrideThreshold, setOverrideThreshold] = useState('')
+  const [overrideSeverity, setOverrideSeverity] = useState('warning')
+  const [overrideMsg, setOverrideMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  const exclusionMutation = useMutation({
+    mutationFn: () => setAlertExclusions(id!, ignoredMetrics, ignoredIfaces),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['device', id] }),
+  })
+
+  const overrideMutation = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      import('../api/client').then(m => m.default.post('/alert-rules', body)),
+    onSuccess: () => {
+      setOverrideThreshold('')
+      setOverrideMsg({ ok: true, text: 'Override rule created.' })
+    },
+    onError: () => setOverrideMsg({ ok: false, text: 'Failed to create override.' }),
+  })
 
   const patchMutation = useMutation({
     mutationFn: (data: Record<string, unknown>) => patchDevice(id!, data),
@@ -162,8 +185,29 @@ export default function DeviceDetail() {
     setSnmpVersion(device.snmp_version)
     setSnmpPort(String(device.snmp_port))
     setPollingInterval(String(device.polling_interval_s))
+    setTagInput('')
+    setTagError('')
+    const excl = (device as any).alert_exclusions ?? { metrics: [], interface_ids: [] }
+    setIgnoredMetrics(excl.metrics ?? [])
+    setIgnoredIfaces(excl.interface_ids ?? [])
     setConfirmDelete(false)
     setSettingsOpen(true)
+  }
+
+  const addTag = () => {
+    const tag = tagInput.trim().toLowerCase().replace(/\s+/g, '-')
+    if (!tag) return
+    const current: string[] = device.tags ?? []
+    if (current.includes(tag)) { setTagError('Tag already exists'); return }
+    setTagError('')
+    patchMutation.mutate({ tags: [...current, tag] }, {
+      onSuccess: () => { setTagInput(''); queryClient.invalidateQueries({ queryKey: ['device', id] }) },
+    })
+  }
+
+  const removeTag = (tag: string) => {
+    const current: string[] = device.tags ?? []
+    patchMutation.mutate({ tags: current.filter(t => t !== tag) })
   }
 
   const saveSnmp = () => patchMutation.mutate({
@@ -232,6 +276,136 @@ export default function DeviceDetail() {
                 </button>
                 {patchMutation.isSuccess && <p className="text-xs text-green-600 mt-1">Saved.</p>}
                 {patchMutation.isError && <p className="text-xs text-red-600 mt-1">Save failed.</p>}
+              </Section>
+
+              <Section title="Tags">
+                <div className="flex flex-wrap gap-1.5 mb-2 min-h-[24px]">
+                  {(device.tags ?? []).length === 0 && (
+                    <span className="text-xs text-slate-400">No tags</span>
+                  )}
+                  {(device.tags ?? []).map((tag: string) => (
+                    <span key={tag} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-xs">
+                      {tag}
+                      <button onClick={() => removeTag(tag)} className="text-slate-400 hover:text-red-500 leading-none">×</button>
+                    </span>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    value={tagInput}
+                    onChange={e => { setTagInput(e.target.value); setTagError('') }}
+                    onKeyDown={e => e.key === 'Enter' && addTag()}
+                    placeholder="core, edge, uplink…"
+                    className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button onClick={addTag} disabled={!tagInput.trim()}
+                    className="px-3 py-1.5 text-sm bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200 disabled:opacity-40">
+                    Add
+                  </button>
+                </div>
+                {tagError && <p className="text-xs text-red-500 mt-1">{tagError}</p>}
+                <p className="text-xs text-slate-400 mt-1">Tags are used by alert policies to target specific devices.</p>
+              </Section>
+
+              <Section title="Alert ignores">
+                <p className="text-xs text-slate-400 mb-2">Silence specific alert types for this device. Interface-specific ignores only affect interface down alerts.</p>
+
+                {/* Metric ignores */}
+                <p className="text-xs font-medium text-slate-500 mb-1.5">Ignore metrics</p>
+                <div className="space-y-1 mb-3">
+                  {['cpu_util_pct','mem_util_pct','device_down','temperature','uptime'].map(metric => (
+                    <label key={metric} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                      <input type="checkbox"
+                        checked={ignoredMetrics.includes(metric)}
+                        onChange={e => setIgnoredMetrics(prev =>
+                          e.target.checked ? [...prev, metric] : prev.filter(m => m !== metric)
+                        )}
+                        className="rounded border-slate-300 text-blue-600" />
+                      {metric.replace(/_/g, ' ')}
+                    </label>
+                  ))}
+                </div>
+
+                {/* Interface-specific ignores */}
+                <p className="text-xs font-medium text-slate-500 mb-1.5">Ignore specific interfaces (interface down alerts)</p>
+                <div className="space-y-1 mb-3 max-h-32 overflow-y-auto">
+                  {(interfaces ?? []).filter(i => i.admin_status === 'up').map(iface => (
+                    <label key={iface.id} className="flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                      <input type="checkbox"
+                        checked={ignoredIfaces.includes(iface.id)}
+                        onChange={e => setIgnoredIfaces(prev =>
+                          e.target.checked ? [...prev, iface.id] : prev.filter(i => i !== iface.id)
+                        )}
+                        className="rounded border-slate-300 text-blue-600" />
+                      <span className="font-mono">{iface.name}</span>
+                      {iface.description && <span className="text-slate-400 truncate">{iface.description}</span>}
+                    </label>
+                  ))}
+                  {(interfaces ?? []).filter(i => i.admin_status === 'up').length === 0 && (
+                    <p className="text-xs text-slate-400">No admin-up interfaces loaded</p>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => exclusionMutation.mutate()}
+                  disabled={exclusionMutation.isPending}
+                  className="w-full bg-slate-700 text-white text-sm rounded-lg py-2 hover:bg-slate-800 disabled:opacity-50 transition-colors"
+                >
+                  {exclusionMutation.isPending ? 'Saving…' : 'Save ignores'}
+                </button>
+                {exclusionMutation.isSuccess && <p className="text-xs text-green-600 mt-1">Saved.</p>}
+              </Section>
+
+              <Section title="Alert overrides">
+                <p className="text-xs text-slate-400 mb-2">
+                  Override global alert thresholds for this device specifically.
+                  Device-level rules take priority over policy rules.
+                </p>
+                <Field label="Metric">
+                  <Select value={overrideMetric} onChange={setOverrideMetric} options={[
+                    { value: 'cpu_util_pct', label: 'CPU %' },
+                    { value: 'mem_util_pct', label: 'Memory %' },
+                    { value: 'device_down',  label: 'Device down' },
+                    { value: 'interface_down', label: 'Interface down' },
+                  ]} />
+                </Field>
+                {(overrideMetric === 'cpu_util_pct' || overrideMetric === 'mem_util_pct') && (
+                  <Field label="Threshold (%)">
+                    <Input value={overrideThreshold} onChange={setOverrideThreshold} type="number" />
+                  </Field>
+                )}
+                <Field label="Severity">
+                  <Select value={overrideSeverity} onChange={setOverrideSeverity} options={[
+                    { value: 'critical', label: 'Critical' },
+                    { value: 'major',    label: 'Major' },
+                    { value: 'warning',  label: 'Warning' },
+                    { value: 'info',     label: 'Info' },
+                  ]} />
+                </Field>
+                <button
+                  onClick={() => {
+                    setOverrideMsg(null)
+                    const hasThreshold = overrideMetric === 'cpu_util_pct' || overrideMetric === 'mem_util_pct'
+                    overrideMutation.mutate({
+                      name: `${device.fqdn ?? device.hostname} — ${overrideMetric} override`,
+                      metric: overrideMetric,
+                      condition: 'gt',
+                      threshold: hasThreshold ? Number(overrideThreshold) : null,
+                      duration_seconds: 0,
+                      severity: overrideSeverity,
+                      device_selector: { device_ids: [id] },
+                    })
+                  }}
+                  disabled={overrideMutation.isPending || ((overrideMetric === 'cpu_util_pct' || overrideMetric === 'mem_util_pct') && !overrideThreshold)}
+                  className="w-full mt-1 bg-blue-600 text-white text-sm rounded-lg py-2 hover:bg-blue-700 disabled:opacity-50 transition-colors"
+                >
+                  {overrideMutation.isPending ? 'Creating…' : 'Create override rule'}
+                </button>
+                {overrideMsg && (
+                  <p className={`text-xs mt-1 ${overrideMsg.ok ? 'text-green-600' : 'text-red-600'}`}>
+                    {overrideMsg.text}
+                  </p>
+                )}
               </Section>
 
               <Section title="Credentials">
@@ -303,6 +477,16 @@ export default function DeviceDetail() {
               <dd className="text-slate-700">{device.snmp_version?.toUpperCase() ?? '—'} :{device.snmp_port}</dd>
               <dt className="text-slate-500">Interfaces</dt>
               <dd className="text-slate-700">{upIfaces} up / {totalIfaces} total</dd>
+              {(device.tags ?? []).length > 0 && (
+                <>
+                  <dt className="text-slate-500">Tags</dt>
+                  <dd className="flex flex-wrap gap-1">
+                    {(device.tags ?? []).map((tag: string) => (
+                      <span key={tag} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-xs">{tag}</span>
+                    ))}
+                  </dd>
+                </>
+              )}
             </dl>
           </div>
 

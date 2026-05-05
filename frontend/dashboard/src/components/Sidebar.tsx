@@ -3,6 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import api from '../api/client'
 
 const fetchMe = () => api.get<{ username: string; role: string }>('/auth/me').then(r => r.data)
+const fetchAlertCount = () =>
+  api.get<{ total: number }>('/alerts', { params: { status: 'open', limit: 1 } }).then(r => r.data.total)
 
 const nav = [
   {
@@ -47,14 +49,6 @@ const nav = [
 
 const soon = [
   {
-    label: 'Alerts',
-    icon: (
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
-      </svg>
-    ),
-  },
-  {
     label: 'Topology',
     icon: (
       <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -69,6 +63,12 @@ export default function Sidebar() {
   const navigate = useNavigate()
   const location = useLocation()
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: fetchMe, retry: false })
+  const { data: openAlerts } = useQuery({
+    queryKey: ['alert-count'],
+    queryFn: fetchAlertCount,
+    refetchInterval: 30_000,
+    retry: false,
+  })
 
   function handleLogout() {
     localStorage.removeItem('token')
@@ -102,6 +102,49 @@ export default function Sidebar() {
             {label}
           </NavLink>
         ))}
+
+        {/* Alerts */}
+        <NavLink to="/alerts"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`
+          }
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
+          </svg>
+          <span className="flex-1">Alerts</span>
+          {!!openAlerts && openAlerts > 0 && (
+            <span className="bg-red-500 text-white text-xs font-bold rounded-full px-1.5 py-0.5 min-w-[1.25rem] text-center leading-none">
+              {openAlerts > 99 ? '99+' : openAlerts}
+            </span>
+          )}
+        </NavLink>
+        <NavLink to="/policies"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`
+          }
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z"/>
+          </svg>
+          Policies
+        </NavLink>
+        <NavLink to="/alert-rules"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`
+          }
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-6 9 2 2 4-4" />
+          </svg>
+          Alert Rules
+        </NavLink>
 
         <div className="pt-4 pb-1 px-3">
           <span className="text-xs font-medium text-slate-600 uppercase tracking-wider">Coming soon</span>

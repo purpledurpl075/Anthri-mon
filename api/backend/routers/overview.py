@@ -54,13 +54,17 @@ async def overview(
     )
     last_polled_at: datetime | None = last_poll_result.scalar_one_or_none()
 
-    # ── Devices that are down or unreachable (up to 8) ────────────────────────
+    # ── Devices that are down, unreachable, or have a stale poll (up to 8) ────
     problem_result = await db.execute(
         select(Device.id, Device.hostname, Device.fqdn, Device.mgmt_ip, Device.vendor, Device.status, Device.last_seen, Device.platform)
         .where(
             Device.tenant_id == tid,
             Device.is_active == True,  # noqa: E712
-            text("devices.status IN ('down'::device_status, 'unreachable'::device_status, 'unknown'::device_status)"),
+            text("""
+                devices.status IN ('down'::device_status, 'unreachable'::device_status)
+                OR devices.last_polled IS NULL
+                OR devices.last_polled < NOW() - INTERVAL '90 seconds'
+            """),
         )
         .order_by(Device.last_seen.asc().nullsfirst())
         .limit(8)

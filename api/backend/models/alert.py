@@ -4,8 +4,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, String, Text, func
-from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum, INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
@@ -47,11 +47,28 @@ class MaintenanceWindow(Base):
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
 
+class AlertPolicy(Base):
+    __tablename__ = "alert_policies"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    device_selector: Mapped[Optional[dict]] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+    rules: Mapped[list["AlertRule"]] = relationship("AlertRule", back_populates="policy", lazy="noload")
+
+
 class AlertRule(Base):
     __tablename__ = "alert_rules"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    policy_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("alert_policies.id"))
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text)
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
@@ -61,13 +78,36 @@ class AlertRule(Base):
     threshold: Mapped[Optional[float]] = mapped_column()
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     renotify_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=3600)
-    # "critical" | "major" | "minor" | "warning" | "info"
-    severity: Mapped[str] = mapped_column(String(10), nullable=False, default="warning")
+    severity: Mapped[str] = mapped_column(
+        PgEnum("critical", "major", "minor", "warning", "info",
+               name="alert_severity", create_type=False),
+        nullable=False, default="warning",
+    )
+    # Escalation
+    escalation_severity: Mapped[Optional[str]] = mapped_column(
+        PgEnum("critical", "major", "minor", "warning", "info",
+               name="alert_severity", create_type=False),
+    )
+    escalation_seconds: Mapped[Optional[int]] = mapped_column(Integer)
+    # Flap suppression
+    stable_for_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Correlated suppression
+    suppress_if_parent_down: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    parent_device_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"))
+    # Baseline deviation
+    baseline_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    baseline_deviation_pct: Mapped[Optional[float]] = mapped_column()
+    # Multi-condition AND
+    extra_conditions: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    # Notifications
+    notify_on_resolve: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    custom_oid: Mapped[Optional[str]] = mapped_column(Text)
     channel_ids: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
     maintenance_window_ids: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
+    policy: Mapped[Optional["AlertPolicy"]] = relationship("AlertPolicy", back_populates="rules", lazy="noload")
     alerts: Mapped[list["Alert"]] = relationship("Alert", back_populates="rule", lazy="noload")
 
 
@@ -79,19 +119,27 @@ class Alert(Base):
     rule_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("alert_rules.id"))
     device_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"))
     interface_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("interfaces.id"))
-    # "critical" | "major" | "minor" | "warning" | "info"
-    severity: Mapped[str] = mapped_column(String(10), nullable=False)
-    # "open" | "acknowledged" | "resolved" | "suppressed" | "expired"
-    status: Mapped[str] = mapped_column(String(15), nullable=False, default="open")
+    severity: Mapped[str] = mapped_column(
+        PgEnum("critical", "major", "minor", "warning", "info",
+               name="alert_severity", create_type=False),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        PgEnum("open", "acknowledged", "resolved", "suppressed", "expired",
+               name="alert_status", create_type=False),
+        nullable=False, default="open",
+    )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     message: Mapped[Optional[str]] = mapped_column(Text)
     context: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
-    triggered_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
-    acknowledged_at: Mapped[Optional[datetime]] = mapped_column()
+    triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    acknowledged_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     acknowledged_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
-    resolved_at: Mapped[Optional[datetime]] = mapped_column()
+    resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     resolved_by: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     correlation_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    fingerprint: Mapped[Optional[str]] = mapped_column(Text)
+    last_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 

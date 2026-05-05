@@ -33,13 +33,30 @@ class AlertRuleCreate(BaseModel):
     name: str
     description: Optional[str] = None
     is_enabled: bool = True
+    policy_id: Optional[uuid.UUID] = None
     device_selector: Optional[dict] = None
     metric: str
-    condition: str
+    condition: str = "gt"
     threshold: Optional[float] = None
     duration_seconds: int = Field(default=0, ge=0)
     renotify_seconds: int = Field(default=3600, ge=0)
     severity: str = "warning"
+    # Escalation
+    escalation_severity: Optional[str] = None
+    escalation_seconds: Optional[int] = None
+    # Flap suppression
+    stable_for_seconds: int = Field(default=0, ge=0)
+    # Correlated suppression
+    suppress_if_parent_down: bool = False
+    parent_device_id: Optional[uuid.UUID] = None
+    # Baseline
+    baseline_enabled: bool = False
+    baseline_deviation_pct: Optional[float] = None
+    # Multi-condition
+    extra_conditions: list[dict] = []
+    # Notifications
+    notify_on_resolve: bool = True
+    custom_oid: Optional[str] = None
     channel_ids: list[uuid.UUID] = []
     maintenance_window_ids: list[uuid.UUID] = []
 
@@ -55,6 +72,16 @@ class AlertRuleUpdate(BaseModel):
     duration_seconds: Optional[int] = None
     renotify_seconds: Optional[int] = None
     severity: Optional[str] = None
+    escalation_severity: Optional[str] = None
+    escalation_seconds: Optional[int] = None
+    stable_for_seconds: Optional[int] = None
+    suppress_if_parent_down: Optional[bool] = None
+    parent_device_id: Optional[uuid.UUID] = None
+    baseline_enabled: Optional[bool] = None
+    baseline_deviation_pct: Optional[float] = None
+    extra_conditions: Optional[list[dict]] = None
+    notify_on_resolve: Optional[bool] = None
+    custom_oid: Optional[str] = None
     channel_ids: Optional[list[uuid.UUID]] = None
     maintenance_window_ids: Optional[list[uuid.UUID]] = None
 
@@ -64,6 +91,7 @@ class AlertRuleRead(BaseModel):
 
     id: uuid.UUID
     tenant_id: uuid.UUID
+    policy_id: Optional[uuid.UUID] = None
     name: str
     description: Optional[str] = None
     is_enabled: bool
@@ -74,7 +102,45 @@ class AlertRuleRead(BaseModel):
     duration_seconds: int
     renotify_seconds: int
     severity: str
+    escalation_severity: Optional[str] = None
+    escalation_seconds: Optional[int] = None
+    stable_for_seconds: int = 0
+    suppress_if_parent_down: bool = False
+    parent_device_id: Optional[uuid.UUID] = None
+    baseline_enabled: bool = False
+    baseline_deviation_pct: Optional[float] = None
+    extra_conditions: list[Any] = []
+    notify_on_resolve: bool = True
+    custom_oid: Optional[str] = None
     channel_ids: list[Any] = []
     maintenance_window_ids: list[Any] = []
+    created_at: datetime
+    updated_at: datetime
+
+
+class AlertPolicyCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    is_enabled: bool = True
+    device_selector: Optional[dict] = None
+
+
+class AlertPolicyUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    is_enabled: Optional[bool] = None
+    device_selector: Optional[dict] = None
+
+
+class AlertPolicyRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    name: str
+    description: Optional[str] = None
+    is_enabled: bool
+    is_builtin: bool
+    device_selector: Optional[dict] = None
     created_at: datetime
     updated_at: datetime

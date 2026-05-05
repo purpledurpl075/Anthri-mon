@@ -58,6 +58,43 @@ export interface Interface {
   updated_at: string
 }
 
+export interface Alert {
+  id: string
+  tenant_id: string
+  rule_id: string | null
+  device_id: string | null
+  interface_id: string | null
+  severity: 'critical' | 'major' | 'minor' | 'warning' | 'info'
+  status: 'open' | 'acknowledged' | 'resolved' | 'suppressed' | 'expired'
+  title: string
+  message: string | null
+  context: Record<string, unknown>
+  triggered_at: string
+  acknowledged_at: string | null
+  resolved_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AlertRule {
+  id: string
+  tenant_id: string
+  name: string
+  description: string | null
+  is_enabled: boolean
+  device_selector: Record<string, unknown> | null
+  metric: string
+  condition: string
+  threshold: number | null
+  duration_seconds: number
+  renotify_seconds: number
+  severity: string
+  channel_ids: string[]
+  maintenance_window_ids: string[]
+  created_at: string
+  updated_at: string
+}
+
 export interface HealthData {
   device_id: string
   collected_at: string

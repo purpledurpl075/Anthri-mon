@@ -79,36 +79,26 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 // upsertDevice updates the devices row with sysinfo data from the latest poll.
 // Only updates fields that the SNMP poller is authoritative for.
 func (w *PostgresWriter) upsertDevice(ctx context.Context, info *model.DeviceInfo) error {
-	query := `
-		UPDATE devices
-		SET
+	_, err := w.pool.Exec(ctx, `
+		UPDATE devices SET
 			sys_description = $1,
 			sys_object_id   = $2,
 			vendor          = $3::vendor_type,
+			device_type     = CASE WHEN $7 <> '' THEN $7::device_type ELSE device_type END,
 			fqdn            = NULLIF($4, ''),
+			os_version      = CASE WHEN $8 <> '' THEN $8 ELSE os_version END,
+			platform        = CASE WHEN $9 <> '' THEN $9 ELSE platform END,
+			sys_location    = CASE WHEN $10 <> '' THEN $10 ELSE sys_location END,
+			sys_contact     = CASE WHEN $11 <> '' THEN $11 ELSE sys_contact END,
 			status          = 'up'::device_status,
 			last_polled     = $5,
 			last_seen       = $5
-		WHERE id = $6`
-	if info.DBDeviceType != "" {
-		query = `
-		UPDATE devices
-		SET
-			sys_description = $1,
-			sys_object_id   = $2,
-			vendor          = $3::vendor_type,
-			device_type     = $7::device_type,
-			fqdn            = NULLIF($4, ''),
-			status          = 'up'::device_status,
-			last_polled     = $5,
-			last_seen       = $5
-		WHERE id = $6`
-		_, err := w.pool.Exec(ctx, query,
-			info.SysDescr, info.SysObjectID, info.DBVendorType, info.SysName, info.PollTime, info.DeviceID, info.DBDeviceType)
-		return err
-	}
-	_, err := w.pool.Exec(ctx, query,
-		info.SysDescr, info.SysObjectID, info.DBVendorType, info.SysName, info.PollTime, info.DeviceID)
+		WHERE id = $6`,
+		info.SysDescr, info.SysObjectID, info.DBVendorType, info.SysName,
+		info.PollTime, info.DeviceID,
+		info.DBDeviceType, info.OSVersion, info.Platform,
+		info.SysLocationStr, info.SysContactStr,
+	)
 	return err
 }
 
@@ -187,6 +177,17 @@ func (w *PostgresWriter) upsertInterfaces(ctx context.Context, deviceID uuid.UUI
 	for i := 0; i < batch.Len(); i++ {
 		if _, err := br.Exec(); err != nil {
 			w.log.Error().Err(err).Msg("batch exec error")
+		}
+	}
+
+	// Touch last_polled/last_seen so the device doesn't appear stale between sysinfo polls.
+	if len(ifaces) > 0 {
+		t := ifaces[0].PollTime
+		if _, err := w.pool.Exec(ctx,
+			`UPDATE devices SET last_polled = $1, last_seen = $1, status = 'up'::device_status WHERE id = $2`,
+			t, deviceID,
+		); err != nil {
+			w.log.Error().Err(err).Msg("touch last_polled failed")
 		}
 	}
 	return nil
