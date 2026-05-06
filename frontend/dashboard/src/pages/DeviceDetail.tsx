@@ -1,7 +1,8 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag } from '../api/devices'
+import { fetchCredentials } from '../api/credentials'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
@@ -103,6 +104,138 @@ function PlaceholderSection({ title, description }: { title: string; description
     <div className="rounded-lg border border-dashed border-slate-200 px-4 py-3">
       <p className="text-xs font-medium text-slate-400">{title}</p>
       <p className="text-xs text-slate-300 mt-0.5">{description}</p>
+    </div>
+  )
+}
+
+// ── Credential assignment ─────────────────────────────────────────────────────
+
+const CRED_TYPE_LABEL: Record<string, string> = {
+  snmp_v2c: 'SNMP v2c', snmp_v3: 'SNMP v3', ssh: 'SSH',
+  gnmi_tls: 'gNMI TLS', api_token: 'API Token', netconf: 'NETCONF',
+}
+
+function CredentialSection({ deviceId }: { deviceId: string }) {
+  const qc = useQueryClient()
+  const [selectedId, setSelectedId] = useState('')
+  const [priority, setPriority]     = useState('0')
+  const [confirmDel, setConfirmDel] = useState<string | null>(null)
+  const [errMsg, setErrMsg]         = useState('')
+
+  const { data: assigned = [], isLoading } = useQuery({
+    queryKey: ['device-creds', deviceId],
+    queryFn: () => fetchDeviceCredentials(deviceId),
+  })
+  const { data: all = [] } = useQuery({
+    queryKey: ['credentials-all'],
+    queryFn: () => fetchCredentials(true),
+  })
+
+  const unassignedIds = new Set(assigned.map(a => a.credential_id))
+  const available = all.filter(c => !unassignedIds.has(c.id))
+
+  const linkMut = useMutation({
+    mutationFn: () => linkDeviceCredential(deviceId, selectedId, Number(priority)),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['device-creds', deviceId] }); setSelectedId(''); setErrMsg('') },
+    onError: (e: any) => setErrMsg(e?.response?.data?.detail ?? 'Failed to assign'),
+  })
+
+  const unlinkMut = useMutation({
+    mutationFn: (credId: string) => unlinkDeviceCredential(deviceId, credId),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['device-creds', deviceId] }); setConfirmDel(null) },
+  })
+
+  if (isLoading) return <p className="text-xs text-slate-400">Loading…</p>
+
+  return (
+    <div className="space-y-2">
+      {assigned.length === 0 && <p className="text-xs text-slate-400">No credentials assigned.</p>}
+      {assigned.map(a => (
+        <div key={a.credential_id} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-xs">
+          <div>
+            <span className="font-medium text-slate-700">{a.name}</span>
+            <span className="ml-2 text-slate-400">{CRED_TYPE_LABEL[a.type] ?? a.type}</span>
+            <span className="ml-2 text-slate-300">priority {a.priority}</span>
+          </div>
+          {confirmDel === a.credential_id ? (
+            <div className="flex items-center gap-2">
+              <button onClick={() => unlinkMut.mutate(a.credential_id)} className="text-red-600 hover:underline">Remove</button>
+              <button onClick={() => setConfirmDel(null)} className="text-slate-400 hover:underline">Cancel</button>
+            </div>
+          ) : (
+            <button onClick={() => setConfirmDel(a.credential_id)} className="text-slate-400 hover:text-red-500">✕</button>
+          )}
+        </div>
+      ))}
+
+      {available.length > 0 && (
+        <div className="flex gap-2 pt-1">
+          <select value={selectedId} onChange={e => setSelectedId(e.target.value)}
+            className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
+            <option value="">Assign credential…</option>
+            {available.map(c => <option key={c.id} value={c.id}>{c.name} ({CRED_TYPE_LABEL[c.type] ?? c.type})</option>)}
+          </select>
+          <input type="number" value={priority} onChange={e => setPriority(e.target.value)}
+            placeholder="Pri" className="w-14 border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <button onClick={() => linkMut.mutate()} disabled={!selectedId || linkMut.isPending}
+            className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+            Assign
+          </button>
+        </div>
+      )}
+      {errMsg && <p className="text-xs text-red-600">{errMsg}</p>}
+    </div>
+  )
+}
+
+// ── SNMP diagnostic ────────────────────────────────────────────────────────────
+
+function SnmpDiagSection({ deviceId }: { deviceId: string }) {
+  const [result, setResult]   = useState<Awaited<ReturnType<typeof runSnmpDiag>> | null>(null)
+  const [running, setRunning] = useState(false)
+  const [error, setError]     = useState('')
+
+  async function run() {
+    setRunning(true); setResult(null); setError('')
+    try {
+      const r = await runSnmpDiag(deviceId)
+      setResult(r)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? 'Request failed')
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <button onClick={run} disabled={running}
+        className="w-full border border-slate-300 text-slate-600 text-sm rounded-lg py-2 hover:bg-slate-50 disabled:opacity-50 transition-colors">
+        {running ? 'Running…' : 'Run SNMP diagnostic'}
+      </button>
+
+      {error && <p className="text-xs text-red-600">{error}</p>}
+
+      {result && (
+        <div className={`rounded-lg border p-3 text-xs space-y-2 ${result.success ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+          <div className="flex items-center justify-between">
+            <span className={`font-semibold ${result.success ? 'text-green-700' : 'text-red-700'}`}>
+              {result.success ? 'Reachable' : 'Failed'}
+            </span>
+            <span className="text-slate-400">
+              {result.credential_name} · {CRED_TYPE_LABEL[result.credential_type] ?? result.credential_type}
+              {result.response_ms != null && ` · ${result.response_ms}ms`}
+            </span>
+          </div>
+          {result.error && <p className="text-red-600">{result.error}</p>}
+          {result.results.map(r => (
+            <div key={r.oid} className="flex gap-3">
+              <span className="text-slate-500 w-24 shrink-0">{r.oid}</span>
+              <span className="text-slate-700 break-all">{r.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -561,7 +694,11 @@ export default function DeviceDetail() {
               </Section>
 
               <Section title="Credentials">
-                <PlaceholderSection title="Credential management" description="Assign or swap credentials for this device — coming soon" />
+                <CredentialSection deviceId={id!} />
+              </Section>
+
+              <Section title="SNMP Diagnostic">
+                <SnmpDiagSection deviceId={id!} />
               </Section>
 
               <Section title="Alerting">

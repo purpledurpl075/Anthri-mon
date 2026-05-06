@@ -261,6 +261,26 @@ class _CredentialLinkBody(BaseModel):
     priority: int = 0
 
 
+@router.get("/{device_id}/credentials", summary="List credentials assigned to a device")
+async def list_device_credentials(
+    device_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _assert_device_visible(device_id, current_user, db)
+    rows = (await db.execute(
+        select(DeviceCredential, Credential)
+        .join(Credential, Credential.id == DeviceCredential.credential_id)
+        .where(DeviceCredential.device_id == device_id)
+        .order_by(DeviceCredential.priority)
+    )).all()
+    return [
+        {"credential_id": str(dc.credential_id), "name": c.name,
+         "type": c.type, "priority": dc.priority}
+        for dc, c in rows
+    ]
+
+
 @router.post("/{device_id}/credentials", status_code=status.HTTP_204_NO_CONTENT,
              response_model=None, summary="Attach a credential to a device")
 async def link_device_credential(
@@ -271,14 +291,13 @@ async def link_device_credential(
 ) -> None:
     await _assert_device_visible(device_id, current_user, db)
 
-    cred_result = await db.execute(
+    if (await db.execute(
         select(Credential).where(
             Credential.id == body.credential_id,
             Credential.tenant_id == current_user.tenant_id,
         )
-    )
-    if cred_result.scalar_one_or_none() is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found")
+    )).scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Credential not found")
 
     link = DeviceCredential(
         device_id=device_id,
@@ -290,6 +309,121 @@ async def link_device_credential(
         await db.commit()
     except Exception:
         await db.rollback()
+
+
+@router.delete("/{device_id}/credentials/{credential_id}",
+               status_code=status.HTTP_204_NO_CONTENT, response_model=None,
+               summary="Remove a credential from a device")
+async def unlink_device_credential(
+    device_id: uuid.UUID,
+    credential_id: uuid.UUID,
+    current_user: User = Depends(require_role("admin", "superadmin", "operator")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    await _assert_device_visible(device_id, current_user, db)
+    link = (await db.execute(
+        select(DeviceCredential).where(
+            DeviceCredential.device_id == device_id,
+            DeviceCredential.credential_id == credential_id,
+        )
+    )).scalar_one_or_none()
+    if link is None:
+        raise HTTPException(status_code=404, detail="Credential not assigned to this device")
+    await db.delete(link)
+    await db.commit()
+
+
+# ── SNMP diagnostic ────────────────────────────────────────────────────────────
+
+_DIAG_OIDS = {
+    "sysDescr":    "1.3.6.1.2.1.1.1.0",
+    "sysUpTime":   "1.3.6.1.2.1.1.3.0",
+    "sysName":     "1.3.6.1.2.1.1.5.0",
+    "sysLocation": "1.3.6.1.2.1.1.6.0",
+    "sysContact":  "1.3.6.1.2.1.1.4.0",
+}
+
+
+@router.post("/{device_id}/snmp-diag", summary="Run a live SNMP diagnostic against a device")
+async def snmp_diag(
+    device_id: uuid.UUID,
+    current_user: User = Depends(require_role("admin", "superadmin", "operator")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    import asyncio, time, json as _json
+
+    device = await _assert_device_visible(device_id, current_user, db)
+
+    cred_row = (await db.execute(
+        select(DeviceCredential, Credential)
+        .join(Credential, Credential.id == DeviceCredential.credential_id)
+        .where(
+            DeviceCredential.device_id == device_id,
+            Credential.type.in_(["snmp_v2c", "snmp_v3"]),
+        )
+        .order_by(DeviceCredential.priority)
+    )).first()
+
+    if cred_row is None:
+        raise HTTPException(status_code=400, detail="No SNMP credential assigned to this device")
+
+    dc, cred = cred_row
+    cred_data = cred.data if isinstance(cred.data, dict) else _json.loads(cred.data)
+    host = str(device.mgmt_ip).split("/")[0]
+
+    try:
+        from pysnmp.hlapi.v3arch.asyncio import (
+            CommunityData, ContextData, ObjectIdentity, ObjectType,
+            SnmpEngine, UdpTransportTarget, UsmUserData, get_cmd,
+        )
+        import pysnmp.hlapi.v3arch.asyncio as hlapi
+
+        engine = SnmpEngine()
+        transport = await UdpTransportTarget.create((host, device.snmp_port or 161), timeout=5, retries=1)
+        obj_types = [ObjectType(ObjectIdentity(oid)) for oid in _DIAG_OIDS.values()]
+
+        if cred.type == "snmp_v2c":
+            auth = CommunityData(cred_data.get("community", "public"), mpModel=1)
+        else:
+            _AUTH = {"md5": "usmHMACMD5AuthProtocol", "sha": "usmHMACSHAAuthProtocol",
+                     "sha256": "usmHMAC192SHA256AuthProtocol", "sha512": "usmHMAC384SHA512AuthProtocol"}
+            _PRIV = {"des": "usmDESPrivProtocol", "aes": "usmAesCfb128Protocol",
+                     "aes192": "usmAesCfb192Protocol", "aes256": "usmAesCfb256Protocol"}
+            auth = UsmUserData(
+                cred_data["username"],
+                authKey=cred_data.get("auth_key", ""),
+                privKey=cred_data.get("priv_key", ""),
+                authProtocol=getattr(hlapi, _AUTH.get(cred_data.get("auth_protocol", "sha256").lower(), "usmHMAC192SHA256AuthProtocol")),
+                privProtocol=getattr(hlapi, _PRIV.get(cred_data.get("priv_protocol", "aes").lower(), "usmAesCfb128Protocol")),
+            )
+
+        t0 = time.monotonic()
+        err_ind, err_status, _, vbs = await get_cmd(engine, auth, transport, ContextData(), *obj_types)
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+
+        if err_ind:
+            return {"success": False, "credential_name": cred.name, "credential_type": cred.type,
+                    "error": str(err_ind), "results": [], "response_ms": elapsed_ms}
+        if err_status:
+            return {"success": False, "credential_name": cred.name, "credential_type": cred.type,
+                    "error": f"{err_status.prettyPrint()} at index {int(err_status) - 1}",
+                    "results": [], "response_ms": elapsed_ms}
+
+        results = []
+        label_by_oid = {v: k for k, v in _DIAG_OIDS.items()}
+        for vb in vbs:
+            oid_str = str(vb[0])
+            # Strip instance suffix for label lookup
+            base = ".".join(oid_str.split(".")[:11])
+            label = label_by_oid.get(oid_str) or label_by_oid.get(base) or oid_str
+            results.append({"oid": label, "value": str(vb[1])})
+
+        return {"success": True, "credential_name": cred.name, "credential_type": cred.type,
+                "response_ms": elapsed_ms, "results": results, "error": None}
+
+    except Exception as exc:
+        return {"success": False, "credential_name": cred.name, "credential_type": cred.type,
+                "error": str(exc), "results": [], "response_ms": None}
 
 
 # ── Internal helper ────────────────────────────────────────────────────────────

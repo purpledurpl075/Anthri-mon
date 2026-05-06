@@ -24,3 +24,31 @@ export const setAlertExclusions = (id: string, metrics: string[], interface_ids:
 
 export const login = (username: string, password: string) =>
   api.post<{ access_token: string }>('/auth/login', { username, password }).then((r) => r.data)
+
+export interface DeviceCredentialEntry {
+  credential_id: string
+  name: string
+  type: string
+  priority: number
+}
+
+export interface SnmpDiagResult {
+  success: boolean
+  credential_name: string
+  credential_type: string
+  response_ms: number | null
+  results: { oid: string; value: string }[]
+  error: string | null
+}
+
+export const fetchDeviceCredentials = (id: string) =>
+  api.get<DeviceCredentialEntry[]>(`/devices/${id}/credentials`).then(r => r.data)
+
+export const linkDeviceCredential = (id: string, credential_id: string, priority: number) =>
+  api.post(`/devices/${id}/credentials`, { credential_id, priority })
+
+export const unlinkDeviceCredential = (deviceId: string, credentialId: string) =>
+  api.delete(`/devices/${deviceId}/credentials/${credentialId}`)
+
+export const runSnmpDiag = (id: string) =>
+  api.post<SnmpDiagResult>(`/devices/${id}/snmp-diag`).then(r => r.data)
