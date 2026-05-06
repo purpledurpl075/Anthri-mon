@@ -25,7 +25,7 @@ async def resolve_devices(db: AsyncSession, tenant_id: str, selector: Optional[d
     """Return rows of {id, hostname, vendor, tags, polling_interval_s} matching the selector."""
     base = """
         SELECT id::text, hostname, vendor::text, tags, polling_interval_s,
-               parent_device_id::text, host(mgmt_ip) AS mgmt_ip, alert_exclusions
+               host(mgmt_ip) AS mgmt_ip, alert_exclusions
         FROM devices
         WHERE tenant_id = :tid AND is_active = true
     """
@@ -52,8 +52,13 @@ async def resolve_devices(db: AsyncSession, tenant_id: str, selector: Optional[d
             params[f"v{i}"] = v
 
     if "tags" in selector and selector["tags"]:
-        clauses.append("tags ?| :tags_arr")
-        params["tags_arr"] = selector["tags"]
+        # Use individual ? checks — asyncpg can't infer element type for ?| with a list param.
+        tag_conds = []
+        for tag in selector["tags"]:
+            pname = f"tag_{len(params)}"
+            tag_conds.append(f"tags ? :{pname}")
+            params[pname] = tag
+        clauses.append("(" + " OR ".join(tag_conds) + ")")
 
     where = " AND (" + " OR ".join(clauses) + ")" if clauses else ""
     rows = (await db.execute(text(base + where), params)).mappings().all()

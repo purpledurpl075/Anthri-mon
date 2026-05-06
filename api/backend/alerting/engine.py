@@ -224,23 +224,19 @@ class AlertEngine:
 
         # ── Correlated suppression: build set of devices whose parent is down ──
         suppressed_device_ids: set[str] = set()
-        if rule.suppress_if_parent_down:
-            for device in devices:
-                parent_id = device.get("parent_device_id")
-                if not parent_id:
-                    continue
-                parent_alert = (await db.execute(
-                    text("""
-                        SELECT 1 FROM alerts
-                        WHERE device_id = :pid
-                          AND status IN ('open','acknowledged')
-                          AND severity IN ('critical','major')
-                        LIMIT 1
-                    """),
-                    {"pid": parent_id},
-                )).first()
-                if parent_alert:
-                    suppressed_device_ids.add(device["id"])
+        if rule.suppress_if_parent_down and rule.parent_device_id:
+            parent_alert = (await db.execute(
+                text("""
+                    SELECT 1 FROM alerts
+                    WHERE device_id = :pid
+                      AND status IN ('open','acknowledged')
+                      AND severity IN ('critical','major')
+                    LIMIT 1
+                """),
+                {"pid": str(rule.parent_device_id)},
+            )).first()
+            if parent_alert:
+                suppressed_device_ids = {d["id"] for d in devices}
 
         # ── Fire / suppress alerts ─────────────────────────────────────────────
         for breach in breaches:
