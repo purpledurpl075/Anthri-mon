@@ -9,3 +9,4 @@ PyJWT==2.10.1
 structlog==24.4.0
 python-multipart==0.0.19
 pysnmp>=6.0.0
+croniter==6.2.2

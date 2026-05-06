@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import AsyncSessionLocal
 from ..models.alert import Alert, AlertRule
 from . import notify
+from .maintenance import device_in_maintenance, load_active_windows
 from .evaluators import (
     Breach,
     eval_cpu, eval_mem, eval_device_down,
@@ -130,15 +131,22 @@ class AlertEngine:
         for rule in rules:
             rules_by_metric.setdefault(rule.metric, []).append(rule)
 
+        # Load active maintenance windows once per cycle for all tenants' rules
+        tenant_ids = {str(r.tenant_id) for r in rules}
+        active_windows: list = []
+        for tid in tenant_ids:
+            active_windows.extend(await load_active_windows(db, tid))
+
         for rule in rules:
             try:
-                await self._evaluate_rule(db, rule, rules_by_metric.get(rule.metric, []))
+                await self._evaluate_rule(db, rule, rules_by_metric.get(rule.metric, []), active_windows)
             except Exception as exc:
                 await db.rollback()
                 logger.error("rule_eval_error", rule_id=str(rule.id), error=str(exc))
 
     async def _evaluate_rule(self, db: AsyncSession, rule: AlertRule,
-                              peer_rules: list[AlertRule] = []) -> None:
+                              peer_rules: list[AlertRule] = [],
+                              active_windows: list = []) -> None:
         tenant_id = str(rule.tenant_id)
         devices = await resolve_devices(db, tenant_id, rule.device_selector)
         if not devices:
@@ -159,6 +167,10 @@ class AlertEngine:
                 except Exception: exclusions = {}
             excluded_metrics = exclusions.get("metrics", [])
             if rule.metric in excluded_metrics:
+                continue
+
+            # Skip if device is in any active maintenance window
+            if device_in_maintenance(device, active_windows):
                 continue
 
             pre_breach_count = len(breaches)

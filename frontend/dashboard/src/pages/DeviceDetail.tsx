@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions } from '../api/devices'
+import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
 
@@ -102,6 +103,142 @@ function PlaceholderSection({ title, description }: { title: string; description
     <div className="rounded-lg border border-dashed border-slate-200 px-4 py-3">
       <p className="text-xs font-medium text-slate-400">{title}</p>
       <p className="text-xs text-slate-300 mt-0.5">{description}</p>
+    </div>
+  )
+}
+
+// ── Maintenance windows ────────────────────────────────────────────────────────
+
+function fmt(iso: string) {
+  return new Date(iso).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
+function MaintenanceSection({ deviceId }: { deviceId: string }) {
+  const qc = useQueryClient()
+  const [showForm, setShowForm]     = useState(false)
+  const [name, setName]             = useState('')
+  const [startsAt, setStartsAt]     = useState('')
+  const [endsAt, setEndsAt]         = useState('')
+  const [isRecurring, setIsRecurring] = useState(false)
+  const [cron, setCron]             = useState('0 2 * * 6')
+  const [errMsg, setErrMsg]         = useState('')
+  const [confirmDel, setConfirmDel] = useState<string | null>(null)
+
+  const { data: windows = [], isLoading } = useQuery({
+    queryKey: ['maintenance', deviceId],
+    queryFn: () => fetchMaintenanceWindows({ device_id: deviceId }),
+  })
+
+  const createMut = useMutation({
+    mutationFn: () => createMaintenanceWindow({
+      name,
+      device_selector: { device_ids: [deviceId] },
+      starts_at: new Date(startsAt).toISOString(),
+      ends_at: new Date(endsAt).toISOString(),
+      is_recurring: isRecurring,
+      recurrence_cron: isRecurring ? cron : null,
+    }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['maintenance', deviceId] })
+      setShowForm(false); setName(''); setStartsAt(''); setEndsAt(''); setErrMsg('')
+    },
+    onError: (e: any) => setErrMsg(e?.response?.data?.detail ?? 'Failed to create window'),
+  })
+
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => deleteMaintenanceWindow(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['maintenance', deviceId] }); setConfirmDel(null) },
+  })
+
+  if (isLoading) return <p className="text-xs text-slate-400">Loading…</p>
+
+  return (
+    <div className="space-y-3">
+      {windows.length === 0 && !showForm && (
+        <p className="text-xs text-slate-400">No maintenance windows scheduled.</p>
+      )}
+
+      {windows.map(w => (
+        <div key={w.id} className={`rounded-lg border px-3 py-2 text-xs space-y-0.5 ${w.is_active ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}>
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-slate-700">{w.name}</span>
+            <div className="flex items-center gap-2">
+              {w.is_active && (
+                <span className="px-1.5 py-0.5 bg-amber-200 text-amber-800 rounded text-xs font-medium">Active</span>
+              )}
+              {w.is_recurring && (
+                <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-xs">Recurring</span>
+              )}
+              {confirmDel === w.id ? (
+                <>
+                  <button onClick={() => deleteMut.mutate(w.id)} className="text-red-600 hover:underline">Confirm</button>
+                  <button onClick={() => setConfirmDel(null)} className="text-slate-400 hover:underline">Cancel</button>
+                </>
+              ) : (
+                <button onClick={() => setConfirmDel(w.id)} className="text-slate-400 hover:text-red-600">Delete</button>
+              )}
+            </div>
+          </div>
+          {w.is_recurring
+            ? <p className="text-slate-400">Cron: <code>{w.recurrence_cron}</code> · duration {Math.round((new Date(w.ends_at).getTime() - new Date(w.starts_at).getTime()) / 60000)} min</p>
+            : <p className="text-slate-400">{fmt(w.starts_at)} → {fmt(w.ends_at)}</p>
+          }
+        </div>
+      ))}
+
+      {showForm ? (
+        <div className="rounded-lg border border-slate-200 p-3 space-y-3">
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1">Name</label>
+            <input value={name} onChange={e => setName(e.target.value)} placeholder="Scheduled maintenance"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Start</label>
+              <input type="datetime-local" value={startsAt} onChange={e => setStartsAt(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">End</label>
+              <input type="datetime-local" value={endsAt} onChange={e => setEndsAt(e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
+            <input type="checkbox" checked={isRecurring} onChange={e => setIsRecurring(e.target.checked)}
+              className="rounded border-slate-300 text-blue-600" />
+            Recurring
+          </label>
+          {isRecurring && (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Cron expression</label>
+              <input value={cron} onChange={e => setCron(e.target.value)} placeholder="0 2 * * 6"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              <p className="text-xs text-slate-400 mt-1">Standard 5-field cron. Start/end define the duration per occurrence.</p>
+            </div>
+          )}
+          {errMsg && <p className="text-xs text-red-600">{errMsg}</p>}
+          <div className="flex gap-2">
+            <button onClick={() => createMut.mutate()} disabled={!name || !startsAt || !endsAt || createMut.isPending}
+              className="flex-1 bg-blue-600 text-white text-sm rounded-lg py-2 hover:bg-blue-700 disabled:opacity-50 transition-colors">
+              {createMut.isPending ? 'Saving…' : 'Schedule'}
+            </button>
+            <button onClick={() => { setShowForm(false); setErrMsg('') }}
+              className="flex-1 text-sm text-slate-500 border border-slate-200 rounded-lg py-2 hover:bg-slate-50">
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setShowForm(true)}
+          className="w-full mt-1 border border-slate-300 text-slate-600 text-sm rounded-lg py-2 hover:bg-slate-50 transition-colors">
+          + Schedule downtime
+        </button>
+      )}
     </div>
   )
 }
@@ -417,7 +554,7 @@ export default function DeviceDetail() {
               </Section>
 
               <Section title="Maintenance">
-                <PlaceholderSection title="Maintenance windows" description="Schedule downtime to suppress alerts — coming soon" />
+                <MaintenanceSection deviceId={id!} />
               </Section>
 
               <Section title="Danger zone">
