@@ -104,9 +104,15 @@ async def test_smtp_settings(
         raise HTTPException(status_code=400, detail="SMTP is not configured")
 
     smtp_cfg = await _smtp_config_from_row(row)
+    recipient = smtp_cfg.get("from_addr") or smtp_cfg.get("user")
+    if not recipient:
+        raise HTTPException(status_code=400, detail="Set a From address before sending a test")
     subject, body_text = _build_test_email()
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _send_smtp, smtp_cfg, subject, body_text)
+    try:
+        await loop.run_in_executor(None, _send_smtp, smtp_cfg, [recipient], subject, body_text)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"SMTP error: {exc}") from exc
 
 
 async def _smtp_config_from_row(row: SystemSetting) -> dict:

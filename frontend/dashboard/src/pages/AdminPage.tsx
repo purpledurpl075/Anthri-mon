@@ -66,14 +66,14 @@ function SmtpTab() {
       password: password || null,
       from_addr: fromAddr, ssl,
     }),
-    onMutate: () => setStatus('saving'),
+    onMutate: () => { setStatus('saving'); setErrMsg('') },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['smtp-settings'] }); setStatus('saved'); setPassword('') },
     onError: (e: any) => { setStatus('error'); setErrMsg(e?.response?.data?.detail ?? 'Save failed') },
   })
 
   const test = useMutation({
     mutationFn: testSmtpSettings,
-    onMutate: () => setStatus('testing'),
+    onMutate: () => { setStatus('testing'); setErrMsg('') },
     onSuccess: () => setStatus('tested'),
     onError: (e: any) => { setStatus('test-error'); setErrMsg(e?.response?.data?.detail ?? 'Test failed') },
   })
