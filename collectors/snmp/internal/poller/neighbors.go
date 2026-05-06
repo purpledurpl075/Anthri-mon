@@ -273,7 +273,8 @@ func formatLLDPID(subtype int, b []byte) string {
 	return s
 }
 
-// parseLLDPCapabilities decodes the 2-byte BITS capability field.
+// parseLLDPCapabilities decodes the 2-byte BITS capability field (RFC 802.1AB).
+// BITS type is MSB-first: bit 0 = 0x80, bit 1 = 0x40, etc.
 func parseLLDPCapabilities(b []byte) []string {
 	if len(b) == 0 {
 		return nil
@@ -282,9 +283,14 @@ func parseLLDPCapabilities(b []byte) []string {
 		mask byte
 		name string
 	}{
-		{0x40, "other"}, {0x20, "repeater"}, {0x10, "bridge"},
-		{0x08, "wlanAccessPoint"}, {0x04, "router"},
-		{0x02, "telephone"}, {0x01, "docsisCableDevice"},
+		{0x80, "other"},
+		{0x40, "repeater"},
+		{0x20, "bridge"},
+		{0x10, "wlanAccessPoint"},
+		{0x08, "router"},
+		{0x04, "telephone"},
+		{0x02, "docsisCableDevice"},
+		{0x01, "stationOnly"},
 	}
 	var out []string
 	for _, cap := range caps {
