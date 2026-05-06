@@ -209,7 +209,7 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
               )}
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">
-                  Threshold {f.metric === 'interface_flap' ? '(state changes)' : '(%)'}
+                  {m.thresholdLabel || 'Threshold'}
                 </label>
                 <input type="number" value={f.threshold} onChange={e => set('threshold', e.target.value)}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
