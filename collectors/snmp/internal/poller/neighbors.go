@@ -40,12 +40,26 @@ func pollLLDPNS(s *client.Session, deviceID uuid.UUID, remBase, locBase, manBase
 	locPDUs, _ := s.BulkWalkAll(locBase)
 	manPDUs, _ := s.BulkWalkAll(manBase)
 
-	// portNum → local port description (lldpLocPortDesc, col 4)
+	// portNum → local port name.
+	// Col 4 = lldpLocPortDesc (ifName) — preferred.
+	// Col 3 = lldpLocPortId — fallback (used by ProCurve/Aruba which omit col 4).
 	portNames := make(map[int]string)
 	for _, pdu := range locPDUs {
 		col, idx := splitLLDPLocIndex(pdu.Name, locBase)
-		if col == 4 && idx > 0 {
-			portNames[idx] = client.PDUString(pdu)
+		if idx <= 0 {
+			continue
+		}
+		val := client.PDUString(pdu)
+		if val == "" {
+			continue
+		}
+		switch col {
+		case 4:
+			portNames[idx] = val // preferred — overwrite col 3 if already set
+		case 3:
+			if portNames[idx] == "" {
+				portNames[idx] = val // fallback only
+			}
 		}
 	}
 
