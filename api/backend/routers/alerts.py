@@ -134,7 +134,7 @@ async def create_alert_rule(
 ) -> AlertRuleRead:
     rule = AlertRule(
         tenant_id=current_user.tenant_id,
-        **body.model_dump(exclude_none=True),
+        **body.model_dump(mode='json', exclude_none=True),
     )
     db.add(rule)
     await db.commit()
@@ -162,7 +162,7 @@ async def update_alert_rule(
 ) -> AlertRuleRead:
     rule = await _get_rule(rule_id, current_user.tenant_id, db)
 
-    for field, value in body.model_dump(exclude_none=True).items():
+    for field, value in body.model_dump(mode='json', exclude_none=True).items():
         setattr(rule, field, value)
 
     await db.commit()
