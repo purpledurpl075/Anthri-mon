@@ -292,14 +292,12 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				log.Warn().Err(err).Msg("arp poll failed (non-fatal)")
 			} else {
 				result.ARPEntries = arp
-				log.Debug().Int("count", len(arp)).Str("device_id", dev.ID.String()).Msg("arp entries polled")
 			}
 
 			if macs, err := PollMACTable(session, dev.ID, ifByIndex); err != nil {
 				log.Warn().Err(err).Msg("mac poll failed (non-fatal)")
 			} else {
 				result.MACEntries = macs
-				log.Debug().Int("count", len(macs)).Str("device_id", dev.ID.String()).Msg("mac entries polled")
 			}
 
 			m.emit(ctx, log, result)
