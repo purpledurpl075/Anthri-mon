@@ -67,6 +67,16 @@ BUILTIN_TEMPLATES: list[dict] = [
             {"name": "Interface flapping",   "metric": "interface_flap", "condition": "gt", "threshold": 3, "duration_seconds": 300, "severity": "warning",  "stable_for_seconds": 120},
         ],
     },
+    {
+        "name": "Reachability & Reboot",
+        "description": "Catch devices that reboot faster than the SNMP stale threshold detects. "
+                       "Uptime < 5 min fires on the first health poll after a device comes back up, "
+                       "covering reboots that device_down would miss.",
+        "rules": [
+            {"name": "Device rebooted",      "metric": "uptime", "condition": "lt", "threshold": 300, "duration_seconds": 0, "severity": "warning",  "notify_on_resolve": True},
+            {"name": "Device unreachable",   "metric": "device_down", "condition": "eq", "threshold": None, "duration_seconds": 0, "severity": "critical"},
+        ],
+    },
 ]
 
 
