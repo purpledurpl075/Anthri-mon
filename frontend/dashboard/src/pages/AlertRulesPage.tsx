@@ -11,7 +11,7 @@ const METRICS = [
   { value: 'device_down',       label: 'Device unreachable',         hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
   { value: 'interface_down',    label: 'Interface down (admin up)',   hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
   { value: 'interface_flap',    label: 'Interface flapping',         hasThreshold: true,  conditions: [],            unit: 'changes', thresholdLabel: 'Changes in window', simple: true },
-  { value: 'uptime',            label: 'Device rebooted (low uptime)', hasThreshold: true, conditions: ['lt'],       unit: 's',    thresholdLabel: 'Uptime below (s)',   simple: false },
+  { value: 'uptime',            label: 'Device rebooted (low uptime)', hasThreshold: true, conditions: ['lt'],       unit: 's',    thresholdLabel: 'Uptime below (s)',   simple: true },
   { value: 'temperature',       label: 'Temperature sensor high',    hasThreshold: true,  conditions: ['gt'],        unit: '°C',   thresholdLabel: 'Threshold °C',       simple: false },
   { value: 'interface_errors',  label: 'Interface errors',           hasThreshold: true,  conditions: ['gt'],        unit: '',     thresholdLabel: 'Error count',        simple: false },
   { value: 'custom_oid',        label: 'Custom OID',                 hasThreshold: true,  conditions: ['gt','lt','eq'], unit: '', thresholdLabel: 'Threshold value',   simple: false },
