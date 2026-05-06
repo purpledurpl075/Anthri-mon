@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import AsyncSessionLocal
-from ..models.alert import Alert, AlertRule
+from ..models.alert import Alert, AlertRule, MaintenanceWindow
 from . import notify
 from .maintenance import device_in_maintenance, load_active_windows
 from .evaluators import (
@@ -143,6 +143,21 @@ class AlertEngine:
             except Exception as exc:
                 await db.rollback()
                 logger.error("rule_eval_error", rule_id=str(rule.id), error=str(exc))
+
+        await self._purge_expired_windows(db)
+
+    async def _purge_expired_windows(self, db: AsyncSession) -> None:
+        """Delete one-time maintenance windows that have passed their end time."""
+        now = datetime.now(timezone.utc)
+        expired = (await db.execute(
+            select(MaintenanceWindow).where(
+                MaintenanceWindow.is_recurring == False,  # noqa: E712
+                MaintenanceWindow.ends_at < now,
+            )
+        )).scalars().all()
+        for w in expired:
+            logger.info("maintenance_window_expired", id=str(w.id), name=w.name)
+            await db.delete(w)
 
     async def _evaluate_rule(self, db: AsyncSession, rule: AlertRule,
                               peer_rules: list[AlertRule] = [],
