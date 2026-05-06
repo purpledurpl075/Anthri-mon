@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchSmtpSettings, saveSmtpSettings, testSmtpSettings } from '../api/admin'
 import { fetchChannels, createChannel, updateChannel, deleteChannel, testChannel, type NotificationChannel } from '../api/channels'
@@ -48,18 +48,17 @@ function SmtpTab() {
   const [password, setPassword] = useState('')
   const [fromAddr, setFromAddr] = useState('')
   const [ssl, setSsl]           = useState(false)
-  const [loaded, setLoaded]     = useState(false)
   const [status, setStatus]     = useState<'idle' | 'saving' | 'saved' | 'error' | 'testing' | 'tested' | 'test-error'>('idle')
   const [errMsg, setErrMsg]     = useState('')
 
-  if (data && !loaded) {
+  useEffect(() => {
+    if (!data) return
     setHost(data.host)
     setPort(String(data.port))
     setUser(data.user)
     setFromAddr(data.from_addr)
     setSsl(data.ssl)
-    setLoaded(true)
-  }
+  }, [data])
 
   const save = useMutation({
     mutationFn: () => saveSmtpSettings({
@@ -339,6 +338,10 @@ type Tab = 'smtp' | 'channels'
 
 export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('smtp')
+
+  // Prefetch both queries on page mount so tab switches are instant
+  useQuery({ queryKey: ['smtp-settings'], queryFn: fetchSmtpSettings })
+  useQuery({ queryKey: ['channels'],      queryFn: fetchChannels })
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'smtp',     label: 'SMTP Server' },
