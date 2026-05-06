@@ -87,6 +87,16 @@ def _build_title(rule: AlertRule, breach: Breach) -> str:
     return f"{base}: {metric_labels.get(rule.metric, rule.metric)}"
 
 
+async def _safe_dispatch(alert: Alert, rule: AlertRule, db: AsyncSession,
+                         *, resolved: bool = False) -> None:
+    """Dispatch notifications without letting errors affect the DB transaction."""
+    try:
+        await notify.dispatch(alert, rule, db, resolved=resolved)
+    except Exception as exc:
+        logger.error("notify_dispatch_failed", alert_id=str(alert.id),
+                     rule=rule.name, error=str(exc))
+
+
 class AlertEngine:
     def __init__(self) -> None:
         self._breach_since: dict[str, datetime] = {}   # fp → breach start (duration gating)
@@ -281,7 +291,7 @@ class AlertEngine:
                 if not suppressed:
                     logger.info("alert_fired", rule=rule.name, device=breach.device_name,
                                 iface=breach.interface_name, severity=rule.severity)
-                    await notify.dispatch(alert, rule, db)
+                    await _safe_dispatch(alert, rule, db)
             elif existing.status == "suppressed" and breach.device_id not in suppressed_device_ids:
                 # Parent recovered — unsuppress
                 existing.status = "open"
@@ -318,7 +328,7 @@ class AlertEngine:
                     elapsed = (now - alert.last_notified_at).total_seconds()
                     if elapsed >= rule.renotify_seconds:
                         alert.last_notified_at = now
-                        await notify.dispatch(alert, rule, db)
+                        await _safe_dispatch(alert, rule, db)
                 continue
 
             # Condition cleared — start or check the stable clock
@@ -342,7 +352,7 @@ class AlertEngine:
                 )
             logger.info("alert_auto_resolved", alert_id=str(alert.id), rule=rule.name)
             if rule.notify_on_resolve:
-                await notify.dispatch(alert, rule, db, resolved=True)
+                await _safe_dispatch(alert, rule, db, resolved=True)
 
 
 _engine = AlertEngine()

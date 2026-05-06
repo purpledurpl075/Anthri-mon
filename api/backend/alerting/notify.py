@@ -25,9 +25,13 @@ _SMTP_KEY = "smtp"
 
 async def _load_smtp(db: AsyncSession) -> Optional[dict]:
     """Load and decrypt SMTP server config from system_settings."""
-    row = (await db.execute(
-        select(SystemSetting).where(SystemSetting.key == _SMTP_KEY)
-    )).scalar_one_or_none()
+    try:
+        row = (await db.execute(
+            select(SystemSetting).where(SystemSetting.key == _SMTP_KEY)
+        )).scalar_one_or_none()
+    except Exception:
+        # Table doesn't exist yet (migration pending) — treat as unconfigured.
+        return None
     if row is None or not row.value.get("host"):
         return None
     cfg = dict(row.value)
