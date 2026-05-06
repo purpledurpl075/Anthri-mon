@@ -1,4 +1,4 @@
-import { useState, useRef, useMemo, useCallback } from 'react'
+import React, { useState, useRef, useMemo, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ReactFlow, Controls, Background, MiniMap,
@@ -199,10 +199,15 @@ const isMacAddr = (s: string) => /^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(s)
 
 // ── React Flow custom nodes ───────────────────────────────────────────────────
 
+const centerHandle: React.CSSProperties = {
+  opacity: 0, width: 1, height: 1, minWidth: 1, minHeight: 1,
+  top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+}
+
 function CenterNode({ data }: NodeProps) {
   return (
     <div className="rounded-2xl bg-slate-800 border-2 border-slate-500 px-5 py-4 shadow-xl w-40 text-center">
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} style={centerHandle} />
       <div className="flex justify-center mb-2 text-slate-300"><IconSwitch /></div>
       <div className="text-xs font-bold text-white truncate">{data.label as string}</div>
       <div className="text-[10px] text-slate-400 mt-0.5">this device</div>
@@ -220,7 +225,7 @@ function NeighbourNode({ data }: NodeProps) {
   return (
     <div className="rounded-2xl bg-white border-2 shadow-md w-44 text-center"
       style={{ borderColor: color }}>
-      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <Handle type="target" position={Position.Left} style={centerHandle} />
       <div className="px-4 pt-4 pb-3">
         <div className="flex justify-center mb-2" style={{ color }}><DeviceIcon caps={n.caps} /></div>
         <div className="text-xs font-semibold text-slate-800 truncate">{displayLabel}</div>
