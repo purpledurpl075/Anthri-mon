@@ -76,6 +76,30 @@ class CDPNeighbor(Base):
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
 
+class ARPEntry(Base):
+    __tablename__ = "arp_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    ip_address: Mapped[str] = mapped_column(Text, nullable=False)
+    mac_address: Mapped[str] = mapped_column(Text, nullable=False)
+    interface_name: Mapped[Optional[str]] = mapped_column(Text)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False, default="dynamic")
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
+class MACEntry(Base):
+    __tablename__ = "mac_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    mac_address: Mapped[str] = mapped_column(Text, nullable=False)
+    port_name: Mapped[Optional[str]] = mapped_column(Text)
+    vlan_id: Mapped[Optional[int]] = mapped_column(Integer)
+    entry_type: Mapped[str] = mapped_column(Text, nullable=False, default="learned")
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
 class InterfaceStatusLog(Base):
     """Append-only log of interface up/down transitions; drives flap detection."""
     __tablename__ = "interface_status_log"

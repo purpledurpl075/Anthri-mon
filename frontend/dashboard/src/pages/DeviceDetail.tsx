@@ -7,7 +7,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceAddresses, type AddressEntry } from '../api/devices'
 import { fetchCredentials } from '../api/credentials'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
@@ -495,6 +495,102 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
   )
 }
 
+// ── Address table ─────────────────────────────────────────────────────────────
+
+function AddressesSection({ deviceId }: { deviceId: string }) {
+  const [search, setSearch]     = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'arp' | 'mac'>('all')
+  const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleSearch = (v: string) => {
+    setSearch(v)
+    if (searchRef.current) clearTimeout(searchRef.current)
+    searchRef.current = setTimeout(() => setDebouncedSearch(v), 300)
+  }
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['addresses', deviceId, debouncedSearch, typeFilter],
+    queryFn: () => fetchDeviceAddresses(deviceId, {
+      search: debouncedSearch || undefined,
+      type: typeFilter === 'all' ? undefined : typeFilter,
+      limit: 500,
+    }),
+    staleTime: 60_000,
+  })
+
+  const items = data?.items ?? []
+
+  const typeBadge = (e: AddressEntry) => (
+    <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded-full text-white ${
+      e.type === 'arp' ? 'bg-cyan-600' : 'bg-violet-600'
+    }`}>{e.type.toUpperCase()}</span>
+  )
+
+  return (
+    <div className="flex flex-col h-full space-y-3">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <svg className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-400" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          <input value={search} onChange={e => handleSearch(e.target.value)}
+            placeholder="Search MAC or IP…"
+            className="w-full pl-8 pr-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        </div>
+        <div className="flex rounded-lg border border-slate-200 overflow-hidden text-xs font-medium">
+          {(['all', 'arp', 'mac'] as const).map(t => (
+            <button key={t} onClick={() => setTypeFilter(t)}
+              className={`px-3 py-1.5 transition-colors ${
+                typeFilter === t ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
+              }`}>
+              {t.toUpperCase()}
+            </button>
+          ))}
+        </div>
+        {data && <span className="text-xs text-slate-400 shrink-0">{data.total} entries</span>}
+      </div>
+
+      {/* Table */}
+      {isLoading ? (
+        <p className="text-xs text-slate-400">Loading…</p>
+      ) : items.length === 0 ? (
+        <p className="text-xs text-slate-400">
+          {debouncedSearch ? 'No matches.' : 'No address data yet — waiting for a poll cycle.'}
+        </p>
+      ) : (
+        <div className="overflow-auto rounded-lg border border-slate-200" style={{ maxHeight: 520 }}>
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium text-slate-600 w-12">Type</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">MAC</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">IP</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">Port</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600 w-16">VLAN</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600 w-20">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {items.map((e, i) => (
+                <tr key={i} className="hover:bg-slate-50">
+                  <td className="px-3 py-2">{typeBadge(e)}</td>
+                  <td className="px-3 py-2 font-mono text-slate-700">{e.mac}</td>
+                  <td className="px-3 py-2 font-mono text-slate-600">{e.ip ?? <span className="text-slate-300">—</span>}</td>
+                  <td className="px-3 py-2 text-slate-600">{e.port ?? <span className="text-slate-300">—</span>}</td>
+                  <td className="px-3 py-2 text-slate-500">{e.vlan ?? <span className="text-slate-300">—</span>}</td>
+                  <td className="px-3 py-2 text-slate-400">{e.entry_type}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Credential assignment ─────────────────────────────────────────────────────
 
 const CRED_TYPE_LABEL: Record<string, string> = {
@@ -783,7 +879,7 @@ export default function DeviceDetail() {
   const queryClient = useQueryClient()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [tab, setTab] = useState<'interfaces' | 'neighbours'>('interfaces')
+  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses'>('interfaces')
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(id!),
@@ -1204,14 +1300,14 @@ export default function DeviceDetail() {
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="border-b border-slate-100 px-5 flex items-center justify-between">
             <nav className="flex gap-1 -mb-px">
-              {(['interfaces', 'neighbours'] as const).map(t => (
+              {(['interfaces', 'neighbours', 'addresses'] as const).map(t => (
                 <button key={t} onClick={() => setTab(t)}
                   className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors capitalize ${
                     tab === t
                       ? 'border-blue-600 text-blue-600'
                       : 'border-transparent text-slate-500 hover:text-slate-700'
                   }`}>
-                  {t === 'interfaces' ? `Interfaces${totalIfaces ? ` (${totalIfaces})` : ''}` : 'Neighbours'}
+                  {t === 'interfaces' ? `Interfaces${totalIfaces ? ` (${totalIfaces})` : ''}` : t === 'neighbours' ? 'Neighbours' : 'Addresses'}
                 </button>
               ))}
             </nav>
@@ -1255,6 +1351,12 @@ export default function DeviceDetail() {
           {tab === 'neighbours' && (
             <div className="p-5">
               <NeighboursSection deviceId={id!} deviceName={device?.fqdn ?? device?.hostname ?? ''} />
+            </div>
+          )}
+
+          {tab === 'addresses' && (
+            <div className="p-5">
+              <AddressesSection deviceId={id!} />
             </div>
           )}
         </div>

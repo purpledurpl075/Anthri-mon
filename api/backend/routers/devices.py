@@ -15,7 +15,7 @@ from ..models.alert import Alert
 from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
 from ..models.health import DeviceHealthLatest
-from ..models.interface import CDPNeighbor, Interface, LLDPNeighbor
+from ..models.interface import ARPEntry, CDPNeighbor, Interface, LLDPNeighbor, MACEntry
 from ..models.tenant import User
 from ..schemas.alert import AlertRead
 from ..schemas.common import PaginatedResponse
@@ -331,6 +331,68 @@ async def unlink_device_credential(
         raise HTTPException(status_code=404, detail="Credential not assigned to this device")
     await db.delete(link)
     await db.commit()
+
+
+# ── Address table ─────────────────────────────────────────────────────────────
+
+@router.get("/{device_id}/addresses", summary="ARP and MAC address table")
+async def get_addresses(
+    device_id: uuid.UUID,
+    search: Optional[str] = Query(default=None, description="Partial MAC or IP"),
+    type: Optional[str] = Query(default=None, description="arp | mac"),
+    limit: int = Query(default=500, ge=1, le=5000),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from sqlalchemy import or_, cast, String, func as sqlfunc
+
+    await _assert_device_visible(device_id, current_user, db)
+
+    items: list[dict] = []
+
+    if not type or type == "arp":
+        q = select(ARPEntry).where(ARPEntry.device_id == device_id)
+        if search:
+            q = q.where(or_(
+                cast(ARPEntry.ip_address, String).ilike(f"%{search}%"),
+                cast(ARPEntry.mac_address, String).ilike(f"%{search}%"),
+            ))
+        rows = (await db.execute(q.order_by(ARPEntry.ip_address))).scalars().all()
+        for r in rows:
+            items.append({
+                "type": "arp",
+                "ip": str(r.ip_address),
+                "mac": str(r.mac_address),
+                "port": r.interface_name,
+                "vlan": None,
+                "entry_type": r.entry_type,
+                "updated_at": r.updated_at.isoformat(),
+            })
+
+    if not type or type == "mac":
+        q = select(MACEntry).where(MACEntry.device_id == device_id)
+        if search:
+            q = q.where(cast(MACEntry.mac_address, String).ilike(f"%{search}%"))
+        rows = (await db.execute(q.order_by(MACEntry.mac_address))).scalars().all()
+        for r in rows:
+            items.append({
+                "type": "mac",
+                "ip": None,
+                "mac": str(r.mac_address),
+                "port": r.port_name,
+                "vlan": r.vlan_id,
+                "entry_type": r.entry_type,
+                "updated_at": r.updated_at.isoformat(),
+            })
+
+    total = len(items)
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": items[offset: offset + limit],
+    }
 
 
 # ── Neighbours ────────────────────────────────────────────────────────────────

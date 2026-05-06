@@ -154,6 +154,20 @@ const (
 	FgHwSensorEntAlarmStatus = "1.3.6.1.4.1.12356.101.4.4.2.1.4"
 )
 
+// ── IP-MIB: ARP table (RFC 1213 / RFC 4293) ──────────────────────────────────
+// ipNetToMediaTable — maps IP addresses to MAC addresses per interface.
+// Indexed by (ifIndex, ipAddress-as-4-octets).
+const ARPTable = "1.3.6.1.2.1.4.22.1"
+
+// ── BRIDGE-MIB (RFC 4188) ────────────────────────────────────────────────────
+// dot1dTpFdbTable — MAC forwarding database: MAC → bridge port.
+// Indexed by MAC address as 6 decimal octets.
+const MACFdbTable = "1.3.6.1.2.1.17.4.3.1"
+
+// dot1dBasePortTable — maps bridge port number → ifIndex.
+// Indexed by bridge port number.
+const MACPortTable = "1.3.6.1.2.1.17.1.4.1"
+
 // ── LLDP-MIB (IEEE 802.1AB) ──────────────────────────────────────────────────
 // Two OID namespaces exist: IEEE (1.0.8802) used by most enterprise gear,
 // and IETF (1.3.6.1.2.1.111) used by some Linux/open-source agents.

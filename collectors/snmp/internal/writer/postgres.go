@@ -71,6 +71,18 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 		}
 	}
 
+	if len(result.ARPEntries) > 0 {
+		if err := w.upsertARPEntries(ctx, result.DeviceID, result.ARPEntries); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert arp entries failed")
+		}
+	}
+
+	if len(result.MACEntries) > 0 {
+		if err := w.upsertMACEntries(ctx, result.DeviceID, result.MACEntries); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert mac entries failed")
+		}
+	}
+
 	if len(result.LLDPNeighbors) > 0 {
 		if err := w.upsertLLDPNeighbors(ctx, result.DeviceID, result.LLDPNeighbors); err != nil {
 			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert lldp neighbors failed")
@@ -256,6 +268,53 @@ func (w *PostgresWriter) upsertHealth(ctx context.Context, h *model.HealthResult
 		tempsJSON, h.UptimeSecs,
 	)
 	return err
+}
+
+// ── Address tables ────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertARPEntries(ctx context.Context, deviceID uuid.UUID, entries []*model.ARPEntry) error {
+	batch := &pgx.Batch{}
+	for _, e := range entries {
+		batch.Queue(`
+			INSERT INTO arp_entries (device_id, ip_address, mac_address, interface_name, entry_type)
+			VALUES ($1, $2::inet, $3::macaddr, $4, $5)
+			ON CONFLICT (device_id, ip_address) DO UPDATE SET
+				mac_address    = EXCLUDED.mac_address,
+				interface_name = EXCLUDED.interface_name,
+				entry_type     = EXCLUDED.entry_type,
+				updated_at     = NOW()
+		`, deviceID, e.IPAddress, e.MACAddress, nullStr(e.InterfaceName), e.EntryType)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("arp entry batch exec error")
+		}
+	}
+	return nil
+}
+
+func (w *PostgresWriter) upsertMACEntries(ctx context.Context, deviceID uuid.UUID, entries []*model.MACEntry) error {
+	batch := &pgx.Batch{}
+	for _, e := range entries {
+		batch.Queue(`
+			INSERT INTO mac_entries (device_id, mac_address, port_name, entry_type)
+			VALUES ($1, $2::macaddr, $3, $4)
+			ON CONFLICT (device_id, mac_address) DO UPDATE SET
+				port_name  = EXCLUDED.port_name,
+				entry_type = EXCLUDED.entry_type,
+				updated_at = NOW()
+		`, deviceID, e.MACAddress, nullStr(e.PortName), e.EntryType)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("mac entry batch exec error")
+		}
+	}
+	return nil
 }
 
 // ── Neighbours ────────────────────────────────────────────────────────────────

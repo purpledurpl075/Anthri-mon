@@ -83,3 +83,23 @@ export interface NeighboursResponse {
 
 export const fetchDeviceNeighbours = (id: string) =>
   api.get<NeighboursResponse>(`/devices/${id}/neighbours`).then(r => r.data)
+
+export interface AddressEntry {
+  type: 'arp' | 'mac'
+  ip: string | null
+  mac: string
+  port: string | null
+  vlan: number | null
+  entry_type: string
+  updated_at: string
+}
+
+export interface AddressesResponse {
+  total: number
+  limit: number
+  offset: number
+  items: AddressEntry[]
+}
+
+export const fetchDeviceAddresses = (id: string, params?: { search?: string; type?: string; limit?: number; offset?: number }) =>
+  api.get<AddressesResponse>(`/devices/${id}/addresses`, { params }).then(r => r.data)

@@ -93,6 +93,23 @@ type HealthResult struct {
 	PollTime    time.Time
 }
 
+// ARPEntry is one row from the device's ARP table (ipNetToMediaTable).
+type ARPEntry struct {
+	DeviceID      uuid.UUID
+	IPAddress     string // dotted-decimal IPv4
+	MACAddress    string // "aa:bb:cc:dd:ee:ff"
+	InterfaceName string // resolved from ifIndex, "" if unknown
+	EntryType     string // "dynamic" | "static" | "other"
+}
+
+// MACEntry is one row from the device's MAC forwarding table (dot1dTpFdbTable).
+type MACEntry struct {
+	DeviceID   uuid.UUID
+	MACAddress string // "aa:bb:cc:dd:ee:ff"
+	PortName   string // resolved from bridge port → ifIndex → ifName
+	EntryType  string // "learned" | "self" | "static" | "other"
+}
+
 // LLDPNeighbor is a single entry from the lldpRemTable for one device.
 type LLDPNeighbor struct {
 	DeviceID   uuid.UUID

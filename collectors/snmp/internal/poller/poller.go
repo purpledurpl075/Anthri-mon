@@ -24,6 +24,8 @@ type PollResult struct {
 	Health        *model.HealthResult      // nil if health poll not run this cycle
 	LLDPNeighbors []*model.LLDPNeighbor   // nil if not polled this cycle
 	CDPNeighbors  []*model.CDPNeighbor    // nil if not polled this cycle
+	ARPEntries    []*model.ARPEntry       // nil if not polled this cycle
+	MACEntries    []*model.MACEntry       // nil if not polled this cycle
 }
 
 // ResultHandler is a callback invoked after each completed poll cycle.
@@ -171,6 +173,7 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 	var session *client.Session
 	var currentProfile *vendor.Profile
 	var lastSysUpTime uint32
+	ifByIndex := make(map[int]string) // shared between ifaceTicker and healthTicker
 
 	// Stagger startup across the poll interval to avoid thundering herd on launch.
 	stagger := time.Duration(rand.Int63n(int64(pollInterval)))
@@ -263,8 +266,8 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 			}
 			result.Interfaces = ifaces
 
-			// Build ifIndex → ifName map for CDP (uses ifIndex as key).
-			ifByIndex := make(map[int]string, len(ifaces))
+			// Refresh the shared ifIndex → ifName map used by address/CDP pollers.
+			ifByIndex = make(map[int]string, len(ifaces))
 			for _, iface := range ifaces {
 				name := iface.IfName
 				if name == "" {
@@ -297,7 +300,21 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				}
 				continue
 			}
-			m.emit(ctx, log, &PollResult{DeviceID: dev.ID, Health: health})
+			healthResult := &PollResult{DeviceID: dev.ID, Health: health}
+
+			// Address tables polled on health cycle (less frequent than interfaces).
+			if arp, err := PollARPTable(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("arp poll failed (non-fatal)")
+			} else {
+				healthResult.ARPEntries = arp
+			}
+			if macs, err := PollMACTable(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("mac poll failed (non-fatal)")
+			} else {
+				healthResult.MACEntries = macs
+			}
+
+			m.emit(ctx, log, healthResult)
 		}
 	}
 }
