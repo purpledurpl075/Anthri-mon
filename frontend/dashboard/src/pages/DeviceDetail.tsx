@@ -476,6 +476,7 @@ export default function DeviceDetail() {
   const queryClient = useQueryClient()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [tab, setTab] = useState<'interfaces' | 'neighbours'>('interfaces')
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(id!),
@@ -773,10 +774,6 @@ export default function DeviceDetail() {
                 )}
               </Section>
 
-              <Section title="Neighbours">
-                <NeighboursSection deviceId={id!} />
-              </Section>
-
               <Section title="Credentials">
                 <CredentialSection deviceId={id!} />
               </Section>
@@ -896,42 +893,61 @@ export default function DeviceDetail() {
           </div>
         </div>
 
-        {/* Interface table */}
+        {/* Tabbed panel: Interfaces / Neighbours */}
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800">Interfaces</h3>
-            <span className="text-xs text-slate-400">{totalIfaces} total</span>
+          <div className="border-b border-slate-100 px-5 flex items-center justify-between">
+            <nav className="flex gap-1 -mb-px">
+              {(['interfaces', 'neighbours'] as const).map(t => (
+                <button key={t} onClick={() => setTab(t)}
+                  className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors capitalize ${
+                    tab === t
+                      ? 'border-blue-600 text-blue-600'
+                      : 'border-transparent text-slate-500 hover:text-slate-700'
+                  }`}>
+                  {t === 'interfaces' ? `Interfaces${totalIfaces ? ` (${totalIfaces})` : ''}` : 'Neighbours'}
+                </button>
+              ))}
+            </nav>
           </div>
-          {ifaceLoading ? (
-            <div className="p-6 text-slate-400 text-sm">Loading interfaces…</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-100">
-                    <th className="text-left px-4 py-2.5 font-medium text-slate-600">Name</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-slate-600">Description</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-slate-600">Type</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-slate-600">Speed</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-slate-600">Admin</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-slate-600">Oper</th>
-                    <th className="text-left px-4 py-2.5 font-medium text-slate-600">MAC</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {(interfaces ?? []).map((iface) => (
-                    <tr key={iface.id} className="hover:bg-slate-50">
-                      <td className="px-4 py-2 font-medium text-slate-700">{iface.name}</td>
-                      <td className="px-4 py-2 text-slate-500 max-w-[200px] truncate">{iface.description ?? '—'}</td>
-                      <td className="px-4 py-2 text-slate-500 text-xs">{iface.if_type ?? '—'}</td>
-                      <td className="px-4 py-2 text-slate-600">{formatSpeed(iface.speed_bps)}</td>
-                      <td className="px-4 py-2"><StatusBadge status={iface.admin_status} /></td>
-                      <td className="px-4 py-2"><StatusBadge status={iface.oper_status} /></td>
-                      <td className="px-4 py-2 font-mono text-xs text-slate-400">{iface.mac_address ?? '—'}</td>
+
+          {tab === 'interfaces' && (
+            ifaceLoading ? (
+              <div className="p-6 text-slate-400 text-sm">Loading interfaces…</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-100">
+                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">Name</th>
+                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">Description</th>
+                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">Type</th>
+                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">Speed</th>
+                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">Admin</th>
+                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">Oper</th>
+                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">MAC</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {(interfaces ?? []).map((iface) => (
+                      <tr key={iface.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2 font-medium text-slate-700">{iface.name}</td>
+                        <td className="px-4 py-2 text-slate-500 max-w-[200px] truncate">{iface.description ?? '—'}</td>
+                        <td className="px-4 py-2 text-slate-500 text-xs">{iface.if_type ?? '—'}</td>
+                        <td className="px-4 py-2 text-slate-600">{formatSpeed(iface.speed_bps)}</td>
+                        <td className="px-4 py-2"><StatusBadge status={iface.admin_status} /></td>
+                        <td className="px-4 py-2"><StatusBadge status={iface.oper_status} /></td>
+                        <td className="px-4 py-2 font-mono text-xs text-slate-400">{iface.mac_address ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
+          )}
+
+          {tab === 'neighbours' && (
+            <div className="p-5">
+              <NeighboursSection deviceId={id!} />
             </div>
           )}
         </div>
