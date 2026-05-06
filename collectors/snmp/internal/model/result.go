@@ -93,6 +93,18 @@ type HealthResult struct {
 	PollTime    time.Time
 }
 
+// OSPFNeighbour is one row from ospfNbrTable for a device.
+type OSPFNeighbour struct {
+	DeviceID      uuid.UUID
+	NeighbourIP   string // ospfNbrIpAddr (dotted decimal)
+	RouterID      string // ospfNbrRtrId
+	State         string // "full" | "loading" | "exchange" | "init" | "down" etc.
+	Priority      int    // ospfNbrPriority
+	Events        int64  // ospfNbrEvents (state-change counter)
+	Area          string // from ospfIfTable, "" if unavailable
+	InterfaceName string // resolved from ospfIfTable → ifIndex → ifName
+}
+
 // ARPEntry is one row from the device's ARP table (ipNetToMediaTable).
 type ARPEntry struct {
 	DeviceID      uuid.UUID

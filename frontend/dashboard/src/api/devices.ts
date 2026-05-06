@@ -84,6 +84,20 @@ export interface NeighboursResponse {
 export const fetchDeviceNeighbours = (id: string) =>
   api.get<NeighboursResponse>(`/devices/${id}/neighbours`).then(r => r.data)
 
+export interface OSPFNeighbourEntry {
+  neighbour_ip: string | null
+  router_id: string | null
+  state: string
+  area: string | null
+  interface_name: string | null
+  priority: number | null
+  last_state_change: string | null
+  updated_at: string
+}
+
+export const fetchDeviceOSPF = (id: string) =>
+  api.get<OSPFNeighbourEntry[]>(`/devices/${id}/ospf`).then(r => r.data)
+
 export interface AddressEntry {
   type: 'arp' | 'mac'
   ip: string | null

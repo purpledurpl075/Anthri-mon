@@ -7,7 +7,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceAddresses, type AddressEntry } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, type AddressEntry } from '../api/devices'
 import { fetchCredentials } from '../api/credentials'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
@@ -389,7 +389,13 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
 
   const lldp = data?.lldp ?? []
   const cdp  = data?.cdp  ?? []
-  const total = lldp.length + cdp.length
+
+  const { data: ospfData = [] } = useQuery({
+    queryKey: ['ospf', deviceId],
+    queryFn: () => fetchDeviceOSPF(deviceId),
+    staleTime: 30_000,
+  })
+  const total = lldp.length + cdp.length + ospfData.length
 
   // Merged node list for the map — deduplicate by remote name
   const topoNodes: TopoNode[] = [
@@ -487,6 +493,34 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+          {ospfData.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">OSPF</p>
+              <div className="space-y-1.5">
+                {ospfData.map((n, i) => {
+                  const isFull = n.state === 'full'
+                  return (
+                    <div key={i} className={`rounded-lg border px-3 py-2 text-xs ${isFull ? 'border-green-200 bg-green-50' : 'border-amber-200 bg-amber-50'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={`font-semibold px-1.5 py-0.5 rounded text-white text-[10px] ${isFull ? 'bg-green-600' : 'bg-amber-500'}`}>
+                          {n.state.toUpperCase().replace('_', '-')}
+                        </span>
+                        <span className="font-mono text-slate-700 truncate">{n.router_id ?? n.neighbour_ip ?? '—'}</span>
+                        {n.neighbour_ip && n.router_id && (
+                          <span className="font-mono text-slate-400 shrink-0">{n.neighbour_ip}</span>
+                        )}
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
+                        {n.area && <span>area {n.area}</span>}
+                        {n.interface_name && <span>{n.interface_name}</span>}
+                        {n.last_state_change && <span>changed {new Date(n.last_state_change).toLocaleString()}</span>}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )}

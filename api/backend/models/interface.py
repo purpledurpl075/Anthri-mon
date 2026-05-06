@@ -76,6 +76,23 @@ class CDPNeighbor(Base):
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
 
+class OSPFNeighbour(Base):
+    __tablename__ = "ospf_neighbors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    vrf: Mapped[str] = mapped_column(Text, nullable=False, default="default")
+    neighbor_router_id: Mapped[Optional[str]] = mapped_column(Text)
+    neighbor_ip: Mapped[Optional[str]] = mapped_column(Text)
+    interface_name: Mapped[Optional[str]] = mapped_column(Text)
+    area: Mapped[Optional[str]] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
+    priority: Mapped[Optional[int]] = mapped_column(Integer)
+    uptime_seconds: Mapped[Optional[int]] = mapped_column(BigInteger)
+    last_state_change: Mapped[Optional[datetime]] = mapped_column()
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
 class ARPEntry(Base):
     __tablename__ = "arp_entries"
 

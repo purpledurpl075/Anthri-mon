@@ -15,7 +15,7 @@ from ..models.alert import Alert
 from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
 from ..models.health import DeviceHealthLatest
-from ..models.interface import ARPEntry, CDPNeighbor, Interface, LLDPNeighbor, MACEntry
+from ..models.interface import ARPEntry, CDPNeighbor, Interface, LLDPNeighbor, MACEntry, OSPFNeighbour
 from ..models.tenant import User
 from ..schemas.alert import AlertRead
 from ..schemas.common import PaginatedResponse
@@ -457,6 +457,35 @@ async def get_addresses(
         "offset": offset,
         "items": items[offset: offset + limit],
     }
+
+
+# ── OSPF ──────────────────────────────────────────────────────────────────────
+
+@router.get("/{device_id}/ospf", summary="OSPF neighbour state")
+async def get_ospf_neighbours(
+    device_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _assert_device_visible(device_id, current_user, db)
+    rows = (await db.execute(
+        select(OSPFNeighbour)
+        .where(OSPFNeighbour.device_id == device_id)
+        .order_by(OSPFNeighbour.neighbor_router_id)
+    )).scalars().all()
+    return [
+        {
+            "neighbour_ip":    str(r.neighbor_ip) if r.neighbor_ip else None,
+            "router_id":       str(r.neighbor_router_id) if r.neighbor_router_id else None,
+            "state":           r.state,
+            "area":            r.area,
+            "interface_name":  r.interface_name,
+            "priority":        r.priority,
+            "last_state_change": r.last_state_change.isoformat() if r.last_state_change else None,
+            "updated_at":      r.updated_at.isoformat(),
+        }
+        for r in rows
+    ]
 
 
 # ── Neighbours ────────────────────────────────────────────────────────────────

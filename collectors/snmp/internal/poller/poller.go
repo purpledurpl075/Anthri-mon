@@ -22,10 +22,11 @@ type PollResult struct {
 	SysInfo       *model.DeviceInfo        // nil if not yet polled or failed
 	Interfaces    []*model.InterfaceResult
 	Health        *model.HealthResult      // nil if health poll not run this cycle
-	LLDPNeighbors []*model.LLDPNeighbor   // nil if not polled this cycle
-	CDPNeighbors  []*model.CDPNeighbor    // nil if not polled this cycle
-	ARPEntries    []*model.ARPEntry       // nil if not polled this cycle
-	MACEntries    []*model.MACEntry       // nil if not polled this cycle
+	LLDPNeighbors  []*model.LLDPNeighbor   // nil if not polled this cycle
+	CDPNeighbors   []*model.CDPNeighbor    // nil if not polled this cycle
+	OSPFNeighbours []*model.OSPFNeighbour  // nil if not polled this cycle
+	ARPEntries     []*model.ARPEntry       // nil if not polled this cycle
+	MACEntries     []*model.MACEntry       // nil if not polled this cycle
 }
 
 // ResultHandler is a callback invoked after each completed poll cycle.
@@ -286,6 +287,12 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				log.Warn().Err(err).Msg("cdp poll failed (non-fatal)")
 			} else {
 				result.CDPNeighbors = cdp
+			}
+
+			if ospf, err := PollOSPFNeighbours(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("ospf poll failed (non-fatal)")
+			} else if len(ospf) > 0 {
+				result.OSPFNeighbours = ospf
 			}
 
 			if arp, err := PollARPTable(session, dev.ID, ifByIndex); err != nil {

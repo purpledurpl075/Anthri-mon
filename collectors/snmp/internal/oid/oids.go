@@ -154,6 +154,15 @@ const (
 	FgHwSensorEntAlarmStatus = "1.3.6.1.4.1.12356.101.4.4.2.1.4"
 )
 
+// ── OSPF-MIB (RFC 1850) ───────────────────────────────────────────────────────
+// ospfNbrTable: one row per OSPF neighbour relationship.
+// Indexed by (ospfNbrIpAddr, ospfNbrAddressLessIndex).
+const OSPFNbrTable = "1.3.6.1.2.1.14.10.1"
+
+// ospfIfTable: OSPF interface config, used to resolve area IDs.
+// Indexed by (ospfIfIpAddress, ospfIfAddressLessIf).
+const OSPFIfTable = "1.3.6.1.2.1.14.7.1"
+
 // ── IP-MIB: ARP table (RFC 1213 / RFC 4293) ──────────────────────────────────
 // ipNetToMediaTable — maps IP addresses to MAC addresses per interface.
 // Indexed by (ifIndex, ipAddress-as-4-octets).

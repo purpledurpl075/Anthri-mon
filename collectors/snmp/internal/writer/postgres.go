@@ -72,6 +72,12 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 		}
 	}
 
+	if len(result.OSPFNeighbours) > 0 {
+		if err := w.upsertOSPFNeighbours(ctx, result.DeviceID, result.OSPFNeighbours); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert ospf neighbours failed")
+		}
+	}
+
 	if len(result.ARPEntries) > 0 {
 		if err := w.upsertARPEntries(ctx, result.DeviceID, result.ARPEntries); err != nil {
 			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert arp entries failed")
@@ -269,6 +275,46 @@ func (w *PostgresWriter) upsertHealth(ctx context.Context, h *model.HealthResult
 		tempsJSON, h.UptimeSecs,
 	)
 	return err
+}
+
+// ── OSPF ──────────────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertOSPFNeighbours(ctx context.Context, deviceID uuid.UUID, neighbours []*model.OSPFNeighbour) error {
+	batch := &pgx.Batch{}
+	for _, n := range neighbours {
+		batch.Queue(`
+			INSERT INTO ospf_neighbors (
+				device_id, neighbor_router_id, neighbor_ip,
+				interface_name, area, state, priority, updated_at
+			) VALUES (
+				$1, $2::inet, $3::inet,
+				$4, $5, $6::ospf_neighbor_state, $7, NOW()
+			)
+			ON CONFLICT (device_id, vrf, neighbor_router_id, interface_name) DO UPDATE SET
+				neighbor_ip    = EXCLUDED.neighbor_ip,
+				area           = EXCLUDED.area,
+				state          = EXCLUDED.state,
+				priority       = EXCLUDED.priority,
+				last_state_change = CASE
+					WHEN ospf_neighbors.state != EXCLUDED.state THEN NOW()
+					ELSE ospf_neighbors.last_state_change
+				END,
+				updated_at     = NOW()
+		`,
+			deviceID,
+			nullStr(n.RouterID), nullStr(n.NeighbourIP),
+			nullStr(n.InterfaceName), nullStr(n.Area),
+			n.State, n.Priority,
+		)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("ospf neighbour batch exec error")
+		}
+	}
+	return nil
 }
 
 // ── Address tables ────────────────────────────────────────────────────────────
