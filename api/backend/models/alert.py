@@ -22,8 +22,11 @@ class NotificationChannel(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    # "email" | "slack" | "webhook" | "pagerduty" | "teams"
-    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    type: Mapped[str] = mapped_column(
+        PgEnum("email", "slack", "webhook", "pagerduty", "teams",
+               name="notification_type", create_type=False),
+        nullable=False,
+    )
     config: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
