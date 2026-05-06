@@ -1,5 +1,11 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  ReactFlow, Controls, Background, MiniMap,
+  useNodesState, useEdgesState, Handle, Position,
+  type NodeProps, type Node, type Edge,
+} from '@xyflow/react'
+import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours } from '../api/devices'
 import { fetchCredentials } from '../api/credentials'
@@ -133,86 +139,167 @@ interface TopoNode {
   protocol: 'lldp' | 'cdp'
 }
 
-function NeighbourMap({ deviceName, nodes }: { deviceName: string; nodes: TopoNode[] }) {
-  const [hovered, setHovered] = useState<string | null>(null)
-  const W = 760, H = 400
-  const cx = W / 2, cy = H / 2
-  const radius = Math.min(160, 60 + nodes.length * 14)
+// ── React Flow custom nodes ───────────────────────────────────────────────────
 
-  const trunc = (s: string, n: number) => s.length > n ? s.slice(0, n - 1) + '…' : s
+function CenterNode({ data }: NodeProps) {
+  return (
+    <div className="rounded-xl bg-slate-800 border-2 border-slate-600 px-4 py-3 shadow-lg min-w-[110px] text-center">
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
+      <div className="text-xs font-bold text-white truncate max-w-[140px]">{data.label as string}</div>
+      <div className="text-[10px] text-slate-400 mt-0.5">this device</div>
+    </div>
+  )
+}
 
-  if (nodes.length === 0) {
+function NeighbourNode({ data }: NodeProps) {
+  const n = data as unknown as TopoNode
+  const color = nodeColor(n.caps)
+  const icon = isRouter(n.caps) && !isSwitch(n.caps) ? 'R' : isSwitch(n.caps) ? 'SW' : isAP(n.caps) ? 'AP' : isPhone(n.caps) ? 'T' : '?'
+  return (
+    <div className="rounded-xl bg-white border-2 shadow-sm px-3 py-2 min-w-[110px] text-center"
+      style={{ borderColor: color }}>
+      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
+      <div className="text-xs font-bold mb-0.5" style={{ color }}>{icon}</div>
+      <div className="text-xs font-semibold text-slate-700 truncate max-w-[130px]">{n.label}</div>
+      {n.ip && <div className="text-[10px] text-slate-400 font-mono mt-0.5">{n.ip}</div>}
+      <div className="text-[10px] mt-1 px-1.5 py-0.5 rounded-full inline-block text-white font-medium"
+        style={{ backgroundColor: n.protocol === 'lldp' ? '#0891b2' : '#7c3aed' }}>
+        {n.protocol.toUpperCase()}
+      </div>
+    </div>
+  )
+}
+
+const NODE_TYPES = { center: CenterNode, neighbour: NeighbourNode }
+
+// ── Topology map ──────────────────────────────────────────────────────────────
+
+function NeighbourMap({ deviceName, nodes: topoNodes }: { deviceName: string; nodes: TopoNode[] }) {
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
+  const [hideProtocol, setHideProtocol] = useState<Set<string>>(new Set())
+  const [hideCaps, setHideCaps] = useState<Set<string>>(new Set())
+
+  const toggleKey    = (k: string) => setHiddenKeys(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
+  const toggleProto  = (p: string) => setHideProtocol(s => { const n = new Set(s); n.has(p) ? n.delete(p) : n.add(p); return n })
+  const toggleCapCat = (c: string) => setHideCaps(s => { const n = new Set(s); n.has(c) ? n.delete(c) : n.add(c); return n })
+
+  const capCategory = (caps: string[]) =>
+    isRouter(caps) && !isSwitch(caps) ? 'router' : isSwitch(caps) ? 'switch' : isAP(caps) ? 'ap' : 'other'
+
+  const isVisible = (n: TopoNode) =>
+    !hiddenKeys.has(n.key) &&
+    !hideProtocol.has(n.protocol) &&
+    !hideCaps.has(capCategory(n.caps))
+
+  // Radial layout — enough spacing between nodes
+  const radius = Math.max(280, (topoNodes.length * 130) / (2 * Math.PI))
+
+  const rfNodes: Node[] = useMemo(() => [
+    { id: '__center__', type: 'center', position: { x: 0, y: 0 }, data: { label: deviceName }, draggable: true },
+    ...topoNodes.map((n, i) => {
+      const angle = (i / topoNodes.length) * 2 * Math.PI - Math.PI / 2
+      return {
+        id: n.key,
+        type: 'neighbour',
+        position: { x: Math.round(radius * Math.cos(angle)), y: Math.round(radius * Math.sin(angle)) },
+        data: n as unknown as Record<string, unknown>,
+        hidden: !isVisible(n),
+        draggable: true,
+      }
+    }),
+  ], [topoNodes, deviceName, hiddenKeys, hideProtocol, hideCaps])
+
+  const rfEdges: Edge[] = useMemo(() => topoNodes.map(n => ({
+    id: `e-${n.key}`,
+    source: '__center__',
+    target: n.key,
+    label: n.remotePort ? `${n.localPort} → ${n.remotePort}` : n.localPort,
+    labelStyle: { fontSize: 10, fill: '#94a3b8' },
+    labelBgStyle: { fill: 'white', fillOpacity: 0.8 },
+    style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
+    hidden: !isVisible(n),
+  })), [topoNodes, hiddenKeys, hideProtocol, hideCaps])
+
+  if (topoNodes.length === 0) {
     return (
-      <div className="flex items-center justify-center h-48 text-slate-400 text-sm">
+      <div className="flex items-center justify-center h-64 text-slate-400 text-sm">
         No neighbour data yet — waiting for a poll cycle.
       </div>
     )
   }
 
+  const capGroups = [
+    { key: 'router', label: 'Router', color: '#2563eb' },
+    { key: 'switch', label: 'Switch', color: '#16a34a' },
+    { key: 'ap',     label: 'AP',     color: '#7c3aed' },
+    { key: 'other',  label: 'Other',  color: '#475569' },
+  ].filter(g => topoNodes.some(n => capCategory(n.caps) === g.key))
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 400 }}>
-      {/* Edges */}
-      {nodes.map((n, i) => {
-        const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2
-        const nx = cx + radius * Math.cos(angle)
-        const ny = cy + radius * Math.sin(angle)
-        const isHov = hovered === n.key
-        const mx = (cx + nx) / 2, my = (cy + ny) / 2
-        return (
-          <g key={n.key + '-edge'}>
-            <line x1={cx} y1={cy} x2={nx} y2={ny}
-              stroke={isHov ? '#94a3b8' : '#e2e8f0'} strokeWidth={isHov ? 2 : 1.5} />
-            {/* port labels */}
-            <text x={cx + (nx - cx) * 0.25} y={cy + (ny - cy) * 0.25 - 4}
-              fontSize={9} fill="#94a3b8" textAnchor="middle">{n.localPort}</text>
-            {n.remotePort && (
-              <text x={cx + (nx - cx) * 0.78} y={cy + (ny - cy) * 0.78 - 4}
-                fontSize={9} fill="#94a3b8" textAnchor="middle">{trunc(n.remotePort, 10)}</text>
-            )}
-            {/* mgmt IP near neighbour */}
-            {isHov && n.ip && (
-              <text x={nx} y={ny + 28} fontSize={9} fill="#64748b" textAnchor="middle">{n.ip}</text>
-            )}
-          </g>
-        )
-      })}
+    <div className="flex gap-3">
+      {/* Sidebar controls */}
+      <div className="w-44 shrink-0 space-y-4 text-xs">
+        <div>
+          <p className="font-semibold text-slate-500 uppercase tracking-wide mb-2">Protocol</p>
+          {(['lldp', 'cdp'] as const).filter(p => topoNodes.some(n => n.protocol === p)).map(p => (
+            <label key={p} className="flex items-center gap-2 py-1 cursor-pointer select-none">
+              <input type="checkbox" checked={!hideProtocol.has(p)} onChange={() => toggleProto(p)}
+                className="rounded border-slate-300 text-blue-600" />
+              <span className={`font-medium ${hideProtocol.has(p) ? 'text-slate-300' : 'text-slate-600'}`}>
+                {p.toUpperCase()}
+              </span>
+            </label>
+          ))}
+        </div>
 
-      {/* Neighbour nodes */}
-      {nodes.map((n, i) => {
-        const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2
-        const nx = cx + radius * Math.cos(angle)
-        const ny = cy + radius * Math.sin(angle)
-        const color = nodeColor(n.caps)
-        const isHov = hovered === n.key
-        return (
-          <g key={n.key} style={{ cursor: 'default' }}
-            onMouseEnter={() => setHovered(n.key)}
-            onMouseLeave={() => setHovered(null)}>
-            <circle cx={nx} cy={ny} r={isHov ? 22 : 18}
-              fill="white" stroke={color} strokeWidth={isHov ? 3 : 2} />
-            {/* capability icon letter */}
-            <text x={nx} y={ny + 4} fontSize={10} fontWeight="600"
-              fill={color} textAnchor="middle">
-              {isRouter(n.caps) && !isSwitch(n.caps) ? 'R' : isSwitch(n.caps) ? 'SW' : isAP(n.caps) ? 'AP' : isPhone(n.caps) ? 'T' : '?'}
-            </text>
-            {/* label */}
-            <text x={nx} y={ny + 32} fontSize={10} fill="#334155" textAnchor="middle" fontWeight="500">
-              {trunc(n.label, 14)}
-            </text>
-            {/* protocol badge */}
-            <text x={nx} y={ny + 43} fontSize={8} fill="#94a3b8" textAnchor="middle">
-              {n.protocol.toUpperCase()}
-            </text>
-          </g>
-        )
-      })}
+        <div>
+          <p className="font-semibold text-slate-500 uppercase tracking-wide mb-2">Type</p>
+          {capGroups.map(g => (
+            <label key={g.key} className="flex items-center gap-2 py-1 cursor-pointer select-none">
+              <input type="checkbox" checked={!hideCaps.has(g.key)} onChange={() => toggleCapCat(g.key)}
+                className="rounded border-slate-300" />
+              <span className="flex items-center gap-1.5" style={{ opacity: hideCaps.has(g.key) ? 0.3 : 1 }}>
+                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: g.color }} />
+                <span className="text-slate-600">{g.label}</span>
+              </span>
+            </label>
+          ))}
+        </div>
 
-      {/* Centre device */}
-      <circle cx={cx} cy={cy} r={28} fill="#1e293b" stroke="#334155" strokeWidth={2} />
-      <text x={cx} y={cy + 4} fontSize={10} fontWeight="700" fill="white" textAnchor="middle">
-        {trunc(deviceName, 12)}
-      </text>
-    </svg>
+        <div>
+          <p className="font-semibold text-slate-500 uppercase tracking-wide mb-2">Nodes</p>
+          <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+            {topoNodes.map(n => (
+              <label key={n.key} className="flex items-center gap-2 py-0.5 cursor-pointer select-none">
+                <input type="checkbox" checked={!hiddenKeys.has(n.key)} onChange={() => toggleKey(n.key)}
+                  className="rounded border-slate-300 text-blue-600 shrink-0" />
+                <span className={`truncate ${hiddenKeys.has(n.key) ? 'text-slate-300' : 'text-slate-600'}`}>
+                  {n.label}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Map */}
+      <div className="flex-1 rounded-xl border border-slate-200 overflow-hidden" style={{ height: 480 }}>
+        <ReactFlow
+          nodes={rfNodes}
+          edges={rfEdges}
+          nodeTypes={NODE_TYPES}
+          fitView
+          fitViewOptions={{ padding: 0.3 }}
+          minZoom={0.3}
+          maxZoom={2}
+          proOptions={{ hideAttribution: true }}
+        >
+          <Controls />
+          <MiniMap nodeStrokeWidth={2} nodeColor={n => n.type === 'center' ? '#1e293b' : '#e2e8f0'} pannable zoomable />
+          <Background color="#f1f5f9" gap={24} />
+        </ReactFlow>
+      </div>
+    </div>
   )
 }
 
