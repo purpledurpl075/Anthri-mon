@@ -328,7 +328,7 @@ class AlertEngine:
         open_alerts = (await db.execute(
             select(Alert).where(
                 Alert.rule_id == rule.id,
-                Alert.status == "open",
+                Alert.status.in_(["open", "acknowledged"]),
             )
         )).scalars().all()
 
@@ -341,6 +341,10 @@ class AlertEngine:
                     if elapsed >= rule.renotify_seconds:
                         alert.last_notified_at = now
                         await _safe_dispatch(alert, rule, db)
+                continue
+
+            # Acknowledged alerts are not auto-resolved — operator must clear them
+            if alert.status == "acknowledged":
                 continue
 
             # Condition cleared — start or check the stable clock

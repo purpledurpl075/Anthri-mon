@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from '../api/alerts'
+import { fetchChannels } from '../api/channels'
+import { fetchMaintenanceWindows } from '../api/maintenance'
 import type { AlertRule } from '../api/types'
 
 const METRICS = [
@@ -45,6 +47,8 @@ const DEFAULT_FORM = {
   custom_oid: '',
   scope: 'all',
   vendors: '', tags: '',
+  channel_ids: [] as string[],
+  maintenance_window_ids: [] as string[],
 }
 
 function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: () => void }) {
@@ -71,6 +75,8 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
       : (editing.device_selector.device_ids ? 'device' : editing.device_selector.vendors ? 'vendors' : editing.device_selector.tags ? 'tags' : 'all'),
     vendors: (editing.device_selector?.vendors as string[] ?? []).join(', '),
     tags: (editing.device_selector?.tags as string[] ?? []).join(', '),
+    channel_ids: (editing.channel_ids ?? []).map(String),
+    maintenance_window_ids: (editing.maintenance_window_ids ?? []).map(String),
   } : DEFAULT_FORM
 
   const [f, setF] = useState(init)
@@ -78,6 +84,16 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
   const [error, setError] = useState('')
 
   const set = (k: string, v: string) => setF(p => ({ ...p, [k]: v }))
+  const toggleId = (k: 'channel_ids' | 'maintenance_window_ids', id: string) =>
+    setF(p => ({
+      ...p,
+      [k]: (p[k] as string[]).includes(id)
+        ? (p[k] as string[]).filter(x => x !== id)
+        : [...(p[k] as string[]), id],
+    }))
+
+  const { data: channels = [] } = useQuery({ queryKey: ['channels'], queryFn: fetchChannels })
+  const { data: maintenanceWindows = [] } = useQuery({ queryKey: ['maintenance-windows-all'], queryFn: () => fetchMaintenanceWindows() })
 
   const buildSelector = () => {
     if (f.scope === 'all') return null
@@ -111,6 +127,8 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
         suppress_if_parent_down: f.suppress_if_parent_down === 'true',
         renotify_seconds: Number(f.renotify_seconds) || 3600,
         device_selector: buildSelector(),
+        channel_ids: f.channel_ids,
+        maintenance_window_ids: f.maintenance_window_ids,
       }
       return editing
         ? updateAlertRule(editing.id, body)
@@ -292,6 +310,46 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
               </label>
             </div>
 
+            <div className="border-t border-slate-100 pt-4">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Notification Channels</p>
+              {channels.length === 0 ? (
+                <p className="text-xs text-slate-400">No channels configured — add them in Administration.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {channels.map(ch => (
+                    <label key={ch.id} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                      <input type="checkbox"
+                        checked={(f.channel_ids as string[]).includes(ch.id)}
+                        onChange={() => toggleId('channel_ids', ch.id)}
+                        className="rounded border-slate-300 text-blue-600" />
+                      {ch.name}
+                      <span className="text-xs text-slate-400">{ch.type}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Maintenance Windows</p>
+              {maintenanceWindows.length === 0 ? (
+                <p className="text-xs text-slate-400">No maintenance windows — create them on the device page.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {maintenanceWindows.map(w => (
+                    <label key={w.id} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                      <input type="checkbox"
+                        checked={(f.maintenance_window_ids as string[]).includes(w.id)}
+                        onChange={() => toggleId('maintenance_window_ids', w.id)}
+                        className="rounded border-slate-300 text-blue-600" />
+                      {w.name}
+                      {w.is_active && <span className="text-xs text-amber-600 font-medium">● Active</span>}
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Description <span className="text-slate-400 font-normal">(shown in alert)</span></label>
               <textarea value={f.description} onChange={e => set('description', e.target.value)} rows={2}
@@ -360,6 +418,7 @@ export default function AlertRulesPage() {
                   <th className="text-left px-4 py-3 font-medium text-slate-600">Metric</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">Severity</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">Scope</th>
+                  <th className="text-left px-4 py-3 font-medium text-slate-600">Channels</th>
                   <th className="text-left px-4 py-3 font-medium text-slate-600">Enabled</th>
                   <th className="px-4 py-3 w-32"></th>
                 </tr>
@@ -388,6 +447,12 @@ export default function AlertRulesPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-xs"><SelectorSummary sel={r.device_selector} /></td>
+                      <td className="px-4 py-3">
+                        {r.channel_ids?.length > 0
+                          ? <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">{r.channel_ids.length} channel{r.channel_ids.length !== 1 ? 's' : ''}</span>
+                          : <span className="text-xs text-slate-300">None</span>
+                        }
+                      </td>
                       <td className="px-4 py-3">
                         <button
                           onClick={() => toggleMutation.mutate({ id: r.id, enabled: !r.is_enabled })}
