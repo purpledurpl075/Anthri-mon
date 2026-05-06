@@ -6,7 +6,8 @@ from typing import AsyncGenerator, Optional
 
 import structlog
 from fastapi import Depends, Header, HTTPException, status
-from jose import JWTError, jwt
+import jwt as _jwt
+from jwt.exceptions import InvalidTokenError as JWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,7 +37,7 @@ def _hash_token(raw_token: str) -> str:
 async def _user_from_jwt(token: str, db: AsyncSession) -> Optional[User]:
     """Decode a JWT and return the matching active User, or None."""
     try:
-        payload = jwt.decode(token, _settings.jwt_secret_key, algorithms=[_settings.jwt_algorithm])
+        payload = _jwt.decode(token, _settings.jwt_secret_key, algorithms=[_settings.jwt_algorithm])
         user_id: str = payload.get("sub")
         if not user_id:
             return None

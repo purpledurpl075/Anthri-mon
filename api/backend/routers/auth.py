@@ -8,8 +8,8 @@ from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from jose import jwt
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
+import jwt as _jwt
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +22,14 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _settings = get_settings()
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+
+def _hash_password(plain: str) -> str:
+    return _bcrypt.hashpw(plain.encode(), _bcrypt.gensalt(rounds=12)).decode()
+
+
+def _verify_password(plain: str, hashed: str) -> bool:
+    return _bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
 # ── Request / response models ──────────────────────────────────────────────────
@@ -73,7 +80,7 @@ class UpdateMeRequest(BaseModel):
 
 def _create_jwt(user_id: uuid.UUID) -> tuple[str, datetime]:
     expire = datetime.now(timezone.utc) + timedelta(minutes=_settings.jwt_expire_minutes)
-    token = jwt.encode(
+    token = _jwt.encode(
         {"sub": str(user_id), "exp": expire},
         _settings.jwt_secret_key,
         algorithm=_settings.jwt_algorithm,
@@ -94,7 +101,7 @@ async def login(
     )
     user = result.scalar_one_or_none()
 
-    if user is None or not _pwd_ctx.verify(body.password, user.password_hash):
+    if user is None or not _verify_password(body.password, user.password_hash):
         logger.warning("login_failed", username=body.username, ip=request.client.host)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
@@ -137,7 +144,7 @@ async def update_me(
             raise HTTPException(status_code=400, detail="Current password is incorrect")
         if len(body.new_password) < 8:
             raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
-        current_user.password_hash = _pwd_ctx.hash(body.new_password)
+        current_user.password_hash = _hash_password(body.new_password)
 
     if body.full_name is not None:
         current_user.full_name = body.full_name
