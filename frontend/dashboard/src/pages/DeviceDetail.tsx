@@ -110,7 +110,110 @@ function PlaceholderSection({ title, description }: { title: string; description
 
 // ── Neighbours ────────────────────────────────────────────────────────────────
 
-function NeighboursSection({ deviceId }: { deviceId: string }) {
+function nodeColor(caps: string[]): string {
+  if (caps.includes('router'))          return '#2563eb'  // blue
+  if (caps.includes('bridge') || caps.includes('switch')) return '#16a34a' // green
+  if (caps.includes('wlanAccessPoint')) return '#7c3aed'  // purple
+  if (caps.includes('telephone'))       return '#ea580c'  // orange
+  return '#475569' // slate
+}
+
+interface TopoNode {
+  key:   string
+  label: string
+  ip:    string | null
+  caps:  string[]
+  localPort:  string
+  remotePort: string | null
+  protocol: 'lldp' | 'cdp'
+}
+
+function NeighbourMap({ deviceName, nodes }: { deviceName: string; nodes: TopoNode[] }) {
+  const [hovered, setHovered] = useState<string | null>(null)
+  const W = 760, H = 400
+  const cx = W / 2, cy = H / 2
+  const radius = Math.min(160, 60 + nodes.length * 14)
+
+  const trunc = (s: string, n: number) => s.length > n ? s.slice(0, n - 1) + '…' : s
+
+  if (nodes.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-48 text-slate-400 text-sm">
+        No neighbour data yet — waiting for a poll cycle.
+      </div>
+    )
+  }
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ maxHeight: 400 }}>
+      {/* Edges */}
+      {nodes.map((n, i) => {
+        const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2
+        const nx = cx + radius * Math.cos(angle)
+        const ny = cy + radius * Math.sin(angle)
+        const isHov = hovered === n.key
+        const mx = (cx + nx) / 2, my = (cy + ny) / 2
+        return (
+          <g key={n.key + '-edge'}>
+            <line x1={cx} y1={cy} x2={nx} y2={ny}
+              stroke={isHov ? '#94a3b8' : '#e2e8f0'} strokeWidth={isHov ? 2 : 1.5} />
+            {/* port labels */}
+            <text x={cx + (nx - cx) * 0.25} y={cy + (ny - cy) * 0.25 - 4}
+              fontSize={9} fill="#94a3b8" textAnchor="middle">{n.localPort}</text>
+            {n.remotePort && (
+              <text x={cx + (nx - cx) * 0.78} y={cy + (ny - cy) * 0.78 - 4}
+                fontSize={9} fill="#94a3b8" textAnchor="middle">{trunc(n.remotePort, 10)}</text>
+            )}
+            {/* mgmt IP near neighbour */}
+            {isHov && n.ip && (
+              <text x={nx} y={ny + 28} fontSize={9} fill="#64748b" textAnchor="middle">{n.ip}</text>
+            )}
+          </g>
+        )
+      })}
+
+      {/* Neighbour nodes */}
+      {nodes.map((n, i) => {
+        const angle = (i / nodes.length) * 2 * Math.PI - Math.PI / 2
+        const nx = cx + radius * Math.cos(angle)
+        const ny = cy + radius * Math.sin(angle)
+        const color = nodeColor(n.caps)
+        const isHov = hovered === n.key
+        return (
+          <g key={n.key} style={{ cursor: 'default' }}
+            onMouseEnter={() => setHovered(n.key)}
+            onMouseLeave={() => setHovered(null)}>
+            <circle cx={nx} cy={ny} r={isHov ? 22 : 18}
+              fill="white" stroke={color} strokeWidth={isHov ? 3 : 2} />
+            {/* capability icon letter */}
+            <text x={nx} y={ny + 4} fontSize={10} fontWeight="600"
+              fill={color} textAnchor="middle">
+              {n.caps.includes('router') ? 'R' : n.caps.includes('bridge') || n.caps.includes('switch') ? 'SW' : n.caps.includes('wlanAccessPoint') ? 'AP' : '?'}
+            </text>
+            {/* label */}
+            <text x={nx} y={ny + 32} fontSize={10} fill="#334155" textAnchor="middle" fontWeight="500">
+              {trunc(n.label, 14)}
+            </text>
+            {/* protocol badge */}
+            <text x={nx} y={ny + 43} fontSize={8} fill="#94a3b8" textAnchor="middle">
+              {n.protocol.toUpperCase()}
+            </text>
+          </g>
+        )
+      })}
+
+      {/* Centre device */}
+      <circle cx={cx} cy={cy} r={28} fill="#1e293b" stroke="#334155" strokeWidth={2} />
+      <text x={cx} y={cy + 4} fontSize={10} fontWeight="700" fill="white" textAnchor="middle">
+        {trunc(deviceName, 12)}
+      </text>
+    </svg>
+  )
+}
+
+function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
+  const [view, setView] = useState<'list' | 'map'>('list')
+
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['neighbours', deviceId],
     queryFn: () => fetchDeviceNeighbours(deviceId),
@@ -121,68 +224,110 @@ function NeighboursSection({ deviceId }: { deviceId: string }) {
   const cdp  = data?.cdp  ?? []
   const total = lldp.length + cdp.length
 
-  if (isLoading) return <p className="text-xs text-slate-400">Loading…</p>
+  // Merged node list for the map — deduplicate by remote name
+  const topoNodes: TopoNode[] = [
+    ...lldp.map(n => ({
+      key:        n.remote_system_name || n.remote_chassis_id || n.local_port,
+      label:      n.remote_system_name || n.remote_chassis_id || '?',
+      ip:         n.remote_mgmt_ip,
+      caps:       n.capabilities,
+      localPort:  n.local_port,
+      remotePort: n.remote_port,
+      protocol:   'lldp' as const,
+    })),
+    ...cdp
+      .filter(n => !lldp.some(l => l.remote_system_name === n.remote_device))
+      .map(n => ({
+        key:        n.remote_device || n.local_port,
+        label:      n.remote_device || '?',
+        ip:         n.remote_mgmt_ip,
+        caps:       n.capabilities,
+        localPort:  n.local_port,
+        remotePort: n.remote_port,
+        protocol:   'cdp' as const,
+      })),
+  ]
+
+  if (isLoading) return <p className="text-xs text-slate-400 p-4">Loading…</p>
 
   return (
-    <div className="space-y-3">
-      <div className="flex items-center justify-between">
-        <span className="text-xs text-slate-400">
-          {total === 0 ? 'No neighbours discovered yet.' : `${total} neighbour${total !== 1 ? 's' : ''}`}
-        </span>
+    <div>
+      {/* Sub-tab bar */}
+      <div className="flex items-center justify-between border-b border-slate-100 px-1 mb-3">
+        <div className="flex">
+          {(['list', 'map'] as const).map(v => (
+            <button key={v} onClick={() => setView(v)}
+              className={`px-3 py-2 text-xs font-medium border-b-2 transition-colors capitalize ${
+                view === v ? 'border-blue-600 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}>
+              {v === 'list' ? `List${total ? ` (${total})` : ''}` : 'Map'}
+            </button>
+          ))}
+        </div>
         <button onClick={() => refetch()} disabled={isFetching}
-          className="text-xs text-blue-600 hover:underline disabled:opacity-50">
+          className="text-xs text-blue-600 hover:underline disabled:opacity-50 pr-1">
           {isFetching ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
 
-      {lldp.length > 0 && (
-        <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">LLDP</p>
-          <div className="space-y-1.5">
-            {lldp.map((n, i) => (
-              <div key={i} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-slate-500 shrink-0">{n.local_port}</span>
-                  <span className="text-slate-300">→</span>
-                  <span className="font-medium text-slate-700 truncate">{n.remote_system_name || n.remote_chassis_id || '—'}</span>
-                  {n.remote_port && <span className="font-mono text-slate-400 shrink-0">{n.remote_port}</span>}
-                </div>
-                {(n.remote_mgmt_ip || n.capabilities.length > 0) && (
-                  <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
-                    {n.remote_mgmt_ip && <span>{n.remote_mgmt_ip}</span>}
-                    {n.capabilities.map(c => (
-                      <span key={c} className="px-1 bg-slate-100 rounded text-slate-500">{c}</span>
-                    ))}
+      {view === 'list' && (
+        <div className="space-y-3">
+          {total === 0 && <p className="text-xs text-slate-400">No neighbours discovered yet.</p>}
+
+          {lldp.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">LLDP</p>
+              <div className="space-y-1.5">
+                {lldp.map((n, i) => (
+                  <div key={i} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-slate-500 shrink-0">{n.local_port}</span>
+                      <span className="text-slate-300">→</span>
+                      <span className="font-medium text-slate-700 truncate">{n.remote_system_name || n.remote_chassis_id || '—'}</span>
+                      {n.remote_port && <span className="font-mono text-slate-400 shrink-0">{n.remote_port}</span>}
+                    </div>
+                    {(n.remote_mgmt_ip || n.capabilities.length > 0) && (
+                      <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
+                        {n.remote_mgmt_ip && <span>{n.remote_mgmt_ip}</span>}
+                        {n.capabilities.map(c => (
+                          <span key={c} className="px-1 bg-slate-100 rounded text-slate-500">{c}</span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                )}
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          )}
+
+          {cdp.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">CDP</p>
+              <div className="space-y-1.5">
+                {cdp.map((n, i) => (
+                  <div key={i} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono text-slate-500 shrink-0">{n.local_port}</span>
+                      <span className="text-slate-300">→</span>
+                      <span className="font-medium text-slate-700 truncate">{n.remote_device || '—'}</span>
+                      {n.remote_port && <span className="font-mono text-slate-400 shrink-0">{n.remote_port}</span>}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
+                      {n.remote_mgmt_ip && <span>{n.remote_mgmt_ip}</span>}
+                      {n.platform && <span className="italic">{n.platform}</span>}
+                      {n.duplex && <span>{n.duplex} duplex</span>}
+                      {n.native_vlan != null && n.native_vlan > 0 && <span>vlan {n.native_vlan}</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {cdp.length > 0 && (
-        <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">CDP</p>
-          <div className="space-y-1.5">
-            {cdp.map((n, i) => (
-              <div key={i} className="rounded-lg border border-slate-200 px-3 py-2 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-mono text-slate-500 shrink-0">{n.local_port}</span>
-                  <span className="text-slate-300">→</span>
-                  <span className="font-medium text-slate-700 truncate">{n.remote_device || '—'}</span>
-                  {n.remote_port && <span className="font-mono text-slate-400 shrink-0">{n.remote_port}</span>}
-                </div>
-                <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
-                  {n.remote_mgmt_ip && <span>{n.remote_mgmt_ip}</span>}
-                  {n.platform && <span className="italic">{n.platform}</span>}
-                  {n.duplex && <span>{n.duplex} duplex</span>}
-                  {n.native_vlan != null && n.native_vlan > 0 && <span>vlan {n.native_vlan}</span>}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+      {view === 'map' && (
+        <NeighbourMap deviceName={deviceName} nodes={topoNodes} />
       )}
     </div>
   )
@@ -947,7 +1092,7 @@ export default function DeviceDetail() {
 
           {tab === 'neighbours' && (
             <div className="p-5">
-              <NeighboursSection deviceId={id!} />
+              <NeighboursSection deviceId={id!} deviceName={device?.fqdn ?? device?.hostname ?? ''} />
             </div>
           )}
         </div>
