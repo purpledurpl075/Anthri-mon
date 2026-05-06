@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -345,9 +346,9 @@ func (w *PostgresWriter) upsertLLDPNeighbors(ctx context.Context, deviceID uuid.
 				updated_at                   = NOW()
 		`,
 			deviceID, n.LocalPort,
-			nullStr(n.ChassisIDSubtype), nullStr(n.ChassisID),
-			nullStr(n.PortIDSubtype), nullStr(n.PortID), nullStr(n.PortDesc),
-			nullStr(n.SystemName), mgmtIP, capsJSON,
+			safeStr(n.ChassisIDSubtype), safeStr(n.ChassisID),
+			safeStr(n.PortIDSubtype), safeStr(n.PortID), safeStr(n.PortDesc),
+			safeStr(n.SystemName), mgmtIP, capsJSON,
 		)
 	}
 
@@ -389,8 +390,8 @@ func (w *PostgresWriter) upsertCDPNeighbors(ctx context.Context, deviceID uuid.U
 				updated_at           = NOW()
 		`,
 			deviceID, n.LocalPort,
-			nullStr(n.RemoteDevice), nullStr(n.RemotePort), mgmtIP,
-			nullStr(n.Platform), capsJSON, nativeVLAN, nullStr(n.Duplex),
+			safeStr(n.RemoteDevice), safeStr(n.RemotePort), mgmtIP,
+			safeStr(n.Platform), capsJSON, nativeVLAN, safeStr(n.Duplex),
 		)
 	}
 
@@ -507,6 +508,16 @@ func nullStr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+// safeStr strips null bytes and invalid UTF-8 before DB insert.
+// Some SNMP OctetString fields (CDP platform/port) contain raw binary data.
+func safeStr(s string) *string {
+	safe := strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "")
+	if safe == "" {
+		return nil
+	}
+	return &safe
 }
 
 func nullUint64(v uint64) *uint64 {

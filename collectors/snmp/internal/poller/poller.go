@@ -288,6 +288,20 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				result.CDPNeighbors = cdp
 			}
 
+			if arp, err := PollARPTable(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("arp poll failed (non-fatal)")
+			} else {
+				result.ARPEntries = arp
+				log.Debug().Int("count", len(arp)).Str("device_id", dev.ID.String()).Msg("arp entries polled")
+			}
+
+			if macs, err := PollMACTable(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("mac poll failed (non-fatal)")
+			} else {
+				result.MACEntries = macs
+				log.Debug().Int("count", len(macs)).Str("device_id", dev.ID.String()).Msg("mac entries polled")
+			}
+
 			m.emit(ctx, log, result)
 
 		case <-healthTicker.C:
@@ -300,21 +314,7 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				}
 				continue
 			}
-			healthResult := &PollResult{DeviceID: dev.ID, Health: health}
-
-			// Address tables polled on health cycle (less frequent than interfaces).
-			if arp, err := PollARPTable(session, dev.ID, ifByIndex); err != nil {
-				log.Warn().Err(err).Msg("arp poll failed (non-fatal)")
-			} else {
-				healthResult.ARPEntries = arp
-			}
-			if macs, err := PollMACTable(session, dev.ID, ifByIndex); err != nil {
-				log.Warn().Err(err).Msg("mac poll failed (non-fatal)")
-			} else {
-				healthResult.MACEntries = macs
-			}
-
-			m.emit(ctx, log, healthResult)
+			m.emit(ctx, log, &PollResult{DeviceID: dev.ID, Health: health})
 		}
 	}
 }
