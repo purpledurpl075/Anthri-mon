@@ -284,7 +284,7 @@ func parseLLDPCapabilities(b []byte) []string {
 		name string
 	}{
 		{0x80, "other"},
-		{0x40, "repeater"},
+		{0x40, "switch"},
 		{0x20, "bridge"},
 		{0x10, "wlanAccessPoint"},
 		{0x08, "router"},
