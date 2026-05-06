@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import AsyncSessionLocal
 from ..models.alert import Alert, AlertRule
+from . import notify
 from .evaluators import (
     Breach,
     eval_cpu, eval_mem, eval_device_down,
@@ -278,11 +279,13 @@ class AlertEngine:
                     },
                     triggered_at=now,
                     fingerprint=fp,
+                    last_notified_at=now if not suppressed else None,
                 )
                 db.add(alert)
                 if not suppressed:
                     logger.info("alert_fired", rule=rule.name, device=breach.device_name,
                                 iface=breach.interface_name, severity=rule.severity)
+                    await notify.dispatch(alert, rule, db)
             elif existing.status == "suppressed" and breach.device_id not in suppressed_device_ids:
                 # Parent recovered — unsuppress
                 existing.status = "open"
@@ -314,7 +317,13 @@ class AlertEngine:
         for alert in open_alerts:
             fp = alert.fingerprint or ""
             if fp in breaching_fps:
-                continue  # still breaching
+                # Still breaching — check re-notify interval
+                if rule.renotify_seconds > 0 and alert.last_notified_at is not None:
+                    elapsed = (now - alert.last_notified_at).total_seconds()
+                    if elapsed >= rule.renotify_seconds:
+                        alert.last_notified_at = now
+                        await notify.dispatch(alert, rule, db)
+                continue
 
             # Condition cleared — start or check the stable clock
             if rule.stable_for_seconds > 0:
@@ -336,6 +345,8 @@ class AlertEngine:
                     {"did": str(alert.device_id)},
                 )
             logger.info("alert_auto_resolved", alert_id=str(alert.id), rule=rule.name)
+            if rule.notify_on_resolve:
+                await notify.dispatch(alert, rule, db, resolved=True)
 
 
 _engine = AlertEngine()

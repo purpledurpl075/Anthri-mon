@@ -118,6 +118,32 @@ class AlertRuleRead(BaseModel):
     updated_at: datetime
 
 
+class NotificationChannelCreate(BaseModel):
+    name: str
+    type: str  # "email" | "slack" | "webhook" | "pagerduty" | "teams"
+    config: dict = {}
+    is_enabled: bool = True
+
+
+class NotificationChannelUpdate(BaseModel):
+    name: Optional[str] = None
+    config: Optional[dict] = None
+    is_enabled: Optional[bool] = None
+
+
+class NotificationChannelRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    tenant_id: uuid.UUID
+    name: str
+    type: str
+    config: dict
+    is_enabled: bool
+    created_at: datetime
+    updated_at: datetime
+
+
 class AlertPolicyCreate(BaseModel):
     name: str
     description: Optional[str] = None
