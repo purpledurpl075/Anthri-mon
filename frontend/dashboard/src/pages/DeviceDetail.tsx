@@ -139,13 +139,72 @@ interface TopoNode {
   protocol: 'lldp' | 'cdp'
 }
 
+// ── Device type icons ─────────────────────────────────────────────────────────
+
+const IconRouter = () => (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="14" width="20" height="6" rx="2"/>
+    <path d="M6 14V9a6 6 0 0 1 12 0v5"/>
+    <circle cx="12" cy="9" r="1" fill="currentColor" stroke="none"/>
+    <line x1="6" y1="17" x2="6" y2="17.01"/><line x1="10" y1="17" x2="10" y2="17.01"/>
+  </svg>
+)
+
+const IconSwitch = () => (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <rect x="2" y="8" width="20" height="8" rx="2"/>
+    <line x1="6" y1="8" x2="6" y2="4"/><line x1="10" y1="8" x2="10" y2="4"/>
+    <line x1="14" y1="8" x2="14" y2="4"/><line x1="18" y1="8" x2="18" y2="4"/>
+    <line x1="6" y1="16" x2="6" y2="20"/><line x1="18" y1="16" x2="18" y2="20"/>
+    <circle cx="6" cy="12" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="10" cy="12" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="14" cy="12" r="1" fill="currentColor" stroke="none"/>
+    <circle cx="18" cy="12" r="1" fill="currentColor" stroke="none"/>
+  </svg>
+)
+
+const IconAP = () => (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M5 12.55a11 11 0 0 1 14.08 0"/>
+    <path d="M1.42 9a16 16 0 0 1 21.16 0"/>
+    <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+    <circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/>
+  </svg>
+)
+
+const IconPhone = () => (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.79 19.79 0 0 1 2.12 4.18 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+  </svg>
+)
+
+const IconUnknown = () => (
+  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="10"/>
+    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+    <circle cx="12" cy="17" r="0.5" fill="currentColor"/>
+  </svg>
+)
+
+function DeviceIcon({ caps }: { caps: string[] }) {
+  if (isRouter(caps) && !isSwitch(caps)) return <IconRouter />
+  if (isSwitch(caps)) return <IconSwitch />
+  if (isAP(caps))     return <IconAP />
+  if (isPhone(caps))  return <IconPhone />
+  return <IconUnknown />
+}
+
+// MAC address pattern — used to avoid showing raw MACs as device names
+const isMacAddr = (s: string) => /^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(s)
+
 // ── React Flow custom nodes ───────────────────────────────────────────────────
 
 function CenterNode({ data }: NodeProps) {
   return (
-    <div className="rounded-xl bg-slate-800 border-2 border-slate-600 px-4 py-3 shadow-lg min-w-[110px] text-center">
+    <div className="rounded-2xl bg-slate-800 border-2 border-slate-500 px-5 py-4 shadow-xl w-40 text-center">
       <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
-      <div className="text-xs font-bold text-white truncate max-w-[140px]">{data.label as string}</div>
+      <div className="flex justify-center mb-2 text-slate-300"><IconSwitch /></div>
+      <div className="text-xs font-bold text-white truncate">{data.label as string}</div>
       <div className="text-[10px] text-slate-400 mt-0.5">this device</div>
     </div>
   )
@@ -154,17 +213,26 @@ function CenterNode({ data }: NodeProps) {
 function NeighbourNode({ data }: NodeProps) {
   const n = data as unknown as TopoNode
   const color = nodeColor(n.caps)
-  const icon = isRouter(n.caps) && !isSwitch(n.caps) ? 'R' : isSwitch(n.caps) ? 'SW' : isAP(n.caps) ? 'AP' : isPhone(n.caps) ? 'T' : '?'
+  // Use a friendly label — don't show raw MAC addresses as the name
+  const displayLabel = (!n.label || isMacAddr(n.label)) ? 'Unknown Device' : n.label
+  const showMac      = isMacAddr(n.label) ? n.label : null
+
   return (
-    <div className="rounded-xl bg-white border-2 shadow-sm px-3 py-2 min-w-[110px] text-center"
+    <div className="rounded-2xl bg-white border-2 shadow-md w-44 text-center"
       style={{ borderColor: color }}>
       <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
-      <div className="text-xs font-bold mb-0.5" style={{ color }}>{icon}</div>
-      <div className="text-xs font-semibold text-slate-700 truncate max-w-[130px]">{n.label}</div>
-      {n.ip && <div className="text-[10px] text-slate-400 font-mono mt-0.5">{n.ip}</div>}
-      <div className="text-[10px] mt-1 px-1.5 py-0.5 rounded-full inline-block text-white font-medium"
-        style={{ backgroundColor: n.protocol === 'lldp' ? '#0891b2' : '#7c3aed' }}>
-        {n.protocol.toUpperCase()}
+      <div className="px-4 pt-4 pb-3">
+        <div className="flex justify-center mb-2" style={{ color }}><DeviceIcon caps={n.caps} /></div>
+        <div className="text-xs font-semibold text-slate-800 truncate">{displayLabel}</div>
+        {showMac && <div className="text-[10px] text-slate-400 font-mono mt-0.5 truncate">{showMac}</div>}
+        {n.ip && !showMac && <div className="text-[10px] text-slate-400 font-mono mt-0.5">{n.ip}</div>}
+      </div>
+      <div className="border-t px-4 py-1.5 flex items-center justify-between"
+        style={{ borderColor: `${color}30`, backgroundColor: `${color}08` }}>
+        <span className="text-[10px] font-medium" style={{ color }}>
+          {isRouter(n.caps) && !isSwitch(n.caps) ? 'Router' : isSwitch(n.caps) ? 'Switch' : isAP(n.caps) ? 'Access Point' : isPhone(n.caps) ? 'Phone' : 'Unknown'}
+        </span>
+        <span className="text-[9px] text-slate-400 font-mono">{n.protocol.toUpperCase()}</span>
       </div>
     </div>
   )
@@ -213,10 +281,12 @@ function NeighbourMap({ deviceName, nodes: topoNodes }: { deviceName: string; no
     id: `e-${n.key}`,
     source: '__center__',
     target: n.key,
+    type: 'straight',
     label: n.remotePort ? `${n.localPort} → ${n.remotePort}` : n.localPort,
-    labelStyle: { fontSize: 10, fill: '#94a3b8' },
-    labelBgStyle: { fill: 'white', fillOpacity: 0.8 },
-    style: { stroke: '#cbd5e1', strokeWidth: 1.5 },
+    labelStyle: { fontSize: 10, fill: '#64748b' },
+    labelBgStyle: { fill: 'white', fillOpacity: 0.85 },
+    labelBgPadding: [4, 3] as [number, number],
+    style: { stroke: '#94a3b8', strokeWidth: 1.5 },
     hidden: !isVisible(n),
   })), [topoNodes, hiddenKeys, hideProtocol, hideCaps])
 
@@ -283,7 +353,7 @@ function NeighbourMap({ deviceName, nodes: topoNodes }: { deviceName: string; no
       </div>
 
       {/* Map */}
-      <div className="flex-1 rounded-xl border border-slate-200 overflow-hidden" style={{ height: 480 }}>
+      <div className="flex-1 rounded-xl border border-slate-200 overflow-hidden" style={{ height: 640 }}>
         <ReactFlow
           nodes={rfNodes}
           edges={rfEdges}
@@ -320,7 +390,7 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
   const topoNodes: TopoNode[] = [
     ...lldp.map(n => ({
       key:        n.remote_system_name || n.remote_chassis_id || n.local_port,
-      label:      n.remote_system_name || n.remote_chassis_id || '?',
+      label:      n.remote_system_name || n.remote_chassis_id || '',
       ip:         n.remote_mgmt_ip,
       caps:       n.capabilities,
       localPort:  n.local_port,
