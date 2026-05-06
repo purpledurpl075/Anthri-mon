@@ -42,6 +42,40 @@ class Interface(Base):
     device: Mapped["Device"] = relationship("Device", back_populates="interfaces", lazy="noload")
 
 
+class LLDPNeighbor(Base):
+    __tablename__ = "lldp_neighbors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    local_port_name: Mapped[str] = mapped_column(Text, nullable=False)
+    remote_chassis_id_subtype: Mapped[Optional[str]] = mapped_column(Text)
+    remote_chassis_id: Mapped[Optional[str]] = mapped_column(Text)
+    remote_port_id_subtype: Mapped[Optional[str]] = mapped_column(Text)
+    remote_port_id: Mapped[Optional[str]] = mapped_column(Text)
+    remote_port_desc: Mapped[Optional[str]] = mapped_column(Text)
+    remote_system_name: Mapped[Optional[str]] = mapped_column(Text)
+    remote_mgmt_ip: Mapped[Optional[str]] = mapped_column(Text)
+    remote_system_capabilities: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    ttl: Mapped[Optional[int]] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
+class CDPNeighbor(Base):
+    __tablename__ = "cdp_neighbors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    local_port_name: Mapped[str] = mapped_column(Text, nullable=False)
+    remote_device_id: Mapped[Optional[str]] = mapped_column(Text)
+    remote_port_id: Mapped[Optional[str]] = mapped_column(Text)
+    remote_mgmt_ip: Mapped[Optional[str]] = mapped_column(Text)
+    remote_platform: Mapped[Optional[str]] = mapped_column(Text)
+    remote_capabilities: Mapped[list] = mapped_column(JSONB, nullable=False, server_default="[]")
+    native_vlan: Mapped[Optional[int]] = mapped_column(Integer)
+    duplex: Mapped[Optional[str]] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
 class InterfaceStatusLog(Base):
     """Append-only log of interface up/down transitions; drives flap detection."""
     __tablename__ = "interface_status_log"

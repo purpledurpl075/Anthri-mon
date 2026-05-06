@@ -93,6 +93,34 @@ type HealthResult struct {
 	PollTime    time.Time
 }
 
+// LLDPNeighbor is a single entry from the lldpRemTable for one device.
+type LLDPNeighbor struct {
+	DeviceID   uuid.UUID
+	LocalPort  string // lldpLocPortDesc (ifName of the local interface)
+	// Remote
+	ChassisIDSubtype string // "macAddress" | "networkAddress" | "local" | …
+	ChassisID        string // formatted chassis ID (MAC or string)
+	PortIDSubtype    string // "interfaceName" | "macAddress" | …
+	PortID           string
+	PortDesc         string
+	SystemName       string
+	MgmtIP           string // first IPv4 management address, "" if unavailable
+	Capabilities     []string
+}
+
+// CDPNeighbor is a single entry from cdpCacheTable for one device.
+type CDPNeighbor struct {
+	DeviceID     uuid.UUID
+	LocalPort    string // ifName of the local interface
+	RemoteDevice string // cdpCacheDeviceId (usually the hostname)
+	RemotePort   string // cdpCacheDevicePort
+	MgmtIP       string // first IPv4 from cdpCacheAddresses
+	Platform     string // cdpCachePlatform
+	Capabilities []string
+	NativeVLAN   int
+	Duplex       string // "full" | "half" | ""
+}
+
 // SNMPV2cCredential is the unmarshalled form of a snmp_v2c credentials record.
 type SNMPV2cCredential struct {
 	Community string `json:"community"`

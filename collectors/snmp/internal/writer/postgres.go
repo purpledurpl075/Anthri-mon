@@ -71,6 +71,18 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 		}
 	}
 
+	if len(result.LLDPNeighbors) > 0 {
+		if err := w.upsertLLDPNeighbors(ctx, result.DeviceID, result.LLDPNeighbors); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert lldp neighbors failed")
+		}
+	}
+
+	if len(result.CDPNeighbors) > 0 {
+		if err := w.upsertCDPNeighbors(ctx, result.DeviceID, result.CDPNeighbors); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert cdp neighbors failed")
+		}
+	}
+
 	return nil
 }
 
@@ -244,6 +256,93 @@ func (w *PostgresWriter) upsertHealth(ctx context.Context, h *model.HealthResult
 		tempsJSON, h.UptimeSecs,
 	)
 	return err
+}
+
+// ── Neighbours ────────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertLLDPNeighbors(ctx context.Context, deviceID uuid.UUID, neighbors []*model.LLDPNeighbor) error {
+	batch := &pgx.Batch{}
+	for _, n := range neighbors {
+		capsJSON, _ := json.Marshal(n.Capabilities)
+		var mgmtIP *string
+		if n.MgmtIP != "" {
+			mgmtIP = &n.MgmtIP
+		}
+		batch.Queue(`
+			INSERT INTO lldp_neighbors (
+				device_id, local_port_name,
+				remote_chassis_id_subtype, remote_chassis_id,
+				remote_port_id_subtype, remote_port_id, remote_port_desc,
+				remote_system_name, remote_mgmt_ip, remote_system_capabilities
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT (device_id, local_port_name, remote_chassis_id) DO UPDATE SET
+				remote_chassis_id_subtype    = EXCLUDED.remote_chassis_id_subtype,
+				remote_port_id_subtype       = EXCLUDED.remote_port_id_subtype,
+				remote_port_id               = EXCLUDED.remote_port_id,
+				remote_port_desc             = EXCLUDED.remote_port_desc,
+				remote_system_name           = EXCLUDED.remote_system_name,
+				remote_mgmt_ip               = EXCLUDED.remote_mgmt_ip,
+				remote_system_capabilities   = EXCLUDED.remote_system_capabilities,
+				updated_at                   = NOW()
+		`,
+			deviceID, n.LocalPort,
+			nullStr(n.ChassisIDSubtype), nullStr(n.ChassisID),
+			nullStr(n.PortIDSubtype), nullStr(n.PortID), nullStr(n.PortDesc),
+			nullStr(n.SystemName), mgmtIP, capsJSON,
+		)
+	}
+
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("lldp neighbor batch exec error")
+		}
+	}
+	return nil
+}
+
+func (w *PostgresWriter) upsertCDPNeighbors(ctx context.Context, deviceID uuid.UUID, neighbors []*model.CDPNeighbor) error {
+	batch := &pgx.Batch{}
+	for _, n := range neighbors {
+		capsJSON, _ := json.Marshal(n.Capabilities)
+		var mgmtIP *string
+		if n.MgmtIP != "" {
+			mgmtIP = &n.MgmtIP
+		}
+		var nativeVLAN *int
+		if n.NativeVLAN > 0 {
+			nativeVLAN = &n.NativeVLAN
+		}
+		batch.Queue(`
+			INSERT INTO cdp_neighbors (
+				device_id, local_port_name,
+				remote_device_id, remote_port_id, remote_mgmt_ip,
+				remote_platform, remote_capabilities, native_vlan, duplex
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (device_id, local_port_name, remote_device_id) DO UPDATE SET
+				remote_port_id       = EXCLUDED.remote_port_id,
+				remote_mgmt_ip       = EXCLUDED.remote_mgmt_ip,
+				remote_platform      = EXCLUDED.remote_platform,
+				remote_capabilities  = EXCLUDED.remote_capabilities,
+				native_vlan          = EXCLUDED.native_vlan,
+				duplex               = EXCLUDED.duplex,
+				updated_at           = NOW()
+		`,
+			deviceID, n.LocalPort,
+			nullStr(n.RemoteDevice), nullStr(n.RemotePort), mgmtIP,
+			nullStr(n.Platform), capsJSON, nativeVLAN, nullStr(n.Duplex),
+		)
+	}
+
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("cdp neighbor batch exec error")
+		}
+	}
+	return nil
 }
 
 // ── DeviceSource implementation ───────────────────────────────────────────────

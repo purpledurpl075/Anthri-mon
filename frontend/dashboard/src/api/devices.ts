@@ -52,3 +52,34 @@ export const unlinkDeviceCredential = (deviceId: string, credentialId: string) =
 
 export const runSnmpDiag = (id: string) =>
   api.post<SnmpDiagResult>(`/devices/${id}/snmp-diag`).then(r => r.data)
+
+export interface LLDPNeighbourEntry {
+  local_port: string
+  remote_system_name: string | null
+  remote_port: string | null
+  remote_chassis_id: string | null
+  remote_chassis_id_subtype: string | null
+  remote_mgmt_ip: string | null
+  capabilities: string[]
+  updated_at: string
+}
+
+export interface CDPNeighbourEntry {
+  local_port: string
+  remote_device: string | null
+  remote_port: string | null
+  remote_mgmt_ip: string | null
+  platform: string | null
+  capabilities: string[]
+  native_vlan: number | null
+  duplex: string | null
+  updated_at: string
+}
+
+export interface NeighboursResponse {
+  lldp: LLDPNeighbourEntry[]
+  cdp: CDPNeighbourEntry[]
+}
+
+export const fetchDeviceNeighbours = (id: string) =>
+  api.get<NeighboursResponse>(`/devices/${id}/neighbours`).then(r => r.data)

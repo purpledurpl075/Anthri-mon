@@ -15,7 +15,7 @@ from ..models.alert import Alert
 from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
 from ..models.health import DeviceHealthLatest
-from ..models.interface import Interface
+from ..models.interface import CDPNeighbor, Interface, LLDPNeighbor
 from ..models.tenant import User
 from ..schemas.alert import AlertRead
 from ..schemas.common import PaginatedResponse
@@ -331,6 +331,59 @@ async def unlink_device_credential(
         raise HTTPException(status_code=404, detail="Credential not assigned to this device")
     await db.delete(link)
     await db.commit()
+
+
+# ── Neighbours ────────────────────────────────────────────────────────────────
+
+@router.get("/{device_id}/neighbours", summary="List LLDP and CDP neighbours")
+async def list_neighbours(
+    device_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_device_visible(device_id, current_user, db)
+
+    lldp_rows = (await db.execute(
+        select(LLDPNeighbor)
+        .where(LLDPNeighbor.device_id == device_id)
+        .order_by(LLDPNeighbor.local_port_name)
+    )).scalars().all()
+
+    cdp_rows = (await db.execute(
+        select(CDPNeighbor)
+        .where(CDPNeighbor.device_id == device_id)
+        .order_by(CDPNeighbor.local_port_name)
+    )).scalars().all()
+
+    return {
+        "lldp": [
+            {
+                "local_port": n.local_port_name,
+                "remote_system_name": n.remote_system_name,
+                "remote_port": n.remote_port_id or n.remote_port_desc,
+                "remote_chassis_id": n.remote_chassis_id,
+                "remote_chassis_id_subtype": n.remote_chassis_id_subtype,
+                "remote_mgmt_ip": n.remote_mgmt_ip,
+                "capabilities": n.remote_system_capabilities or [],
+                "updated_at": n.updated_at.isoformat(),
+            }
+            for n in lldp_rows
+        ],
+        "cdp": [
+            {
+                "local_port": n.local_port_name,
+                "remote_device": n.remote_device_id,
+                "remote_port": n.remote_port_id,
+                "remote_mgmt_ip": n.remote_mgmt_ip,
+                "platform": n.remote_platform,
+                "capabilities": n.remote_capabilities or [],
+                "native_vlan": n.native_vlan,
+                "duplex": n.duplex,
+                "updated_at": n.updated_at.isoformat(),
+            }
+            for n in cdp_rows
+        ],
+    }
 
 
 # ── SNMP diagnostic ────────────────────────────────────────────────────────────

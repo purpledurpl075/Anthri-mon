@@ -154,6 +154,37 @@ const (
 	FgHwSensorEntAlarmStatus = "1.3.6.1.4.1.12356.101.4.4.2.1.4"
 )
 
+// ── LLDP-MIB (IEEE 802.1AB) ──────────────────────────────────────────────────
+// Two OID namespaces exist: IEEE (1.0.8802) used by most enterprise gear,
+// and IETF (1.3.6.1.2.1.111) used by some Linux/open-source agents.
+// The poller tries the IEEE namespace first, then falls back to IETF.
+
+const (
+	// lldpRemTable: one row per discovered neighbour per local port.
+	// Indexed by (lldpRemTimeMark, lldpRemLocalPortNum, lldpRemIndex).
+	LLDPRemTableIEEE = "1.0.8802.1.1.2.1.4.1.1"
+	LLDPRemTableIETF = "1.3.6.1.2.1.111.1.4.1.1"
+
+	// lldpLocPortTable: maps lldpRemLocalPortNum → local port description (ifName).
+	// Indexed by lldpLocPortNum (same integer as lldpRemLocalPortNum).
+	LLDPLocPortIEEE = "1.0.8802.1.1.2.1.3.7.1"
+	LLDPLocPortIETF = "1.3.6.1.2.1.111.1.3.7.1"
+
+	// lldpRemManAddrTable: management addresses for each neighbour.
+	// The IPv4 address is encoded in the OID index itself.
+	// Indexed by (timeMark, portNum, remIndex, addrSubtype, addr...).
+	LLDPRemManAddrIEEE = "1.0.8802.1.1.2.1.4.2.1"
+	LLDPRemManAddrIETF = "1.3.6.1.2.1.111.1.4.2.1"
+)
+
+// ── CISCO-CDP-MIB ─────────────────────────────────────────────────────────────
+// CDP is Cisco-proprietary; present on IOS, IOS-XE, IOS-XR, NX-OS.
+// cdpCacheTable is indexed by (cdpCacheIfIndex, cdpCacheDeviceIndex).
+
+const (
+	CDPCacheTable = "1.3.6.1.4.1.9.9.23.1.2.1.1"
+)
+
 // ── IANA ifType values (most common) ─────────────────────────────────────────
 
 var IfTypeNames = map[int]string{

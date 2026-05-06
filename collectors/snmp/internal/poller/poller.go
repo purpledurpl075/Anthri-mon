@@ -18,10 +18,12 @@ import (
 
 // PollResult carries all results from one complete poll cycle for a device.
 type PollResult struct {
-	DeviceID   uuid.UUID
-	SysInfo    *model.DeviceInfo      // nil if not yet polled or failed
-	Interfaces []*model.InterfaceResult
-	Health     *model.HealthResult    // nil if health poll not run this cycle
+	DeviceID      uuid.UUID
+	SysInfo       *model.DeviceInfo        // nil if not yet polled or failed
+	Interfaces    []*model.InterfaceResult
+	Health        *model.HealthResult      // nil if health poll not run this cycle
+	LLDPNeighbors []*model.LLDPNeighbor   // nil if not polled this cycle
+	CDPNeighbors  []*model.CDPNeighbor    // nil if not polled this cycle
 }
 
 // ResultHandler is a callback invoked after each completed poll cycle.
@@ -260,6 +262,29 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				continue
 			}
 			result.Interfaces = ifaces
+
+			// Build ifIndex → ifName map for CDP (uses ifIndex as key).
+			ifByIndex := make(map[int]string, len(ifaces))
+			for _, iface := range ifaces {
+				name := iface.IfName
+				if name == "" {
+					name = iface.IfDescr
+				}
+				ifByIndex[iface.IfIndex] = name
+			}
+
+			if lldp, err := PollLLDPNeighbors(session, dev.ID); err != nil {
+				log.Warn().Err(err).Msg("lldp poll failed (non-fatal)")
+			} else {
+				result.LLDPNeighbors = lldp
+			}
+
+			if cdp, err := PollCDPNeighbors(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("cdp poll failed (non-fatal)")
+			} else {
+				result.CDPNeighbors = cdp
+			}
+
 			m.emit(ctx, log, result)
 
 		case <-healthTicker.C:
