@@ -110,12 +110,17 @@ function PlaceholderSection({ title, description }: { title: string; description
 
 // ── Neighbours ────────────────────────────────────────────────────────────────
 
+const isSwitch  = (c: string[]) => c.includes('bridge') || c.includes('switch') || c.includes('repeater')
+const isRouter  = (c: string[]) => c.includes('router')
+const isAP      = (c: string[]) => c.includes('wlanAccessPoint') && !isSwitch(c) && !isRouter(c)
+const isPhone   = (c: string[]) => c.includes('telephone')
+
 function nodeColor(caps: string[]): string {
-  if (caps.includes('router'))          return '#2563eb'  // blue
-  if (caps.includes('bridge') || caps.includes('switch')) return '#16a34a' // green
-  if (caps.includes('wlanAccessPoint')) return '#7c3aed'  // purple
-  if (caps.includes('telephone'))       return '#ea580c'  // orange
-  return '#475569' // slate
+  if (isRouter(caps) && !isSwitch(caps)) return '#2563eb'  // blue  — pure router
+  if (isSwitch(caps))                    return '#16a34a'  // green — switch/bridge (may also route)
+  if (isAP(caps))                        return '#7c3aed'  // purple
+  if (isPhone(caps))                     return '#ea580c'  // orange
+  return '#475569'
 }
 
 interface TopoNode {
@@ -188,7 +193,7 @@ function NeighbourMap({ deviceName, nodes }: { deviceName: string; nodes: TopoNo
             {/* capability icon letter */}
             <text x={nx} y={ny + 4} fontSize={10} fontWeight="600"
               fill={color} textAnchor="middle">
-              {n.caps.includes('router') ? 'R' : n.caps.includes('bridge') || n.caps.includes('switch') ? 'SW' : n.caps.includes('wlanAccessPoint') ? 'AP' : '?'}
+              {isRouter(n.caps) && !isSwitch(n.caps) ? 'R' : isSwitch(n.caps) ? 'SW' : isAP(n.caps) ? 'AP' : isPhone(n.caps) ? 'T' : '?'}
             </text>
             {/* label */}
             <text x={nx} y={ny + 32} fontSize={10} fill="#334155" textAnchor="middle" fontWeight="500">
