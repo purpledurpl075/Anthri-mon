@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from 'react-router-dom'
 import { fetchDevices } from '../api/devices'
+import { fetchMaintenanceWindows } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
 
@@ -21,6 +22,17 @@ export default function DeviceList() {
     queryFn: () => fetchDevices({ limit: 200 }),
     refetchInterval: 30_000,
   })
+
+  const { data: activeWindows = [] } = useQuery({
+    queryKey: ['maintenance-active'],
+    queryFn: () => fetchMaintenanceWindows({ active_only: true }),
+    refetchInterval: 60_000,
+  })
+  const inMaintenance = new Set(
+    activeWindows.flatMap(w =>
+      (w.device_selector?.device_ids as string[] | undefined) ?? []
+    )
+  )
 
   if (isLoading) return <div className="p-8 text-slate-500">Loading devices…</div>
   if (error) return <div className="p-8 text-red-600">Failed to load devices.</div>
@@ -71,7 +83,17 @@ export default function DeviceList() {
                   <td className="px-4 py-3 text-slate-600 font-mono text-xs">{d.mgmt_ip}</td>
                   <td className="px-4 py-3"><VendorBadge vendor={d.vendor} /></td>
                   <td className="px-4 py-3 text-slate-500 capitalize">{d.device_type}</td>
-                  <td className="px-4 py-3"><StatusBadge status={d.status} /></td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={d.status} />
+                      {inMaintenance.has(d.id) && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700 border border-amber-200">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                          Maintenance
+                        </span>
+                      )}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-slate-500">{formatAge(d.last_seen)}</td>
                 </tr>
               ))}

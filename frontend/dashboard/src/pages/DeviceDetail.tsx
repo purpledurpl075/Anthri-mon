@@ -109,6 +109,20 @@ function PlaceholderSection({ title, description }: { title: string; description
 
 // ── Maintenance windows ────────────────────────────────────────────────────────
 
+function MaintenanceBadge({ deviceId }: { deviceId: string }) {
+  const { data: windows = [] } = useQuery({
+    queryKey: ['maintenance', deviceId],
+    queryFn: () => fetchMaintenanceWindows({ device_id: deviceId }),
+  })
+  if (!windows.some(w => w.is_active)) return null
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800 border border-amber-300">
+      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+      In maintenance
+    </span>
+  )
+}
+
 function fmt(iso: string) {
   return new Date(iso).toLocaleString(undefined, {
     month: 'short', day: 'numeric', year: 'numeric',
@@ -363,6 +377,7 @@ export default function DeviceDetail() {
         </nav>
         <div className="flex items-center gap-3">
           <StatusBadge status={device.status} />
+          <MaintenanceBadge deviceId={id!} />
           <button
             onClick={openSettings}
             className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
