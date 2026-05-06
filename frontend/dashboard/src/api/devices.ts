@@ -103,3 +103,18 @@ export interface AddressesResponse {
 
 export const fetchDeviceAddresses = (id: string, params?: { search?: string; type?: string; limit?: number; offset?: number }) =>
   api.get<AddressesResponse>(`/devices/${id}/addresses`, { params }).then(r => r.data)
+
+export interface GlobalAddressEntry extends AddressEntry {
+  device_id: string
+  device_name: string
+}
+
+export interface GlobalAddressesResponse {
+  total: number
+  limit: number
+  offset: number
+  items: GlobalAddressEntry[]
+}
+
+export const fetchAllAddresses = (params?: { search?: string; type?: string; device_id?: string; limit?: number; offset?: number }) =>
+  api.get<GlobalAddressesResponse>('/devices/addresses', { params }).then(r => r.data)

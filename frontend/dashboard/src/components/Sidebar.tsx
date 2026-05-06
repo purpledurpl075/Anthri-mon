@@ -133,6 +133,18 @@ export default function Sidebar() {
           </svg>
           Policies
         </NavLink>
+        <NavLink to="/addresses"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`
+          }
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M4 7h16M4 12h16M4 17h10"/>
+          </svg>
+          Addresses
+        </NavLink>
         <NavLink to="/alert-rules"
           className={({ isActive }) =>
             `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${

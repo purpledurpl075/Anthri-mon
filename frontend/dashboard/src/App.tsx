@@ -11,6 +11,7 @@ import AlertsPage from './pages/AlertsPage'
 import AlertRulesPage from './pages/AlertRulesPage'
 import PoliciesPage from './pages/PoliciesPage'
 import AdminPage from './pages/AdminPage'
+import AddressesPage from './pages/AddressesPage'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 
@@ -35,6 +36,7 @@ export default function App() {
             <Route path="/alert-rules"  element={<AlertRulesPage />} />
             <Route path="/policies"     element={<PoliciesPage />} />
             <Route path="/admin"        element={<AdminPage />} />
+            <Route path="/addresses"    element={<AddressesPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
