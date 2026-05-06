@@ -363,7 +363,7 @@ async def list_neighbours(
                 "remote_port": n.remote_port_id or n.remote_port_desc,
                 "remote_chassis_id": n.remote_chassis_id,
                 "remote_chassis_id_subtype": n.remote_chassis_id_subtype,
-                "remote_mgmt_ip": n.remote_mgmt_ip,
+                "remote_mgmt_ip": str(n.remote_mgmt_ip) if n.remote_mgmt_ip else None,
                 "capabilities": n.remote_system_capabilities or [],
                 "updated_at": n.updated_at.isoformat(),
             }
@@ -374,7 +374,7 @@ async def list_neighbours(
                 "local_port": n.local_port_name,
                 "remote_device": n.remote_device_id,
                 "remote_port": n.remote_port_id,
-                "remote_mgmt_ip": n.remote_mgmt_ip,
+                "remote_mgmt_ip": str(n.remote_mgmt_ip) if n.remote_mgmt_ip else None,
                 "platform": n.remote_platform,
                 "capabilities": n.remote_capabilities or [],
                 "native_vlan": n.native_vlan,
