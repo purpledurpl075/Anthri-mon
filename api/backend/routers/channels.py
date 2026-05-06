@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..alerting.notify import _build_email, _send_smtp
+from ..alerting.notify import _build_test_email, _load_smtp, _send_smtp
 from ..dependencies import get_current_user, get_db, require_role
-from ..models.alert import Alert, AlertRule, NotificationChannel
+from ..models.alert import NotificationChannel
 from ..models.tenant import User
 from ..schemas.alert import NotificationChannelCreate, NotificationChannelRead, NotificationChannelUpdate
 from ..schemas.common import PaginatedResponse
@@ -98,23 +98,25 @@ async def test_channel(
     db: AsyncSession = Depends(get_db),
 ) -> None:
     import asyncio
-    from datetime import datetime, timezone
 
     channel = await _get(channel_id, current_user.tenant_id, db)
     if not channel.is_enabled:
         raise HTTPException(status_code=400, detail="Channel is disabled")
 
-    if channel.type == "email":
-        subject = "[TEST] Anthrimon notification channel test"
-        body = "\n".join([
-            "This is a test notification from Anthrimon.",
-            f"Channel: {channel.name}",
-            f"Sent at: {datetime.now(timezone.utc).isoformat()}",
-        ])
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _send_smtp, channel.config, subject, body)
-    else:
+    if channel.type != "email":
         raise HTTPException(status_code=400, detail=f"Test not supported for type '{channel.type}'")
+
+    smtp = await _load_smtp(db)
+    if smtp is None:
+        raise HTTPException(status_code=400, detail="SMTP server is not configured — set it in Administration > SMTP Server")
+
+    recipients: list[str] = channel.config.get("to", [])
+    if not recipients:
+        raise HTTPException(status_code=400, detail="Channel has no recipients configured")
+
+    subject, body = _build_test_email()
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _send_smtp, smtp, recipients, subject, body)
 
 
 async def _get(channel_id: uuid.UUID, tenant_id: uuid.UUID, db: AsyncSession) -> NotificationChannel:

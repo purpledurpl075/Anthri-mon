@@ -51,16 +51,6 @@ class Settings(BaseSettings):
     # Comma-separated list of allowed origins. Empty = use hardcoded dev defaults.
     cors_origins: list[str] = []
 
-    # ── SMTP notifications ────────────────────────────────────────────────────
-    # Leave smtp_host empty to disable email notifications.
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    smtp_from: str = "anthrimon@localhost"
-    # True = SMTP_SSL (port 465).  False = plain SMTP with STARTTLS (port 587).
-    smtp_ssl: bool = False
-
     # ── Tenancy ───────────────────────────────────────────────────────────────
     # The default tenant UUID inserted by migration 001_init.sql.
     default_tenant_id: str = "00000000-0000-0000-0000-000000000001"
