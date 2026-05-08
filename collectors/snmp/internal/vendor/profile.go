@@ -14,6 +14,14 @@ package vendor
 type OIDSet struct {
 	Walk   []string // table/subtree OIDs — use BulkWalkAll
 	Scalar []string // scalar OIDs — use a single GET
+
+	// IdleComplement: scalar returns CPU idle %; actual load = 100 - value.
+	// Used for UCD-SNMP-MIB ssCpuIdle on Linux/NET-SNMP devices.
+	IdleComplement bool
+
+	// KBAvailable: scalars are [totalKB, availKB]; used = total - avail.
+	// Used for UCD-SNMP-MIB memTotalReal/memAvailReal on Linux/NET-SNMP devices.
+	KBAvailable bool
 }
 
 // Profile describes one vendor's SNMP characteristics.

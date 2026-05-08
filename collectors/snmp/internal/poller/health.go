@@ -93,9 +93,13 @@ func pollCPUVendor(s *client.Session, profile *vendor.Profile) ([]model.CPUSampl
 			return nil, err
 		}
 		for i, pdu := range pdus {
+			load := float64(client.PDUUint64(pdu))
+			if oset.IdleComplement {
+				load = 100 - load // ssCpuIdle → CPU usage
+			}
 			samples = append(samples, model.CPUSample{
 				CPUIndex: i,
-				LoadPct:  float64(client.PDUUint64(pdu)),
+				LoadPct:  load,
 			})
 		}
 	}
@@ -192,10 +196,22 @@ func pollMemoryVendor(s *client.Session, profile *vendor.Profile) ([]model.Memor
 		if len(pdus) < 2 {
 			return nil, nil
 		}
-		usedPct := client.PDUUint64(pdus[0])
-		totalKB := client.PDUUint64(pdus[1])
-		totalBytes := totalKB * 1024
-		usedBytes := totalBytes * usedPct / 100
+		var totalBytes, usedBytes uint64
+		if oset.KBAvailable {
+			// UCD-SNMP: [totalKB, availKB]; used = total - avail
+			totalKB := client.PDUUint64(pdus[0])
+			availKB := client.PDUUint64(pdus[1])
+			totalBytes = totalKB * 1024
+			if availKB < totalKB {
+				usedBytes = (totalKB - availKB) * 1024
+			}
+		} else {
+			// FortiGate: [usedPct, totalKB]
+			usedPct := client.PDUUint64(pdus[0])
+			totalKB := client.PDUUint64(pdus[1])
+			totalBytes = totalKB * 1024
+			usedBytes = totalBytes * usedPct / 100
+		}
 		return []model.MemorySample{{
 			Descr:      "RAM",
 			Type:       "ram",

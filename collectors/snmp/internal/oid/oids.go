@@ -154,6 +154,16 @@ const (
 	FgHwSensorEntAlarmStatus = "1.3.6.1.4.1.12356.101.4.4.2.1.4"
 )
 
+// ── UCD-SNMP-MIB (NET-SNMP Linux) ────────────────────────────────────────────
+// Standard on NET-SNMP agents (Linux/embedded). Use when HOST-RESOURCES-MIB
+// hrProcessorLoad returns empty (common on embedded platforms like UniFi).
+
+const (
+	UCDSsCpuIdle    = "1.3.6.1.4.1.2021.11.11.0" // ssCpuIdle — % idle time; CPU% = 100 - idle
+	UCDMemTotalReal = "1.3.6.1.4.1.2021.4.5.0"   // memTotalReal — total physical RAM (KB)
+	UCDMemAvailReal = "1.3.6.1.4.1.2021.4.6.0"   // memAvailReal — available physical RAM (KB)
+)
+
 // ── OSPF-MIB (RFC 1850) ───────────────────────────────────────────────────────
 // ospfNbrTable: one row per OSPF neighbour relationship.
 // Indexed by (ospfNbrIpAddr, ospfNbrAddressLessIndex).
