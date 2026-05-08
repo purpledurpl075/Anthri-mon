@@ -150,6 +150,17 @@ class Alert(Base):
     rule: Mapped[Optional["AlertRule"]] = relationship("AlertRule", back_populates="alerts", lazy="noload")
 
 
+class AlertComment(Base):
+    __tablename__ = "alert_comments"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    alert_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("alerts.id", ondelete="CASCADE"), nullable=False)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
 class AuditLog(Base):
     """Append-only audit trail. Use BIGSERIAL for fast sequential inserts."""
     __tablename__ = "audit_log"

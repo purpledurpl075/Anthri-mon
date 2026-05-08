@@ -1,7 +1,13 @@
+import { useState, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchAlert, acknowledgeAlert, resolveAlert } from '../api/alerts'
 import { fetchDevice } from '../api/devices'
+import api from '../api/client'
+
+interface AlertComment { id: string; body: string; author: string; created_at: string }
+const fetchComments = (id: string) => api.get<AlertComment[]>(`/alerts/${id}/comments`).then(r => r.data)
+const postComment   = (id: string, body: string) => api.post<AlertComment>(`/alerts/${id}/comments`, { body }).then(r => r.data)
 
 const SEVERITY_STYLE: Record<string, string> = {
   critical: 'bg-red-100 text-red-700 border-red-200',
@@ -215,6 +221,100 @@ export default function AlertDetailPage() {
             </Row>
           </div>
         )}
+
+        {/* Comments — full width */}
+        <div className="lg:col-span-2">
+          <CommentThread alertId={alert.id} />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CommentThread({ alertId }: { alertId: string }) {
+  const qc = useQueryClient()
+  const [text, setText] = useState('')
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  const { data: comments = [] } = useQuery({
+    queryKey: ['alert-comments', alertId],
+    queryFn: () => fetchComments(alertId),
+    refetchInterval: 30_000,
+  })
+
+  const addMut = useMutation({
+    mutationFn: () => postComment(alertId, text.trim()),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['alert-comments', alertId] })
+      setText('')
+      textareaRef.current?.focus()
+    },
+  })
+
+  function timeAgo(iso: string) {
+    const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+    if (secs < 60) return `${secs}s ago`
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+    if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
+    return new Date(iso).toLocaleDateString()
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5">
+      <h2 className="text-sm font-semibold text-slate-700 mb-4">Comments</h2>
+
+      {/* Thread */}
+      {comments.length === 0 ? (
+        <p className="text-xs text-slate-400 mb-4">No comments yet — add one below.</p>
+      ) : (
+        <div className="space-y-4 mb-5">
+          {comments.map(c => (
+            <div key={c.id} className="flex gap-3">
+              <div className="w-7 h-7 rounded-full bg-slate-200 flex items-center justify-center shrink-0 text-[10px] font-bold text-slate-600 uppercase">
+                {c.author.slice(0, 2)}
+              </div>
+              <div className="flex-1">
+                <div className="flex items-baseline gap-2 mb-1">
+                  <span className="text-xs font-semibold text-slate-700">{c.author}</span>
+                  <span className="text-[10px] text-slate-400">{timeAgo(c.created_at)}</span>
+                </div>
+                <p className="text-xs text-slate-600 whitespace-pre-wrap leading-relaxed">{c.body}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Compose */}
+      <div className="flex gap-3 items-start">
+        <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center shrink-0 text-[10px] font-bold text-blue-700">
+          You
+        </div>
+        <div className="flex-1 space-y-2">
+          <textarea
+            ref={textareaRef}
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && text.trim()) {
+                e.preventDefault()
+                addMut.mutate()
+              }
+            }}
+            placeholder="Add a comment — describe the problem, actions taken, or resolution… (Ctrl+Enter to submit)"
+            rows={3}
+            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+          />
+          <div className="flex justify-end">
+            <button
+              onClick={() => addMut.mutate()}
+              disabled={!text.trim() || addMut.isPending}
+              className="px-4 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              {addMut.isPending ? 'Posting…' : 'Comment'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )
