@@ -47,17 +47,6 @@ const nav = [
   },
 ]
 
-const soon = [
-  {
-    label: 'Topology',
-    icon: (
-      <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-        <circle cx="18" cy="5" r="3" /><circle cx="6" cy="12" r="3" /><circle cx="18" cy="19" r="3" />
-        <path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98" />
-      </svg>
-    ),
-  },
-]
 
 export default function Sidebar() {
   const navigate = useNavigate()
@@ -172,19 +161,19 @@ export default function Sidebar() {
           Administration
         </NavLink>
 
-        <div className="pt-4 pb-1 px-3">
-          <span className="text-xs font-medium text-slate-600 uppercase tracking-wider">Coming soon</span>
-        </div>
-
-        {soon.map(({ label, icon }) => (
-          <div
-            key={label}
-            className="flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-slate-600 cursor-not-allowed select-none"
-          >
-            {icon}
-            {label}
-          </div>
-        ))}
+        <NavLink to="/topology"
+          className={({ isActive }) =>
+            `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+              isActive ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`
+          }
+        >
+          <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+            <path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/>
+          </svg>
+          Topology
+        </NavLink>
       </nav>
 
       {/* Account + sign out */}

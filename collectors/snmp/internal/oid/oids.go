@@ -154,6 +154,15 @@ const (
 	FgHwSensorEntAlarmStatus = "1.3.6.1.4.1.12356.101.4.4.2.1.4"
 )
 
+// ── IP-MIB: ipAddrTable (RFC 1213) ───────────────────────────────────────────
+// One row per IP address configured on the device.
+// Indexed by the IP address itself (4 decimal octets).
+const (
+	IPAddrTable    = "1.3.6.1.2.1.4.20.1"  // ipAddrEntry subtree
+	IPAdEntIfIndex = "1.3.6.1.2.1.4.20.1.2" // col 2: ifIndex
+	IPAdEntNetMask = "1.3.6.1.2.1.4.20.1.3" // col 3: subnet mask
+)
+
 // ── Aruba: WLSX-SYSTEMEXT-MIB ────────────────────────────────────────────────
 // Present on ArubaOS campus APs and controllers (not ArubaOS-CX switches).
 

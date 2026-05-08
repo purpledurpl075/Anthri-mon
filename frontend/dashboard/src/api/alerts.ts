@@ -21,3 +21,6 @@ export const updateAlertRule = (id: string, body: Record<string, unknown>) =>
 
 export const deleteAlertRule = (id: string) =>
   api.delete(`/alert-rules/${id}`)
+
+export const fetchAlert = (id: string) =>
+  api.get<Alert>(`/alerts/${id}`).then(r => r.data)

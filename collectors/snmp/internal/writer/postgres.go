@@ -154,18 +154,21 @@ func (w *PostgresWriter) upsertInterfaces(ctx context.Context, deviceID uuid.UUI
 			lastChange = &t
 		}
 
+		// Serialize IP addresses as JSONB.
+		ipJSON := marshalIPs(iface.IPAddresses)
+
 		// Upsert the interface row.
 		batch.Queue(`
 			INSERT INTO interfaces (
 				device_id, if_index, name, description, if_type,
 				speed_bps, mtu, mac_address,
 				admin_status, oper_status, last_change,
-				updated_at
+				ip_addresses, updated_at
 			) VALUES (
 				$1, $2, $3, $4, $5,
 				$6, $7, $8,
 				$9::if_status, $10::if_status, $11,
-				$12
+				$12, $13
 			)
 			ON CONFLICT (device_id, if_index) DO UPDATE SET
 				name         = EXCLUDED.name,
@@ -177,12 +180,17 @@ func (w *PostgresWriter) upsertInterfaces(ctx context.Context, deviceID uuid.UUI
 				admin_status = EXCLUDED.admin_status,
 				oper_status  = EXCLUDED.oper_status,
 				last_change  = EXCLUDED.last_change,
+				ip_addresses = CASE
+					WHEN EXCLUDED.ip_addresses != '[]'::jsonb
+					THEN EXCLUDED.ip_addresses
+					ELSE interfaces.ip_addresses
+				END,
 				updated_at   = EXCLUDED.updated_at
 		`,
 			deviceID, iface.IfIndex, ifName(iface), nullStr(iface.IfAlias), nullStr(iface.IfType),
 			nullUint64(iface.SpeedBPS), nullInt(iface.MTU), nullStr(iface.MACAddress),
 			iface.AdminStatus, iface.OperStatus, lastChange,
-			iface.PollTime,
+			ipJSON, iface.PollTime,
 		)
 
 		// Log a status-change event if oper_status changed.
@@ -578,5 +586,19 @@ func nullInt(v int) *int {
 		return nil
 	}
 	return &v
+}
+
+func marshalIPs(ips []model.InterfaceIP) []byte {
+	type entry struct {
+		Address   string `json:"address"`
+		PrefixLen int    `json:"prefix_len"`
+		Version   int    `json:"version"`
+	}
+	entries := make([]entry, 0, len(ips))
+	for _, ip := range ips {
+		entries = append(entries, entry{ip.Address, ip.PrefixLen, ip.Version})
+	}
+	b, _ := json.Marshal(entries)
+	return b
 }
 

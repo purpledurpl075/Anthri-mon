@@ -57,8 +57,16 @@ type InterfaceResult struct {
 
 	// ifLastChange as an absolute UTC timestamp (best-effort, derived from
 	// sysUpTime + ifLastChange timeticks). May be zero if unavailable.
-	LastChange time.Time
-	PollTime   time.Time
+	LastChange  time.Time
+	PollTime    time.Time
+	IPAddresses []InterfaceIP // populated from ipAddrTable
+}
+
+// InterfaceIP is one IP address entry from ipAddrTable.
+type InterfaceIP struct {
+	Address   string // dotted-decimal IPv4
+	PrefixLen int    // derived from subnet mask
+	Version   int    // 4 or 6
 }
 
 // CPUSample holds a single CPU utilisation reading.

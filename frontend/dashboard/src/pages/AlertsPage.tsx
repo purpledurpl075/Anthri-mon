@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { fetchAlerts, acknowledgeAlert, resolveAlert } from '../api/alerts'
 import type { Alert } from '../api/types'
 
@@ -35,6 +36,7 @@ function timeAgo(iso: string) {
 
 export default function AlertsPage() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const [statusFilter, setStatusFilter] = useState('open')
   const [severityFilter, setSeverityFilter] = useState('')
   const [showHistory, setShowHistory] = useState(false)
@@ -146,7 +148,8 @@ export default function AlertsPage() {
               </thead>
               <tbody className="divide-y divide-slate-50">
                 {alerts.map((a: Alert) => (
-                  <tr key={a.id} className="hover:bg-slate-50">
+                  <tr key={a.id} className="hover:bg-slate-50 cursor-pointer"
+                    onClick={() => navigate(`/alerts/${a.id}`)}>
                     <td className="px-4 py-3">
                       <div className={`w-2 h-2 rounded-full ${SEVERITY_DOT[a.severity] ?? 'bg-slate-300'}`} />
                     </td>
@@ -171,7 +174,7 @@ export default function AlertsPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-400">{timeAgo(a.triggered_at)}</td>
-                    <td className="px-4 py-3 text-right space-x-2">
+                    <td className="px-4 py-3 text-right space-x-2" onClick={e => e.stopPropagation()}>
                       {a.status === 'open' && (
                         <button
                           onClick={() => ackMutation.mutate(a.id)}
