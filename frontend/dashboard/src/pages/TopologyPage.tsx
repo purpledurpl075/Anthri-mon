@@ -3,8 +3,9 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   ReactFlow, Controls, Background, MiniMap,
+  BaseEdge, EdgeLabelRenderer, getSmoothStepPath,
   Handle, Position,
-  type NodeProps, type Node, type Edge, type NodeMouseHandler,
+  type NodeProps, type Node, type Edge, type EdgeProps, type NodeMouseHandler,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { fetchTopology, type TopologyNode, type TopologyEdge } from '../api/topology'
@@ -92,6 +93,62 @@ function DeviceNode({ data, selected }: NodeProps) {
 }
 
 const NODE_TYPES = { device: DeviceNode }
+
+// ── Custom edge ────────────────────────────────────────────────────────────
+
+function TopologyEdge({
+  id, sourceX, sourceY, targetX, targetY,
+  sourcePosition, targetPosition,
+  data, selected,
+  markerEnd,
+}: EdgeProps) {
+  const d = data as { label?: string; protocol?: string; highlighted?: boolean; dimmed?: boolean }
+  const isLLDP  = d.protocol === 'lldp'
+  const color   = isLLDP ? '#0891b2' : '#7c3aed'
+  const dimmed  = d.dimmed
+  const hilit   = d.highlighted || selected
+
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
+    sourceX, sourceY, sourcePosition,
+    targetX, targetY, targetPosition,
+    borderRadius: 12,
+  })
+
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={{
+          stroke:      color,
+          strokeWidth: hilit ? 2.5 : 1.5,
+          opacity:     dimmed ? 0.2 : 1,
+          transition:  'opacity 0.15s, stroke-width 0.15s',
+          strokeDasharray: hilit ? '6 3' : undefined,
+          animation:   hilit ? 'dash 0.8s linear infinite' : undefined,
+        }}
+      />
+      {d.label && !dimmed && (
+        <EdgeLabelRenderer>
+          <div
+            style={{
+              position:  'absolute',
+              transform: `translate(-50%,-50%) translate(${labelX}px,${labelY}px)`,
+              pointerEvents: 'none',
+            }}
+          >
+            <span className="text-[9px] font-mono text-slate-500 bg-white/90 border border-slate-200 rounded px-1.5 py-0.5 shadow-sm leading-none whitespace-nowrap">
+              {d.label}
+            </span>
+          </div>
+        </EdgeLabelRenderer>
+      )}
+    </>
+  )
+}
+
+const EDGE_TYPES = { topology: TopologyEdge }
 
 // ── Device detail panel ────────────────────────────────────────────────────
 
@@ -295,24 +352,20 @@ export default function TopologyPage() {
     return data.edges
       .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
       .map(e => {
-        const isAdj = selectedId && (e.source === selectedId || e.target === selectedId)
+        const isAdj = !selectedId || e.source === selectedId || e.target === selectedId
+        const label = e.source_port && e.target_port
+          ? `${e.source_port} → ${e.target_port}`
+          : e.source_port ?? e.target_port ?? ''
         return {
           id:     e.id,
           source: e.source,
           target: e.target,
-          type:   'straight',
-          label:  e.source_port && e.target_port
-            ? `${e.source_port} → ${e.target_port}`
-            : e.source_port ?? e.target_port ?? '',
-          labelStyle:     { fontSize: 9, fill: '#64748b' },
-          labelBgStyle:   { fill: 'white', fillOpacity: 0.85 },
-          labelBgPadding: [4, 3] as [number, number],
-          style: {
-            stroke:      isAdj
-              ? (e.protocol === 'lldp' ? '#0891b2' : '#7c3aed')
-              : '#cbd5e1',
-            strokeWidth: isAdj ? 2.5 : 1.5,
-            opacity:     selectedId && !isAdj ? 0.3 : 1,
+          type:   'topology',
+          data: {
+            label,
+            protocol:    e.protocol,
+            highlighted: !!selectedId && isAdj,
+            dimmed:      !!selectedId && !isAdj,
           },
         }
       })
@@ -380,6 +433,7 @@ export default function TopologyPage() {
               nodes={rfNodes}
               edges={rfEdges}
               nodeTypes={NODE_TYPES}
+              edgeTypes={EDGE_TYPES}
               onNodeClick={onNodeClick}
               onPaneClick={() => setSelectedId(null)}
               fitView
