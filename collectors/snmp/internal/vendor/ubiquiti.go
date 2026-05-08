@@ -18,7 +18,7 @@ import "github.com/purpledurpl075/anthri-mon/collectors/snmp/internal/oid"
 func init() {
 	Register(&Profile{
 		Name:         "Ubiquiti UniFi / UBNT",
-		DBVendorType: "unknown", // update to "ubiquiti" after running 015_ubiquiti_vendor.sql
+		DBVendorType: "ubiquiti",
 		DBDeviceType: "router",  // UCG/UDM/USG are gateway/routers
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.41112", // Ubiquiti enterprise OID (older devices)
