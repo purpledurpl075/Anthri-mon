@@ -506,14 +506,38 @@ async def get_ospf_neighbours(
         for r in direct
     ]
 
-    # Add inferred entries (seen from the peer's perspective)
+    # Add inferred entries (seen from the peer's perspective).
+    # To find the peer's OSPF-facing IP, look in THIS device's ARP table for
+    # an entry whose MAC matches the peer's known interfaces.
+    # Fall back to the peer's mgmt_ip if not found.
+    peer_macs = {}
+    for _, peer_device in inferred:
+        iface_macs = (await db.execute(
+            select(Interface.mac_address)
+            .where(Interface.device_id == peer_device.id,
+                   Interface.mac_address.isnot(None))
+        )).scalars().all()
+        peer_macs[str(peer_device.id)] = {str(m) for m in iface_macs}
+
+    local_arp = (await db.execute(
+        select(ARPEntry).where(ARPEntry.device_id == device_id)
+    )).scalars().all()
+    arp_by_mac = {str(a.mac_address): str(a.ip_address) for a in local_arp}
+
     seen_ips = {r["neighbour_ip"] for r in results}
     for row, peer_device in inferred:
-        peer_ip = str(peer_device.mgmt_ip).split("/")[0]
+        # Try to find the peer's OSPF IP from this device's ARP table
+        ospf_ip = None
+        for mac in peer_macs.get(str(peer_device.id), []):
+            if mac in arp_by_mac:
+                ospf_ip = arp_by_mac[mac]
+                break
+        peer_ip = ospf_ip or str(peer_device.mgmt_ip).split("/")[0]
+
         if peer_ip not in seen_ips:
             results.append({
                 "neighbour_ip":      peer_ip,
-                "router_id":         peer_ip,           # use IP not hostname so display is consistent
+                "router_id":         peer_ip,
                 "display_name":      str(peer_device.fqdn or peer_device.hostname),
                 "state":             row.state,
                 "area":              row.area,
