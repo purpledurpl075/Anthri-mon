@@ -101,6 +101,16 @@ type HealthResult struct {
 	PollTime    time.Time
 }
 
+// RouteEntry is one row from ipCidrRouteTable for a device.
+type RouteEntry struct {
+	DeviceID      uuid.UUID
+	Destination   string // "10.0.2.0/24"
+	NextHop       string // "" for connected routes
+	Protocol      string // "connected" | "static" | "ospf" | "other"
+	Metric        int
+	InterfaceName string // resolved from ifIndex, "" if unknown
+}
+
 // OSPFNeighbour is one row from ospfNbrTable for a device.
 type OSPFNeighbour struct {
 	DeviceID      uuid.UUID

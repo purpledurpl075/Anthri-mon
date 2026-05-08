@@ -15,7 +15,7 @@ from ..models.alert import Alert
 from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
 from ..models.health import DeviceHealthLatest
-from ..models.interface import ARPEntry, CDPNeighbor, Interface, LLDPNeighbor, MACEntry, OSPFNeighbour
+from ..models.interface import ARPEntry, CDPNeighbor, Interface, LLDPNeighbor, MACEntry, OSPFNeighbour, RouteEntry
 from ..models.tenant import User
 from ..schemas.alert import AlertRead
 from ..schemas.common import PaginatedResponse
@@ -457,6 +457,35 @@ async def get_addresses(
         "offset": offset,
         "items": items[offset: offset + limit],
     }
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
+@router.get("/{device_id}/routes", summary="IP routing table")
+async def get_routes(
+    device_id: uuid.UUID,
+    protocol: Optional[str] = Query(default=None, description="connected|static|ospf|other"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _assert_device_visible(device_id, current_user, db)
+    q = select(RouteEntry).where(RouteEntry.device_id == device_id)
+    if protocol:
+        q = q.where(RouteEntry.protocol == protocol)
+    rows = (await db.execute(
+        q.order_by(RouteEntry.destination)
+    )).scalars().all()
+    return [
+        {
+            "destination":    r.destination,
+            "next_hop":       r.next_hop or None,
+            "protocol":       r.protocol,
+            "metric":         r.metric,
+            "interface_name": r.interface_name,
+            "updated_at":     r.updated_at.isoformat(),
+        }
+        for r in rows
+    ]
 
 
 # ── OSPF ──────────────────────────────────────────────────────────────────────

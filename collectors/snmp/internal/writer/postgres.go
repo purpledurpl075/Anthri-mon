@@ -72,6 +72,12 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 		}
 	}
 
+	if len(result.RouteEntries) > 0 {
+		if err := w.upsertRouteEntries(ctx, result.DeviceID, result.RouteEntries); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert route entries failed")
+		}
+	}
+
 	if len(result.OSPFNeighbours) > 0 {
 		if err := w.upsertOSPFNeighbours(ctx, result.DeviceID, result.OSPFNeighbours); err != nil {
 			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert ospf neighbours failed")
@@ -283,6 +289,31 @@ func (w *PostgresWriter) upsertHealth(ctx context.Context, h *model.HealthResult
 		tempsJSON, h.UptimeSecs,
 	)
 	return err
+}
+
+// ── Routes ────────────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertRouteEntries(ctx context.Context, deviceID uuid.UUID, routes []*model.RouteEntry) error {
+	batch := &pgx.Batch{}
+	for _, r := range routes {
+		batch.Queue(`
+			INSERT INTO route_entries (device_id, destination, next_hop, protocol, metric, interface_name)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (device_id, destination, next_hop) DO UPDATE SET
+				protocol       = EXCLUDED.protocol,
+				metric         = EXCLUDED.metric,
+				interface_name = EXCLUDED.interface_name,
+				updated_at     = NOW()
+		`, deviceID, r.Destination, r.NextHop, r.Protocol, nullInt(r.Metric), nullStr(r.InterfaceName))
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("route entry batch exec error")
+		}
+	}
+	return nil
 }
 
 // ── OSPF ──────────────────────────────────────────────────────────────────────

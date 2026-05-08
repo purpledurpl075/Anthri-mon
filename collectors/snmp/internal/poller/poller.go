@@ -25,6 +25,7 @@ type PollResult struct {
 	LLDPNeighbors  []*model.LLDPNeighbor   // nil if not polled this cycle
 	CDPNeighbors   []*model.CDPNeighbor    // nil if not polled this cycle
 	OSPFNeighbours []*model.OSPFNeighbour  // nil if not polled this cycle
+	RouteEntries   []*model.RouteEntry    // nil if not polled this cycle
 	ARPEntries     []*model.ARPEntry       // nil if not polled this cycle
 	MACEntries     []*model.MACEntry       // nil if not polled this cycle
 }
@@ -293,6 +294,12 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				log.Warn().Err(err).Msg("ospf poll failed (non-fatal)")
 			} else if len(ospf) > 0 {
 				result.OSPFNeighbours = ospf
+			}
+
+			if routes, err := PollRouteTable(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("route table poll failed (non-fatal)")
+			} else if len(routes) > 0 {
+				result.RouteEntries = routes
 			}
 
 			if arp, err := PollARPTable(session, dev.ID, ifByIndex); err != nil {

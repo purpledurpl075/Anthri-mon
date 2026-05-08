@@ -100,6 +100,18 @@ export interface OSPFNeighbourEntry {
 export const fetchDeviceOSPF = (id: string) =>
   api.get<OSPFNeighbourEntry[]>(`/devices/${id}/ospf`).then(r => r.data)
 
+export interface RouteEntry {
+  destination: string
+  next_hop: string | null
+  protocol: string
+  metric: number | null
+  interface_name: string | null
+  updated_at: string
+}
+
+export const fetchDeviceRoutes = (id: string, protocol?: string) =>
+  api.get<RouteEntry[]>(`/devices/${id}/routes`, { params: protocol ? { protocol } : undefined }).then(r => r.data)
+
 export interface AddressEntry {
   type: 'arp' | 'mac'
   ip: string | null

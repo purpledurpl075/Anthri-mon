@@ -76,6 +76,19 @@ class CDPNeighbor(Base):
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
 
+class RouteEntry(Base):
+    __tablename__ = "route_entries"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    destination: Mapped[str] = mapped_column(Text, nullable=False)
+    next_hop: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    protocol: Mapped[str] = mapped_column(Text, nullable=False)
+    metric: Mapped[Optional[int]] = mapped_column(Integer)
+    interface_name: Mapped[Optional[str]] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
 class OSPFNeighbour(Base):
     __tablename__ = "ospf_neighbors"
 

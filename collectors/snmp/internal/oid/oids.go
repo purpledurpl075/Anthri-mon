@@ -154,6 +154,11 @@ const (
 	FgHwSensorEntAlarmStatus = "1.3.6.1.4.1.12356.101.4.4.2.1.4"
 )
 
+// ── IP-FORWARD-MIB: ipCidrRouteTable (RFC 2096) ──────────────────────────────
+// One row per route entry.  Indexed by (dest, mask, tos, nextHop) — all IPs.
+// We walk the whole table and filter by protocol column.
+const IPCidrRouteTable = "1.3.6.1.2.1.4.24.4.1"
+
 // ── IP-MIB: ipAddrTable (RFC 1213) ───────────────────────────────────────────
 // One row per IP address configured on the device.
 // Indexed by the IP address itself (4 decimal octets).

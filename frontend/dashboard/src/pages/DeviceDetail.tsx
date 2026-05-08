@@ -7,7 +7,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, type AddressEntry } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, type AddressEntry } from '../api/devices'
 import { fetchCredentials } from '../api/credentials'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
@@ -539,6 +539,85 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
   )
 }
 
+// ── Routes ────────────────────────────────────────────────────────────────────
+
+const PROTO_STYLE: Record<string, string> = {
+  connected: 'bg-green-100 text-green-700',
+  static:    'bg-yellow-100 text-yellow-700',
+  ospf:      'bg-blue-100 text-blue-700',
+  other:     'bg-slate-100 text-slate-500',
+}
+
+function RoutesSection({ deviceId }: { deviceId: string }) {
+  const [protoFilter, setProto] = useState<string>('all')
+
+  const { data: routes = [], isLoading } = useQuery({
+    queryKey: ['routes', deviceId, protoFilter],
+    queryFn: () => fetchDeviceRoutes(deviceId, protoFilter === 'all' ? undefined : protoFilter),
+    staleTime: 30_000,
+  })
+
+  const protocols = ['all', 'connected', 'ospf', 'static', 'other']
+
+  return (
+    <div className="space-y-3">
+      {/* Protocol filter */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {protocols.map(p => (
+          <button key={p} onClick={() => setProto(p)}
+            className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+              protoFilter === p
+                ? 'bg-slate-800 text-white border-slate-800'
+                : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+            }`}>
+            {p === 'all' ? 'All' : p.charAt(0).toUpperCase() + p.slice(1)}
+          </button>
+        ))}
+        {routes.length > 0 && (
+          <span className="text-xs text-slate-400 ml-1">{routes.length} route{routes.length !== 1 ? 's' : ''}</span>
+        )}
+      </div>
+
+      {isLoading ? (
+        <p className="text-xs text-slate-400">Loading…</p>
+      ) : routes.length === 0 ? (
+        <p className="text-xs text-slate-400">
+          {protoFilter === 'all' ? 'No route data yet — waiting for a poll cycle.' : `No ${protoFilter} routes.`}
+        </p>
+      ) : (
+        <div className="overflow-auto rounded-lg border border-slate-200" style={{ maxHeight: 480 }}>
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium text-slate-600 w-20">Protocol</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">Destination</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">Next Hop</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">Interface</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600 w-16">Metric</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {routes.map((r, i) => (
+                <tr key={i} className="hover:bg-slate-50">
+                  <td className="px-3 py-2">
+                    <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-semibold ${PROTO_STYLE[r.protocol] ?? PROTO_STYLE.other}`}>
+                      {r.protocol}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 font-mono font-medium text-slate-700">{r.destination}</td>
+                  <td className="px-3 py-2 font-mono text-slate-500">{r.next_hop ?? <span className="text-slate-300 not-italic">direct</span>}</td>
+                  <td className="px-3 py-2 text-slate-500">{r.interface_name ?? <span className="text-slate-300">—</span>}</td>
+                  <td className="px-3 py-2 text-slate-400">{r.metric ?? <span className="text-slate-300">—</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Address table ─────────────────────────────────────────────────────────────
 
 function AddressesSection({ deviceId }: { deviceId: string }) {
@@ -923,7 +1002,7 @@ export default function DeviceDetail() {
   const queryClient = useQueryClient()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses'>('interfaces')
+  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes'>('interfaces')
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(id!),
@@ -1351,14 +1430,14 @@ export default function DeviceDetail() {
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="border-b border-slate-100 px-5 flex items-center justify-between">
             <nav className="flex gap-1 -mb-px">
-              {(['interfaces', 'neighbours', 'addresses'] as const).map(t => (
+              {(['interfaces', 'neighbours', 'addresses', 'routes'] as const).map(t => (
                 <button key={t} onClick={() => setTab(t)}
                   className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors capitalize ${
                     tab === t
                       ? 'border-blue-600 text-blue-600'
                       : 'border-transparent text-slate-500 hover:text-slate-700'
                   }`}>
-                  {t === 'interfaces' ? `Interfaces${totalIfaces ? ` (${totalIfaces})` : ''}` : t === 'neighbours' ? 'Neighbours' : 'Addresses'}
+                  {t === 'interfaces' ? `Interfaces${totalIfaces ? ` (${totalIfaces})` : ''}` : t === 'neighbours' ? 'Neighbours' : t === 'addresses' ? 'Addresses' : 'Routes'}
                 </button>
               ))}
             </nav>
@@ -1408,6 +1487,12 @@ export default function DeviceDetail() {
           {tab === 'addresses' && (
             <div className="p-5">
               <AddressesSection deviceId={id!} />
+            </div>
+          )}
+
+          {tab === 'routes' && (
+            <div className="p-5">
+              <RoutesSection deviceId={id!} />
             </div>
           )}
         </div>
