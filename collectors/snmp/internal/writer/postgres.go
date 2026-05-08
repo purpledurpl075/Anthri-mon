@@ -303,7 +303,7 @@ func (w *PostgresWriter) upsertOSPFNeighbours(ctx context.Context, deviceID uuid
 		`,
 			deviceID,
 			nullStr(n.RouterID), nullStr(n.NeighbourIP),
-			nullStr(n.InterfaceName), nullStr(n.Area),
+			&n.InterfaceName, nullStr(n.Area),  // InterfaceName: always store string (even "") so unique constraint fires
 			n.State, n.Priority,
 		)
 	}
