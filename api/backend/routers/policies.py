@@ -68,6 +68,35 @@ BUILTIN_TEMPLATES: list[dict] = [
         ],
     },
     {
+        "name": "Access Point",
+        "description": "Monitoring for wireless access points. Higher memory threshold since APs "
+                       "run lean, lower CPU threshold since spikes often indicate radio issues.",
+        "rules": [
+            {"name": "CPU high",           "metric": "cpu_util_pct",   "condition": "gt", "threshold": 80, "duration_seconds": 180, "severity": "warning", "escalation_severity": "major", "escalation_seconds": 600},
+            {"name": "Memory critical",    "metric": "mem_util_pct",   "condition": "gt", "threshold": 95, "duration_seconds": 300, "severity": "critical"},
+            {"name": "Device unreachable", "metric": "device_down",    "condition": "eq", "threshold": None, "duration_seconds": 0, "severity": "critical"},
+            {"name": "AP rebooted",        "metric": "uptime",         "condition": "lt", "threshold": 300, "duration_seconds": 0,  "severity": "warning", "notify_on_resolve": True},
+        ],
+    },
+    {
+        "name": "Temperature Monitoring",
+        "description": "Alert on high temperature sensors. Works on any device that exposes "
+                       "ENTITY-SENSOR-MIB, Cisco ENVMON, Juniper, or Arista sensors.",
+        "rules": [
+            {"name": "Temperature high (warn)",     "metric": "temperature", "condition": "gt", "threshold": 65, "duration_seconds": 120, "severity": "warning"},
+            {"name": "Temperature critical",        "metric": "temperature", "condition": "gt", "threshold": 80, "duration_seconds": 60,  "severity": "critical"},
+        ],
+    },
+    {
+        "name": "Interface Error Rate",
+        "description": "Alert on interfaces accumulating significant error counts. "
+                       "Indicates bad cabling, duplex mismatch, or faulty SFP.",
+        "rules": [
+            {"name": "Interface errors rising",  "metric": "interface_errors", "condition": "gt", "threshold": 500,   "duration_seconds": 300, "severity": "warning"},
+            {"name": "Interface errors critical","metric": "interface_errors", "condition": "gt", "threshold": 5000,  "duration_seconds": 120, "severity": "major"},
+        ],
+    },
+    {
         "name": "Reachability & Reboot",
         "description": "Catch devices that reboot faster than the SNMP stale threshold detects. "
                        "Uptime < 5 min fires on the first health poll after a device comes back up, "
