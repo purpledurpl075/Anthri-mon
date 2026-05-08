@@ -87,6 +87,7 @@ export const fetchDeviceNeighbours = (id: string) =>
 export interface OSPFNeighbourEntry {
   neighbour_ip: string | null
   router_id: string | null
+  display_name?: string | null
   state: string
   area: string | null
   interface_name: string | null

@@ -513,7 +513,8 @@ async def get_ospf_neighbours(
         if peer_ip not in seen_ips:
             results.append({
                 "neighbour_ip":      peer_ip,
-                "router_id":         str(peer_device.hostname),
+                "router_id":         peer_ip,           # use IP not hostname so display is consistent
+                "display_name":      str(peer_device.fqdn or peer_device.hostname),
                 "state":             row.state,
                 "area":              row.area,
                 "interface_name":    None,

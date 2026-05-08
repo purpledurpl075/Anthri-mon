@@ -508,9 +508,12 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
                         <span className={`font-semibold px-1.5 py-0.5 rounded text-white text-[10px] ${isFull ? 'bg-green-600' : 'bg-amber-500'}`}>
                           {n.state.toUpperCase().replace('_', '-')}
                         </span>
-                        <span className="font-mono text-slate-700 truncate">{n.router_id ?? n.neighbour_ip ?? '—'}</span>
-                        {n.neighbour_ip && n.router_id && (
-                          <span className="font-mono text-slate-400 shrink-0">{n.neighbour_ip}</span>
+                        <span className="font-mono text-slate-700 truncate">{n.neighbour_ip ?? n.router_id ?? '—'}</span>
+                        {n.display_name && (
+                          <span className="text-slate-500 shrink-0">{n.display_name}</span>
+                        )}
+                        {!n.display_name && n.router_id && n.router_id !== n.neighbour_ip && (
+                          <span className="font-mono text-slate-400 shrink-0">{n.router_id}</span>
                         )}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
