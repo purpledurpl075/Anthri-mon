@@ -146,10 +146,16 @@ export default function Sidebar() {
           )}
 
           {collapsed && (
-            <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
-              <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-              </svg>
+            <div className="flex flex-col items-center gap-2">
+              <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
+                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
+                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                </svg>
+              </div>
+              <button onClick={toggle} title="Expand sidebar"
+                className="p-1 rounded-lg text-slate-600 hover:text-slate-400 hover:bg-white/5 transition-colors">
+                {I.chevronRight}
+              </button>
             </div>
           )}
 
@@ -217,13 +223,6 @@ export default function Sidebar() {
             {!collapsed && <span>Sign out</span>}
           </button>
 
-          {/* Expand button — only visible when collapsed */}
-          {collapsed && (
-            <button onClick={toggle} title="Expand sidebar"
-              className="flex items-center justify-center w-full py-2 mx-1 rounded-lg text-slate-600 hover:text-slate-400 hover:bg-white/5 transition-colors">
-              {I.chevronRight}
-            </button>
-          )}
         </div>
       </aside>
     </CollapsedCtx.Provider>
