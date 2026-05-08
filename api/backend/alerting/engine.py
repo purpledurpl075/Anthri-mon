@@ -19,6 +19,7 @@ from .evaluators import (
     eval_cpu, eval_mem, eval_device_down,
     eval_interface_down, eval_interface_flap,
     eval_uptime, eval_temperature, eval_interface_errors, eval_custom_oid,
+    eval_ospf_state,
     resolve_devices,
 )
 
@@ -79,11 +80,15 @@ def _build_title(rule: AlertRule, breach: Breach) -> str:
     if breach.interface_name:
         base += f" — {breach.interface_name}"
     metric_labels = {
-        "cpu_util_pct":   f"CPU {breach.value:.1f}%" if breach.value is not None else "CPU high",
-        "mem_util_pct":   f"Memory {breach.value:.1f}%" if breach.value is not None else "Memory high",
-        "device_down":    "device unreachable",
-        "interface_down": "interface down",
-        "interface_flap": f"interface flapping ({int(breach.value or 0)} changes)",
+        "cpu_util_pct":    f"CPU {breach.value:.1f}%" if breach.value is not None else "CPU high",
+        "mem_util_pct":    f"Memory {breach.value:.1f}%" if breach.value is not None else "Memory high",
+        "device_down":     "device unreachable",
+        "interface_down":  "interface down",
+        "interface_flap":  f"interface flapping ({int(breach.value or 0)} changes)",
+        "temperature":     f"temperature {breach.value:.1f}°C" if breach.value is not None else "temperature high",
+        "interface_errors": f"interface errors ({int(breach.value or 0)})",
+        "ospf_state":      f"OSPF neighbour {breach.extra.get('neighbour','')} {breach.extra.get('ospf_state','')}",
+        "uptime":          f"rebooted (uptime {int(breach.value or 0)}s)",
     }
     return f"{base}: {metric_labels.get(rule.metric, rule.metric)}"
 
@@ -218,6 +223,9 @@ class AlertEngine:
                 if b: breaches.append(b)
             elif rule.metric == "interface_errors":
                 breaches.extend(await eval_interface_errors(db, device, rule.threshold or 100))
+            elif rule.metric == "ospf_state":
+                b = await eval_ospf_state(db, device)
+                if b: breaches.append(b)
             elif rule.metric == "custom_oid" and rule.custom_oid:
                 b = await eval_custom_oid(db, device, rule.custom_oid,
                                            rule.condition or "gt", rule.threshold or 0)

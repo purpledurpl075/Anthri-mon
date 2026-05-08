@@ -290,6 +290,42 @@ async def eval_interface_flap(db: AsyncSession, device: dict, threshold: float, 
     ]
 
 
+async def eval_ospf_state(db: AsyncSession, device: dict) -> Optional[Breach]:
+    """Fire if any OSPF neighbour is not in full state.
+
+    States that trigger: down, attempt, init, two_way, exstart, exchange, loading.
+    'unknown' is ignored (no data yet). 'full' is the only healthy state.
+    """
+    row = (await db.execute(
+        text("""
+            SELECT neighbor_router_id::text, neighbor_ip::text, state
+            FROM ospf_neighbors
+            WHERE device_id = :did
+              AND state NOT IN ('full', 'unknown')
+            ORDER BY
+                CASE state
+                    WHEN 'down'     THEN 1
+                    WHEN 'init'     THEN 2
+                    WHEN 'attempt'  THEN 3
+                    WHEN 'exstart'  THEN 4
+                    WHEN 'exchange' THEN 5
+                    WHEN 'loading'  THEN 6
+                    WHEN 'two_way'  THEN 7
+                    ELSE 8
+                END
+            LIMIT 1
+        """),
+        {"did": device["id"]},
+    )).mappings().first()
+    if not row:
+        return None
+    neighbour = row["neighbor_router_id"] or row["neighbor_ip"] or "unknown"
+    return Breach(
+        device["id"], device["hostname"],
+        extra={"neighbour": neighbour, "ospf_state": row["state"]},
+    )
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _check(value: float, condition: str, threshold: float) -> bool:
