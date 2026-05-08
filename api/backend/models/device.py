@@ -38,7 +38,7 @@ class Device(Base):
     )
     device_type: Mapped[str] = mapped_column(
         PgEnum("router", "switch", "firewall", "load_balancer",
-               "wireless_controller", "unknown",
+               "wireless_controller", "access_point", "unknown",
                name="device_type", create_type=False),
         nullable=False, default="unknown",
     )

@@ -16,7 +16,7 @@ func init() {
 	Register(&Profile{
 		Name:         "Aruba AP (ArubaOS)",
 		DBVendorType: "aruba_ap",
-		DBDeviceType: "wireless_controller",
+		DBDeviceType: "access_point",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.14823.1.", // Aruba AP product sub-tree
 		},
