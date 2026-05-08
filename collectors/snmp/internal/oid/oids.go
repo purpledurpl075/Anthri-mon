@@ -154,6 +154,15 @@ const (
 	FgHwSensorEntAlarmStatus = "1.3.6.1.4.1.12356.101.4.4.2.1.4"
 )
 
+// ── Aruba: WLSX-SYSTEMEXT-MIB ────────────────────────────────────────────────
+// Present on ArubaOS campus APs and controllers (not ArubaOS-CX switches).
+
+const (
+	ArubaAPCpuUsedPct    = "1.3.6.1.4.1.14823.2.2.1.1.3.1.0" // wlsxSysstatCpuUsedPercent (0–100)
+	ArubaAPMemTotalKB    = "1.3.6.1.4.1.14823.2.2.1.1.3.2.0" // wlsxSysstatMemTotal (KB)
+	ArubaAPMemUsedPct    = "1.3.6.1.4.1.14823.2.2.1.1.3.3.0" // wlsxSysstatMemUsedPercent (0–100)
+)
+
 // ── UCD-SNMP-MIB (NET-SNMP Linux) ────────────────────────────────────────────
 // Standard on NET-SNMP agents (Linux/embedded). Use when HOST-RESOURCES-MIB
 // hrProcessorLoad returns empty (common on embedded platforms like UniFi).
