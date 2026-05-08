@@ -93,6 +93,7 @@ export interface OSPFNeighbourEntry {
   priority: number | null
   last_state_change: string | null
   updated_at: string
+  inferred: boolean
 }
 
 export const fetchDeviceOSPF = (id: string) =>

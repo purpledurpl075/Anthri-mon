@@ -517,6 +517,7 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
                         {n.area && <span>area {n.area}</span>}
                         {n.interface_name && <span>{n.interface_name}</span>}
                         {n.last_state_change && <span>changed {new Date(n.last_state_change).toLocaleString()}</span>}
+                        {n.inferred && <span className="text-slate-300 italic">seen from peer</span>}
                       </div>
                     </div>
                   )

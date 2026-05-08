@@ -467,25 +467,63 @@ async def get_ospf_neighbours(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    await _assert_device_visible(device_id, current_user, db)
-    rows = (await db.execute(
+    from sqlalchemy import cast, String, or_
+
+    device = await _assert_device_visible(device_id, current_user, db)
+    device_ip = str(device.mgmt_ip).split("/")[0]
+
+    # Direct: rows where this device is the reporter
+    direct = (await db.execute(
         select(OSPFNeighbour)
         .where(OSPFNeighbour.device_id == device_id)
         .order_by(OSPFNeighbour.neighbor_router_id)
     )).scalars().all()
-    return [
+
+    # Inferred: rows from OTHER devices that list this device's IP as the neighbour.
+    # Covers devices whose SNMP agent doesn't expose OSPF-MIB (e.g. UniFi).
+    inferred = (await db.execute(
+        select(OSPFNeighbour, Device)
+        .join(Device, Device.id == OSPFNeighbour.device_id)
+        .where(
+            OSPFNeighbour.device_id != device_id,
+            Device.tenant_id == current_user.tenant_id,
+            cast(OSPFNeighbour.neighbor_ip, String).contains(device_ip),
+        )
+    )).all()
+
+    results = [
         {
-            "neighbour_ip":    str(r.neighbor_ip) if r.neighbor_ip else None,
-            "router_id":       str(r.neighbor_router_id) if r.neighbor_router_id else None,
-            "state":           r.state,
-            "area":            r.area,
-            "interface_name":  r.interface_name,
-            "priority":        r.priority,
+            "neighbour_ip":      str(r.neighbor_ip) if r.neighbor_ip else None,
+            "router_id":         str(r.neighbor_router_id) if r.neighbor_router_id else None,
+            "state":             r.state,
+            "area":              r.area,
+            "interface_name":    r.interface_name,
+            "priority":          r.priority,
             "last_state_change": r.last_state_change.isoformat() if r.last_state_change else None,
-            "updated_at":      r.updated_at.isoformat(),
+            "updated_at":        r.updated_at.isoformat(),
+            "inferred":          False,
         }
-        for r in rows
+        for r in direct
     ]
+
+    # Add inferred entries (seen from the peer's perspective)
+    seen_ips = {r["neighbour_ip"] for r in results}
+    for row, peer_device in inferred:
+        peer_ip = str(peer_device.mgmt_ip).split("/")[0]
+        if peer_ip not in seen_ips:
+            results.append({
+                "neighbour_ip":      peer_ip,
+                "router_id":         str(peer_device.hostname),
+                "state":             row.state,
+                "area":              row.area,
+                "interface_name":    None,
+                "priority":          None,
+                "last_state_change": row.last_state_change.isoformat() if row.last_state_change else None,
+                "updated_at":        row.updated_at.isoformat(),
+                "inferred":          True,
+            })
+
+    return results
 
 
 # ── Neighbours ────────────────────────────────────────────────────────────────
