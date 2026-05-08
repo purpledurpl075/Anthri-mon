@@ -4,6 +4,7 @@ import { fetchDevices } from '../api/devices'
 import { fetchMaintenanceWindows } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
+import { DeviceTypeIcon, DEVICE_TYPE_COLOR, DEVICE_TYPE_LABEL } from '../components/DeviceTypeIcon'
 
 function formatAge(iso: string | null) {
   if (!iso) return '—'
@@ -82,7 +83,15 @@ export default function DeviceList() {
                   </td>
                   <td className="px-4 py-3 text-slate-600 font-mono text-xs">{d.mgmt_ip}</td>
                   <td className="px-4 py-3"><VendorBadge vendor={d.vendor} /></td>
-                  <td className="px-4 py-3 text-slate-500 capitalize">{d.device_type}</td>
+                  <td className="px-4 py-3">
+                    <span className="flex items-center gap-1.5"
+                      style={{ color: DEVICE_TYPE_COLOR[d.device_type] ?? '#64748b' }}>
+                      <DeviceTypeIcon type={d.device_type} size={15} />
+                      <span className="text-xs text-slate-500">
+                        {DEVICE_TYPE_LABEL[d.device_type] ?? d.device_type}
+                      </span>
+                    </span>
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <StatusBadge status={d.status} />

@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchAlert, acknowledgeAlert, resolveAlert } from '../api/alerts'
 import { fetchDevice } from '../api/devices'
 import api from '../api/client'
+import { DeviceTypeIcon, DEVICE_TYPE_COLOR, DEVICE_TYPE_LABEL } from '../components/DeviceTypeIcon'
 
 interface AlertComment { id: string; body: string; author: string; created_at: string }
 const fetchComments = (id: string) => api.get<AlertComment[]>(`/alerts/${id}/comments`).then(r => r.data)
@@ -197,7 +198,15 @@ export default function AlertDetailPage() {
               </Row>
               <Row label="IP address"><span className="font-mono">{device.mgmt_ip}</span></Row>
               <Row label="Vendor">{device.vendor ?? '—'}</Row>
-              <Row label="Type">{device.device_type ?? '—'}</Row>
+              <Row label="Type">
+              {device.device_type ? (
+                <span className="flex items-center gap-1.5"
+                  style={{ color: DEVICE_TYPE_COLOR[device.device_type] ?? '#64748b' }}>
+                  <DeviceTypeIcon type={device.device_type} size={14} />
+                  <span className="text-slate-700">{DEVICE_TYPE_LABEL[device.device_type] ?? device.device_type}</span>
+                </span>
+              ) : '—'}
+            </Row>
               <Row label="Status">
                 <span className={`inline-flex items-center gap-1 text-xs font-medium capitalize ${
                   device.status === 'up' ? 'text-green-600' : 'text-red-600'

@@ -9,35 +9,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { fetchTopology, type TopologyNode, type TopologyEdge } from '../api/topology'
-
-// ── Colours & icons ────────────────────────────────────────────────────────
-
-const TYPE_COLOR: Record<string, string> = {
-  router:              '#2563eb',
-  switch:              '#16a34a',
-  access_point:        '#7c3aed',
-  firewall:            '#dc2626',
-  wireless_controller: '#7c3aed',
-  unknown:             '#475569',
-}
-
-const TYPE_ICON: Record<string, string> = {
-  router:              'R',
-  switch:              'SW',
-  access_point:        'AP',
-  firewall:            'FW',
-  wireless_controller: 'WC',
-  unknown:             '?',
-}
-
-const TYPE_LABEL: Record<string, string> = {
-  router:              'Router',
-  switch:              'Switch',
-  access_point:        'Access Point',
-  firewall:            'Firewall',
-  wireless_controller: 'Wireless Controller',
-  unknown:             'Unknown',
-}
+import { DeviceTypeIcon, DEVICE_TYPE_COLOR as TYPE_COLOR, DEVICE_TYPE_LABEL as TYPE_LABEL } from '../components/DeviceTypeIcon'
 
 const STATUS_COLOR: Record<string, string> = {
   up:          '#16a34a',
@@ -77,8 +49,8 @@ function DeviceNode({ data, selected }: NodeProps) {
       <Handle type="target" position={Position.Left} style={centerHandle} />
 
       <div className="px-3 pt-3 pb-2">
-        <div className="text-xs font-bold mb-1.5" style={{ color }}>
-          {TYPE_ICON[d.device_type] ?? '?'}
+        <div className="flex justify-center mb-2" style={{ color }}>
+          <DeviceTypeIcon type={d.device_type} size={26} />
         </div>
         <div className="text-xs font-semibold text-slate-800 truncate leading-tight">{d.hostname}</div>
         <div className="text-[10px] text-slate-400 font-mono mt-0.5">{d.mgmt_ip}</div>
@@ -186,7 +158,7 @@ function DevicePanel({
         style={{ borderBottom: `3px solid ${color}` }}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
-            <span className="text-xs font-bold" style={{ color }}>{TYPE_ICON[node.device_type] ?? '?'}</span>
+            <span style={{ color }}><DeviceTypeIcon type={node.device_type} size={16} /></span>
             <span className="text-xs text-slate-400">{TYPE_LABEL[node.device_type] ?? 'Unknown'}</span>
           </div>
           <h3 className="text-sm font-bold text-slate-800 truncate">{node.hostname}</h3>
@@ -484,7 +456,9 @@ export default function TopologyPage() {
                 <label key={t} className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-slate-50 cursor-pointer">
                   <input type="checkbox" checked={!hiddenTypes.has(t)} onChange={() => toggleType(t)}
                     className="rounded border-slate-300 text-blue-600" />
-                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: TYPE_COLOR[t] ?? '#475569' }} />
+                  <span style={{ color: TYPE_COLOR[t] ?? '#475569', opacity: hiddenTypes.has(t) ? 0.3 : 1 }}>
+                    <DeviceTypeIcon type={t} size={14} />
+                  </span>
                   <span className="text-xs text-slate-600 capitalize">{(t ?? 'unknown').replace('_', ' ')}</span>
                 </label>
               ))}

@@ -12,6 +12,7 @@ import { fetchCredentials } from '../api/credentials'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
+import { DeviceTypeIcon, DEVICE_TYPE_COLOR, DEVICE_TYPE_LABEL } from '../components/DeviceTypeIcon'
 
 function formatUptime(secs: number | string | null) {
   if (!secs) return '—'
@@ -1283,6 +1284,13 @@ export default function DeviceDetail() {
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
               <dt className="text-slate-500">IP</dt>
               <dd className="font-mono text-slate-700">{device.mgmt_ip}</dd>
+              <dt className="text-slate-500">Type</dt>
+              <dd>
+                <span className="flex items-center gap-1.5" style={{ color: DEVICE_TYPE_COLOR[device.device_type] ?? '#64748b' }}>
+                  <DeviceTypeIcon type={device.device_type} size={14} />
+                  <span className="text-slate-700 text-sm">{DEVICE_TYPE_LABEL[device.device_type] ?? device.device_type}</span>
+                </span>
+              </dd>
               <dt className="text-slate-500">Vendor</dt>
               <dd><VendorBadge vendor={device.vendor} /></dd>
               <dt className="text-slate-500">Platform</dt>
