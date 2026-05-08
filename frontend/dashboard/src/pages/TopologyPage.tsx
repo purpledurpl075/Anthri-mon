@@ -1,8 +1,8 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
-  ReactFlow, Controls, Background, MiniMap,
+  ReactFlow, Controls, Background, MiniMap, Panel, useReactFlow,
   BaseEdge, EdgeLabelRenderer, getSmoothStepPath,
   Handle, Position,
   type NodeProps, type Node, type Edge, type EdgeProps, type NodeMouseHandler,
@@ -270,22 +270,24 @@ function layoutNodes(nodes: TopologyNode[], edges: { source: string; target: str
   const pos: Record<string, { x: number; y: number }> = {}
   if (nodes.length === 0) return pos
 
+  // More spacious initial grid
   const cols = Math.ceil(Math.sqrt(nodes.length))
   nodes.forEach((node, i) => {
-    pos[node.id] = { x: (i % cols) * 280, y: Math.floor(i / cols) * 230 }
+    pos[node.id] = { x: (i % cols) * 420, y: Math.floor(i / cols) * 340 }
   })
 
-  for (let iter = 0; iter < 60; iter++) {
+  for (let iter = 0; iter < 80; iter++) {
     const force: Record<string, { x: number; y: number }> = {}
     nodes.forEach(n => { force[n.id] = { x: 0, y: 0 } })
 
+    // Stronger repulsion for wider spacing
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i], b = nodes[j]
         const dx = pos[b.id].x - pos[a.id].x
         const dy = pos[b.id].y - pos[a.id].y
         const dist = Math.sqrt(dx * dx + dy * dy) || 1
-        const rep = 22000 / (dist * dist)
+        const rep = 55000 / (dist * dist)
         force[a.id].x -= (dx / dist) * rep
         force[a.id].y -= (dy / dist) * rep
         force[b.id].x += (dx / dist) * rep
@@ -293,12 +295,13 @@ function layoutNodes(nodes: TopologyNode[], edges: { source: string; target: str
       }
     }
 
+    // Weaker attraction so linked nodes don't bunch up
     edges.forEach(e => {
       if (!pos[e.source] || !pos[e.target]) return
       const dx = pos[e.target].x - pos[e.source].x
       const dy = pos[e.target].y - pos[e.source].y
       const dist = Math.sqrt(dx * dx + dy * dy) || 1
-      const att = dist * 0.012
+      const att = dist * 0.007
       force[e.source].x += (dx / dist) * att
       force[e.source].y += (dy / dist) * att
       force[e.target].x -= (dx / dist) * att
@@ -314,12 +317,31 @@ function layoutNodes(nodes: TopologyNode[], edges: { source: string; target: str
   return pos
 }
 
+// ── Fit view button (must be inside ReactFlow provider) ───────────────────
+
+function FitViewButton() {
+  const { fitView } = useReactFlow()
+  return (
+    <button onClick={() => fitView({ padding: 0.2, duration: 400 })}
+      title="Fit to view"
+      className="flex items-center justify-center w-7 h-7 rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-slate-700 hover:border-slate-300 shadow-sm transition-colors">
+      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+        <path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M16 21h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+      </svg>
+    </button>
+  )
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export default function TopologyPage() {
-  const navigate   = useNavigate()
-  const [showIsolated, setShowIsolated] = useState(false)
-  const [selectedId, setSelectedId]     = useState<string | null>(null)
+  const navigate = useNavigate()
+  const [selectedId,    setSelectedId]    = useState<string | null>(null)
+  const [showIsolated,  setShowIsolated]  = useState(false)
+  const [showLabels,    setShowLabels]    = useState(true)
+  const [protocolFilter, setProtocol]    = useState<'all' | 'lldp' | 'cdp'>('all')
+  const [hiddenTypes,   setHiddenTypes]  = useState<Set<string>>(new Set())
+  const [typeMenuOpen,  setTypeMenuOpen] = useState(false)
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['topology'],
@@ -328,39 +350,50 @@ export default function TopologyPage() {
   })
 
   const nodesById = useMemo<Record<string, TopologyNode>>(() =>
-    Object.fromEntries((data?.nodes ?? []).map(n => [n.id, n])),
-    [data]
-  )
+    Object.fromEntries((data?.nodes ?? []).map(n => [n.id, n])), [data])
+
+  // Device types present in topology
+  const deviceTypes = useMemo(() =>
+    [...new Set((data?.nodes ?? []).map(n => n.device_type))].filter(Boolean),
+    [data])
+
+  const toggleType = (t: string) =>
+    setHiddenTypes(s => { const n = new Set(s); n.has(t) ? n.delete(t) : n.add(t); return n })
 
   const rfNodes: Node[] = useMemo(() => {
     if (!data) return []
-    const visible = showIsolated ? data.nodes : data.nodes.filter(n => n.connected)
+    const visible = data.nodes.filter(n =>
+      !hiddenTypes.has(n.device_type) &&
+      (showIsolated || n.connected)
+    )
     const pos = layoutNodes(visible, data.edges)
     return visible.map(n => ({
-      id:        n.id,
-      type:      'device',
-      position:  pos[n.id] ?? { x: 0, y: 0 },
-      selected:  n.id === selectedId,
-      data:      n as unknown as Record<string, unknown>,
+      id:       n.id,
+      type:     'device',
+      position: pos[n.id] ?? { x: 0, y: 0 },
+      selected: n.id === selectedId,
+      data:     n as unknown as Record<string, unknown>,
       draggable: true,
     }))
-  }, [data, showIsolated, selectedId])
+  }, [data, showIsolated, hiddenTypes, selectedId])
 
   const rfEdges: Edge[] = useMemo(() => {
     if (!data) return []
     const nodeIds = new Set(rfNodes.map(n => n.id))
     return data.edges
-      .filter(e => nodeIds.has(e.source) && nodeIds.has(e.target))
+      .filter(e =>
+        nodeIds.has(e.source) && nodeIds.has(e.target) &&
+        (protocolFilter === 'all' || e.protocol === protocolFilter)
+      )
       .map(e => {
         const isAdj = !selectedId || e.source === selectedId || e.target === selectedId
-        const label = e.source_port && e.target_port
-          ? `${e.source_port} → ${e.target_port}`
-          : e.source_port ?? e.target_port ?? ''
+        const label = showLabels
+          ? (e.source_port && e.target_port
+            ? `${e.source_port} → ${e.target_port}`
+            : e.source_port ?? e.target_port ?? '')
+          : ''
         return {
-          id:     e.id,
-          source: e.source,
-          target: e.target,
-          type:   'topology',
+          id: e.id, source: e.source, target: e.target, type: 'topology',
           data: {
             label,
             protocol:    e.protocol,
@@ -369,53 +402,124 @@ export default function TopologyPage() {
           },
         }
       })
-  }, [data, rfNodes, selectedId])
+  }, [data, rfNodes, selectedId, protocolFilter, showLabels])
 
-  const onNodeClick: NodeMouseHandler = (_, node) => {
+  const onNodeClick: NodeMouseHandler = (_, node) =>
     setSelectedId(id => id === node.id ? null : node.id)
-  }
 
   const selectedNode = selectedId ? nodesById[selectedId] : null
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-full text-slate-400 text-sm">
-        Loading topology…
-      </div>
-    )
+    return <div className="flex items-center justify-center h-full text-slate-400 text-sm">Loading topology…</div>
   }
 
-  const connectedCount = data?.nodes.filter(n => n.connected).length ?? 0
+  const visibleEdges = rfEdges.length
+  const connectedCount = rfNodes.length
+
+  // ── Pill toggle helper
+  const Pill = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) => (
+    <button onClick={onClick}
+      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors border ${
+        active
+          ? 'bg-slate-800 text-white border-slate-800'
+          : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+      }`}>
+      {children}
+    </button>
+  )
 
   return (
-    <div className="flex flex-col h-screen bg-slate-50">
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between shrink-0">
-        <div>
-          <h1 className="text-base font-semibold text-slate-800">Topology</h1>
-          <p className="text-xs text-slate-400 mt-0.5">
-            {connectedCount} devices · {data?.edges.length ?? 0} links
-          </p>
+    <div className="flex flex-col h-screen bg-slate-100">
+      {/* Toolbar */}
+      <div className="px-4 py-2.5 border-b border-slate-200 bg-white flex items-center gap-4 shrink-0 flex-wrap">
+        {/* Title */}
+        <div className="mr-2">
+          <span className="text-sm font-semibold text-slate-800">Topology</span>
+          <span className="ml-2 text-xs text-slate-400">{connectedCount} nodes · {visibleEdges} links</span>
         </div>
-        <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
-            <input type="checkbox" checked={showIsolated} onChange={e => setShowIsolated(e.target.checked)}
-              className="rounded border-slate-300 text-blue-600" />
-            Show isolated
-          </label>
-          <div className="flex items-center gap-3 text-xs text-slate-400 border-l pl-3">
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-0.5 inline-block bg-cyan-600 rounded"/>LLDP
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="w-3 h-0.5 inline-block bg-violet-600 rounded"/>CDP
-            </span>
+
+        {/* Divider */}
+        <div className="h-5 w-px bg-slate-200" />
+
+        {/* Protocol filter */}
+        <div className="flex items-center gap-1">
+          <span className="text-xs text-slate-400 mr-1">Protocol</span>
+          <div className="flex rounded-lg overflow-hidden border border-slate-200">
+            {(['all', 'lldp', 'cdp'] as const).map(p => (
+              <button key={p} onClick={() => setProtocol(p)}
+                className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                  protocolFilter === p
+                    ? p === 'lldp' ? 'bg-cyan-600 text-white'
+                      : p === 'cdp' ? 'bg-violet-600 text-white'
+                      : 'bg-slate-800 text-white'
+                    : 'bg-white text-slate-500 hover:bg-slate-50'
+                } ${p !== 'all' ? 'border-l border-slate-200' : ''}`}>
+                {p === 'all' ? 'All' : p.toUpperCase()}
+              </button>
+            ))}
           </div>
-          <button onClick={() => refetch()} disabled={isFetching}
-            className="text-xs text-blue-600 hover:underline disabled:opacity-50">
-            {isFetching ? 'Refreshing…' : 'Refresh'}
-          </button>
         </div>
+
+        {/* Divider */}
+        <div className="h-5 w-px bg-slate-200" />
+
+        {/* Device type filter */}
+        <div className="relative">
+          <button onClick={() => setTypeMenuOpen(o => !o)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+              hiddenTypes.size > 0
+                ? 'bg-blue-50 text-blue-600 border-blue-200'
+                : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+            }`}>
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path d="M4 6h16M8 12h8M11 18h2"/>
+            </svg>
+            Device types
+            {hiddenTypes.size > 0 && <span className="ml-1 bg-blue-600 text-white rounded-full px-1 text-[10px]">{hiddenTypes.size}</span>}
+          </button>
+          {typeMenuOpen && (
+            <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-50 py-2 min-w-[160px]"
+              onMouseLeave={() => setTypeMenuOpen(false)}>
+              {deviceTypes.map(t => (
+                <label key={t} className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-slate-50 cursor-pointer">
+                  <input type="checkbox" checked={!hiddenTypes.has(t)} onChange={() => toggleType(t)}
+                    className="rounded border-slate-300 text-blue-600" />
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: TYPE_COLOR[t] ?? '#475569' }} />
+                  <span className="text-xs text-slate-600 capitalize">{(t ?? 'unknown').replace('_', ' ')}</span>
+                </label>
+              ))}
+              {hiddenTypes.size > 0 && (
+                <button onClick={() => setHiddenTypes(new Set())}
+                  className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-slate-50 border-t border-slate-100 mt-1">
+                  Show all
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div className="h-5 w-px bg-slate-200" />
+
+        {/* Labels toggle */}
+        <Pill active={showLabels} onClick={() => setShowLabels(v => !v)}>
+          {showLabels ? 'Labels on' : 'Labels off'}
+        </Pill>
+
+        {/* Isolated toggle */}
+        <Pill active={showIsolated} onClick={() => setShowIsolated(v => !v)}>
+          {showIsolated ? 'All devices' : 'Connected only'}
+        </Pill>
+
+        {/* Spacer + refresh */}
+        <div className="flex-1" />
+        <button onClick={() => refetch()} disabled={isFetching}
+          className="flex items-center gap-1.5 text-xs text-blue-600 hover:underline disabled:opacity-50">
+          <svg className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.66 0 3-4.03 3-9s-1.34-9-3-9m0 18c-1.66 0-3-4.03-3-9s1.34-9 3-9"/>
+          </svg>
+          {isFetching ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
 
       {/* Canvas */}
@@ -435,22 +539,25 @@ export default function TopologyPage() {
               nodeTypes={NODE_TYPES}
               edgeTypes={EDGE_TYPES}
               onNodeClick={onNodeClick}
-              onPaneClick={() => setSelectedId(null)}
+              onPaneClick={() => { setSelectedId(null); setTypeMenuOpen(false) }}
               fitView
-              fitViewOptions={{ padding: 0.2 }}
-              minZoom={0.2}
-              maxZoom={2}
+              fitViewOptions={{ padding: 0.25 }}
+              minZoom={0.15}
+              maxZoom={2.5}
               proOptions={{ hideAttribution: true }}
             >
-              <Controls />
+              <Controls showFitView={false} />
+              <Panel position="top-right" className="flex gap-1.5 mt-1 mr-1">
+                <FitViewButton />
+              </Panel>
               <MiniMap
                 nodeColor={n => TYPE_COLOR[(n.data as unknown as TopologyNode)?.device_type] ?? '#475569'}
                 pannable zoomable
+                className="rounded-xl shadow-md border border-slate-200"
               />
-              <Background color="#e2e8f0" gap={20} />
+              <Background color="#cbd5e1" gap={24} size={1} />
             </ReactFlow>
 
-            {/* Device popup panel */}
             {selectedNode && (
               <DevicePanel
                 node={selectedNode}
