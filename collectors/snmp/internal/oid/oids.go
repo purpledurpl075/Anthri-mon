@@ -221,16 +221,34 @@ const (
 	// dot1qVlanStaticName: VLAN name string, indexed by vlan_id.
 	Dot1qVlanStaticName = "1.3.6.1.2.1.17.7.1.4.1.1.1"
 
-	// dot1qVlanCurrentEgressPorts: tagged+untagged egress bitmap per VLAN.
+	// dot1qVlanCurrentEgressPorts: tagged+untagged egress bitmap per VLAN (col 3).
 	// Indexed by (TimeMark, VlanIndex); use TimeMark=0 for current data.
-	Dot1qVlanCurrentEgressPorts = "1.3.6.1.2.1.17.7.1.4.2.1.4"
+	Dot1qVlanCurrentEgressPorts = "1.3.6.1.2.1.17.7.1.4.2.1.3"
 
-	// dot1qVlanCurrentUntaggedPorts: untagged egress bitmap per VLAN.
+	// dot1qVlanCurrentUntaggedPorts: untagged egress bitmap per VLAN (col 4).
 	// Indexed by (TimeMark, VlanIndex); use TimeMark=0 for current data.
-	Dot1qVlanCurrentUntaggedPorts = "1.3.6.1.2.1.17.7.1.4.2.1.5"
+	Dot1qVlanCurrentUntaggedPorts = "1.3.6.1.2.1.17.7.1.4.2.1.4"
 
 	// dot1qPvid: access VLAN per bridge port, indexed by bridge port number.
 	Dot1qPvid = "1.3.6.1.2.1.17.7.1.4.5.1.1"
+)
+
+// ── HP-ICF-VLAN-MIB (HP ProCurve / Aruba ProVision) ─────────────────────────
+// Used when Q-BRIDGE-MIB is not populated (ProCurve ProVision firmware).
+// All OIDs under hpicfVlanMib = 1.3.6.1.4.1.11.2.14.11.5.1.7.1.15
+
+const (
+	// hpicfVlanInfoName: VLAN name string.  Index = VlanID (integer).
+	HpicfVlanInfoName = "1.3.6.1.4.1.11.2.14.11.5.1.7.1.15.1.1.2"
+
+	// hpicfVlanPortInfoVlanId: access (native/untagged) VLAN per port.
+	// Index = ifIndex.  Value = VLAN ID integer.
+	HpicfVlanPortInfoVlanId = "1.3.6.1.4.1.11.2.14.11.5.1.7.1.15.3.1.1"
+
+	// hpicfVlanPortInfoTaggedVlans: bitmap of VLANs for which this port is a
+	// tagged trunk member.  Index = ifIndex.  Value = OctetString bitmap where
+	// bit N (1-indexed MSB-first) means the port trunks VLAN N.
+	HpicfVlanPortInfoTaggedVlans = "1.3.6.1.4.1.11.2.14.11.5.1.7.1.15.3.1.3"
 )
 
 // ── BRIDGE-MIB STP (IEEE 802.1D) ─────────────────────────────────────────────

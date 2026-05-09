@@ -53,5 +53,9 @@ func init() {
 		// ENTITY-SENSOR-MIB temperature works on WA/WB firmware.
 		// Older firmware may return empty — that is handled gracefully.
 		TempOIDs: nil,
+
+		// ProVision firmware does not populate dot1qVlanStaticTable.
+		// Use HP-ICF-VLAN-MIB instead.
+		HpicfVlan: true,
 	})
 }

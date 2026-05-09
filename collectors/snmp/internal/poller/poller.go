@@ -317,7 +317,14 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				result.MACEntries = macs
 			}
 
-			if vlans, ifvlans, err := PollVLANs(session, dev.ID, ifByIndex); err != nil {
+			if currentProfile != nil && currentProfile.HpicfVlan {
+				if vlans, ifvlans, err := PollVLANsHPICF(session, dev.ID); err != nil {
+					log.Warn().Err(err).Msg("hpicf vlan poll failed (non-fatal)")
+				} else {
+					result.VLANs = vlans
+					result.InterfaceVLANs = ifvlans
+				}
+			} else if vlans, ifvlans, err := PollVLANs(session, dev.ID, ifByIndex); err != nil {
 				log.Warn().Err(err).Msg("vlan poll failed (non-fatal)")
 			} else {
 				result.VLANs = vlans

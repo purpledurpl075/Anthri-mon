@@ -21,15 +21,15 @@ import (
 // returned so the poll cycle can continue.
 func PollVLANs(s *client.Session, deviceID uuid.UUID, ifByIndex map[int]string) ([]*model.VLANResult, []*model.InterfaceVLANResult, error) {
 	// ── 1. Walk dot1qVlanStaticName → vlan_id → name ──────────────────────────
+	// Some devices only populate the current table, not the static table.
+	// We try static first (gives names), then fall back to current table for IDs.
+	vlanNames := make(map[int]string) // vlanID → name
+
 	namePDUs, err := s.BulkWalkAll(oid.Dot1qVlanStaticName)
-	if err != nil || len(namePDUs) == 0 {
-		if err != nil {
-			log.Warn().Err(err).Msg("vlan: dot1qVlanStaticName walk failed")
-		}
+	if err != nil {
+		log.Debug().Err(err).Msg("vlan: dot1qVlanStaticName walk failed, skipping VLAN collection")
 		return nil, nil, nil
 	}
-
-	vlanNames := make(map[int]string) // vlanID → name
 	base := strings.TrimPrefix(oid.Dot1qVlanStaticName, ".")
 	for _, pdu := range namePDUs {
 		full := strings.TrimPrefix(pdu.Name, ".")
@@ -42,6 +42,23 @@ func PollVLANs(s *client.Session, deviceID uuid.UUID, ifByIndex map[int]string) 
 			continue
 		}
 		vlanNames[vlanID] = client.PDUString(pdu)
+	}
+
+	// Fallback: if static table gave nothing, probe current egress table for VLAN IDs
+	// (devices that only populate dot1qVlanCurrentTable, e.g. some ProCurve firmware).
+	if len(vlanNames) == 0 {
+		egressProbe, _ := s.BulkWalkAll(oid.Dot1qVlanCurrentEgressPorts)
+		for _, pdu := range egressProbe {
+			if vlanID, ok := parseVlanCurrentIndex(pdu.Name, oid.Dot1qVlanCurrentEgressPorts); ok {
+				if _, exists := vlanNames[vlanID]; !exists {
+					vlanNames[vlanID] = "" // no name available
+				}
+			}
+		}
+		if len(vlanNames) == 0 {
+			log.Debug().Msg("vlan: no Q-BRIDGE-MIB VLAN data found on this device")
+			return nil, nil, nil
+		}
 	}
 
 	vlans := make([]*model.VLANResult, 0, len(vlanNames))
@@ -102,7 +119,10 @@ func PollVLANs(s *client.Session, deviceID uuid.UUID, ifByIndex map[int]string) 
 			}
 			ifIdx, ok := bridgePortToIfIdx[portNum]
 			if !ok {
-				continue
+				if len(bridgePortToIfIdx) > 0 {
+					continue // map exists but port not in it — skip
+				}
+				ifIdx = portNum // no bridge map → assume portNum == ifIndex (Arista EOS)
 			}
 			tagged := !bitmapBitSet(untag, portNum)
 			ifvlans = append(ifvlans, &model.InterfaceVLANResult{
@@ -169,4 +189,126 @@ func bitmapBitSet(bitmap []byte, portNum int) bool {
 		return false
 	}
 	return (bitmap[idx]>>uint(bit))&1 == 1
+}
+
+// PollVLANsHPICF collects VLAN data using HP-ICF-VLAN-MIB, used on HP ProCurve
+// and Aruba ProVision switches that do not populate Q-BRIDGE-MIB tables.
+//
+//   hpicfVlanInfoName         → VLAN names indexed by VlanID
+//   hpicfVlanPortInfoVlanId   → access (native) VLAN per ifIndex
+//   hpicfVlanPortInfoTaggedVlans → tagged VLAN bitmap per ifIndex
+func PollVLANsHPICF(s *client.Session, deviceID uuid.UUID) ([]*model.VLANResult, []*model.InterfaceVLANResult, error) {
+	// ── 1. VLAN names ─────────────────────────────────────────────────────────
+	namePDUs, _ := s.BulkWalkAll(oid.HpicfVlanInfoName)
+	vlanNames := make(map[int]string)
+	nameBase := strings.TrimPrefix(oid.HpicfVlanInfoName, ".")
+	for _, pdu := range namePDUs {
+		full := strings.TrimPrefix(pdu.Name, ".")
+		if !strings.HasPrefix(full, nameBase+".") {
+			continue
+		}
+		id, err := strconv.Atoi(full[len(nameBase)+1:])
+		if err != nil {
+			continue
+		}
+		vlanNames[id] = client.PDUString(pdu)
+	}
+	if len(vlanNames) == 0 {
+		log.Debug().Msg("vlan(hpicf): no VLAN data found")
+		return nil, nil, nil
+	}
+	log.Debug().Int("vlans", len(vlanNames)).Msg("vlan(hpicf): found VLANs")
+
+	vlans := make([]*model.VLANResult, 0, len(vlanNames))
+	for id, name := range vlanNames {
+		vlans = append(vlans, &model.VLANResult{DeviceID: deviceID, VlanID: id, Name: name})
+	}
+
+	// ── 2. Port assignments via Q-BRIDGE-MIB ─────────────────────────────────
+	// ProCurve supports dot1qPvid (access VLAN per bridge port) and
+	// dot1qVlanCurrentEgressPorts/UntaggedPorts (membership bitmaps per VLAN)
+	// even though dot1qVlanStaticTable is not populated.
+	// Bridge port → ifIndex mapping comes from dot1dBasePortTable.
+	bridgeToIfIdx := buildBridgePortMap(s)
+
+	// Access VLAN per bridge port (dot1qPvid)
+	pvPDUs, _ := s.BulkWalkAll(oid.Dot1qPvid)
+	accessByIfIdx := make(map[int]int) // ifIndex → access VLAN ID
+	pvBase := strings.TrimPrefix(oid.Dot1qPvid, ".")
+	for _, pdu := range pvPDUs {
+		full := strings.TrimPrefix(pdu.Name, ".")
+		if !strings.HasPrefix(full, pvBase+".") {
+			continue
+		}
+		bp, err := strconv.Atoi(full[len(pvBase)+1:])
+		if err != nil {
+			continue
+		}
+		ifIdx := bridgeToIfIdx[bp]
+		if ifIdx == 0 {
+			ifIdx = bp // ProCurve often maps bridge port == ifIndex
+		}
+		accessByIfIdx[ifIdx] = client.PDUInt(pdu)
+	}
+
+	// Egress (tagged+untagged) and untagged bitmaps per VLAN
+	egressPDUs, _ := s.BulkWalkAll(oid.Dot1qVlanCurrentEgressPorts)
+	untagPDUs, _ := s.BulkWalkAll(oid.Dot1qVlanCurrentUntaggedPorts)
+	egressBitmaps := make(map[int][]byte)
+	untagBitmaps := make(map[int][]byte)
+	for _, pdu := range egressPDUs {
+		if vlanID, ok := parseVlanCurrentIndex(pdu.Name, oid.Dot1qVlanCurrentEgressPorts); ok {
+			if b, ok2 := pdu.Value.([]byte); ok2 {
+				egressBitmaps[vlanID] = b
+			}
+		}
+	}
+	for _, pdu := range untagPDUs {
+		if vlanID, ok := parseVlanCurrentIndex(pdu.Name, oid.Dot1qVlanCurrentUntaggedPorts); ok {
+			if b, ok2 := pdu.Value.([]byte); ok2 {
+				untagBitmaps[vlanID] = b
+			}
+		}
+	}
+
+	// ── 3. Build InterfaceVLANResults ─────────────────────────────────────────
+	var ifvlans []*model.InterfaceVLANResult
+
+	// Access VLAN (untagged) per port from dot1qPvid
+	for ifIdx, vlanID := range accessByIfIdx {
+		if vlanID == 0 {
+			continue
+		}
+		ifvlans = append(ifvlans, &model.InterfaceVLANResult{
+			DeviceID: deviceID,
+			IfIndex:  ifIdx,
+			VlanID:   vlanID,
+			Tagged:   false,
+		})
+	}
+
+	// Tagged memberships from egress bitmaps (egress but not in untagged = tagged)
+	for vlanID, egress := range egressBitmaps {
+		untag := untagBitmaps[vlanID]
+		for portNum := 1; portNum <= len(egress)*8; portNum++ {
+			if !bitmapBitSet(egress, portNum) {
+				continue
+			}
+			if bitmapBitSet(untag, portNum) {
+				continue // untagged — already handled via dot1qPvid
+			}
+			ifIdx := bridgeToIfIdx[portNum]
+			if ifIdx == 0 {
+				ifIdx = portNum
+			}
+			ifvlans = append(ifvlans, &model.InterfaceVLANResult{
+				DeviceID: deviceID,
+				IfIndex:  ifIdx,
+				VlanID:   vlanID,
+				Tagged:   true,
+			})
+		}
+	}
+
+	return vlans, ifvlans, nil
 }

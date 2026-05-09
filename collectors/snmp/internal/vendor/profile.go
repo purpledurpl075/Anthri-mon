@@ -60,6 +60,11 @@ type Profile struct {
 
 	// Optional vendor-specific OID overrides. Nil = use standard MIBs.
 
+	// HpicfVlan: when true, use HP-ICF-VLAN-MIB instead of Q-BRIDGE-MIB for
+	// VLAN collection.  Set on HP ProCurve / Aruba ProVision switches, which do
+	// not populate the standard dot1qVlanStaticTable.
+	HpicfVlan bool
+
 	// UptimeOID overrides sysUpTime for the health uptime metric.
 	// Use when the vendor's SNMP agent uptime diverges from actual system uptime
 	// (e.g. Aruba CX resets sysUpTime on agent restart; hrSystemUptime is stable).
