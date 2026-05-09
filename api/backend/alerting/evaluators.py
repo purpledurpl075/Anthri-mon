@@ -214,6 +214,58 @@ async def eval_interface_errors(db: AsyncSession, device: dict, threshold: float
     return breaches
 
 
+async def eval_interface_util(db: AsyncSession, device: dict, threshold: float) -> list[Breach]:
+    """Alert when any interface's bandwidth utilisation (in OR out) exceeds threshold %.
+
+    Uses VictoriaMetrics rate(octets[5m]) * 8 / speed_bps * 100 per interface.
+    Falls back gracefully — returns [] if VM is unreachable or device has no speed data.
+    """
+    device_id = device["id"]
+    # Compute utilisation % = (rate of octets * 8 bits) / link_speed * 100
+    # Use max(in, out) so a single threshold covers both directions.
+    query = (
+        f'max by (if_index, if_name) ('
+        f'  clamp_min(rate(anthrimon_if_in_octets_total{{device_id="{device_id}"}}[5m]) * 8'
+        f'    / on(if_index) group_left() anthrimon_if_speed_bps{{device_id="{device_id}"}} * 100, 0)'
+        f') or max by (if_index, if_name) ('
+        f'  clamp_min(rate(anthrimon_if_out_octets_total{{device_id="{device_id}"}}[5m]) * 8'
+        f'    / on(if_index) group_left() anthrimon_if_speed_bps{{device_id="{device_id}"}} * 100, 0)'
+        f')'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{_VM_URL}/api/v1/query", params={"query": query})
+            resp.raise_for_status()
+            results = resp.json().get("data", {}).get("result", [])
+    except Exception:
+        return []
+
+    breaches: list[Breach] = []
+    seen_if_indexes: set[str] = set()
+    for r in results:
+        val = float(r.get("value", [0, 0])[1] or 0)
+        if val < threshold:
+            continue
+        if_index = r["metric"].get("if_index", "")
+        # Deduplicate — the `or` can produce two rows per interface
+        if if_index in seen_if_indexes:
+            continue
+        seen_if_indexes.add(if_index)
+        if_name = r["metric"].get("if_name", "")
+        iface_row = (await db.execute(
+            text("SELECT id::text FROM interfaces WHERE device_id = :did AND name = :name LIMIT 1"),
+            {"did": device_id, "name": if_name},
+        )).first()
+        breaches.append(Breach(
+            device_id, device["hostname"],
+            interface_id=iface_row[0] if iface_row else None,
+            interface_name=if_name,
+            value=round(val, 1),
+            extra={"threshold_pct": threshold},
+        ))
+    return breaches
+
+
 async def eval_custom_oid(db: AsyncSession, device: dict, oid: str,
                            condition: str, threshold: float) -> Optional[Breach]:
     """Query an arbitrary SNMP OID and compare its value to the threshold."""

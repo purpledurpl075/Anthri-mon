@@ -7,7 +7,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, type AddressEntry } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort } from '../api/devices'
 import { fetchCredentials } from '../api/credentials'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
@@ -618,6 +618,122 @@ function RoutesSection({ deviceId }: { deviceId: string }) {
   )
 }
 
+// ── VLANs ─────────────────────────────────────────────────────────────────────
+
+function VLANsSection({ deviceId }: { deviceId: string }) {
+  const { data: vlans = [], isLoading } = useQuery({
+    queryKey: ['vlans', deviceId],
+    queryFn: () => fetchDeviceVlans(deviceId),
+    staleTime: 30_000,
+  })
+
+  return (
+    <div className="space-y-3">
+      {isLoading ? (
+        <p className="text-xs text-slate-400">Loading…</p>
+      ) : vlans.length === 0 ? (
+        <p className="text-xs text-slate-400">No VLAN data — device may not support Q-BRIDGE-MIB</p>
+      ) : (
+        <div className="overflow-auto rounded-lg border border-slate-200" style={{ maxHeight: 480 }}>
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium text-slate-600 w-20">VLAN ID</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">Name</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">Tagged Ports</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">Untagged Ports</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {vlans.map((v: VlanEntry) => {
+                const tagged   = v.ports.filter(p => p.tagged).map(p => p.interface)
+                const untagged = v.ports.filter(p => !p.tagged).map(p => p.interface)
+                return (
+                  <tr key={v.vlan_id} className="hover:bg-slate-50">
+                    <td className="px-3 py-2">
+                      <span className="inline-flex px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-100 text-slate-600">
+                        {v.vlan_id}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-slate-700">{v.name ?? <span className="text-slate-300">—</span>}</td>
+                    <td className="px-3 py-2 text-slate-500">{tagged.length > 0 ? tagged.join(', ') : <span className="text-slate-300">—</span>}</td>
+                    <td className="px-3 py-2 text-slate-500">{untagged.length > 0 ? untagged.join(', ') : <span className="text-slate-300">—</span>}</td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── STP ───────────────────────────────────────────────────────────────────────
+
+const STP_STATE_STYLE: Record<string, string> = {
+  forwarding: 'bg-green-100 text-green-700',
+  blocking:   'bg-amber-100 text-amber-700',
+  listening:  'bg-amber-100 text-amber-700',
+  learning:   'bg-amber-100 text-amber-700',
+  disabled:   'bg-slate-100 text-slate-500',
+}
+
+const STP_ROLE_STYLE: Record<string, string> = {
+  root:        'bg-blue-100 text-blue-700',
+  designated:  'bg-green-100 text-green-700',
+  alternate:   'bg-amber-100 text-amber-700',
+  backup:      'bg-amber-100 text-amber-700',
+  unknown:     'bg-slate-100 text-slate-500',
+}
+
+function STPSection({ deviceId }: { deviceId: string }) {
+  const { data: ports = [], isLoading } = useQuery({
+    queryKey: ['stp', deviceId],
+    queryFn: () => fetchDeviceStp(deviceId),
+    staleTime: 30_000,
+  })
+
+  return (
+    <div className="space-y-3">
+      {isLoading ? (
+        <p className="text-xs text-slate-400">Loading…</p>
+      ) : ports.length === 0 ? (
+        <p className="text-xs text-slate-400">No STP data — device may not support BRIDGE-MIB</p>
+      ) : (
+        <div className="overflow-auto rounded-lg border border-slate-200" style={{ maxHeight: 480 }}>
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th className="text-left px-3 py-2 font-medium text-slate-600">Interface</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600 w-28">State</th>
+                <th className="text-left px-3 py-2 font-medium text-slate-600 w-28">Role</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {ports.map((p: StpPort, i: number) => (
+                <tr key={i} className="hover:bg-slate-50">
+                  <td className="px-3 py-2 font-medium text-slate-700">{p.interface}</td>
+                  <td className="px-3 py-2">
+                    <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-semibold ${STP_STATE_STYLE[p.state] ?? STP_STATE_STYLE.disabled}`}>
+                      {p.state}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2">
+                    <span className={`inline-flex px-2 py-0.5 rounded text-[10px] font-semibold ${STP_ROLE_STYLE[p.role] ?? STP_ROLE_STYLE.unknown}`}>
+                      {p.role}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Address table ─────────────────────────────────────────────────────────────
 
 function AddressesSection({ deviceId }: { deviceId: string }) {
@@ -1002,7 +1118,7 @@ export default function DeviceDetail() {
   const queryClient = useQueryClient()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes'>('interfaces')
+  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes' | 'vlans' | 'stp'>('interfaces')
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(id!),
@@ -1430,14 +1546,14 @@ export default function DeviceDetail() {
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="border-b border-slate-100 px-5 flex items-center justify-between">
             <nav className="flex gap-1 -mb-px">
-              {(['interfaces', 'neighbours', 'addresses', 'routes'] as const).map(t => (
+              {(['interfaces', 'neighbours', 'addresses', 'routes', 'vlans', 'stp'] as const).map(t => (
                 <button key={t} onClick={() => setTab(t)}
-                  className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors capitalize ${
+                  className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
                     tab === t
                       ? 'border-blue-600 text-blue-600'
                       : 'border-transparent text-slate-500 hover:text-slate-700'
                   }`}>
-                  {t === 'interfaces' ? `Interfaces${totalIfaces ? ` (${totalIfaces})` : ''}` : t === 'neighbours' ? 'Neighbours' : t === 'addresses' ? 'Addresses' : 'Routes'}
+                  {t === 'interfaces' ? `Interfaces${totalIfaces ? ` (${totalIfaces})` : ''}` : t === 'neighbours' ? 'Neighbours' : t === 'addresses' ? 'Addresses' : t === 'routes' ? 'Routes' : t === 'vlans' ? 'VLANs' : 'STP'}
                 </button>
               ))}
             </nav>
@@ -1493,6 +1609,18 @@ export default function DeviceDetail() {
           {tab === 'routes' && (
             <div className="p-5">
               <RoutesSection deviceId={id!} />
+            </div>
+          )}
+
+          {tab === 'vlans' && (
+            <div className="p-5">
+              <VLANsSection deviceId={id!} />
+            </div>
+          )}
+
+          {tab === 'stp' && (
+            <div className="p-5">
+              <STPSection deviceId={id!} />
             </div>
           )}
         </div>

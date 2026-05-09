@@ -18,8 +18,8 @@ from .evaluators import (
     Breach,
     eval_cpu, eval_mem, eval_device_down,
     eval_interface_down, eval_interface_flap,
-    eval_uptime, eval_temperature, eval_interface_errors, eval_custom_oid,
-    eval_ospf_state,
+    eval_uptime, eval_temperature, eval_interface_errors, eval_interface_util,
+    eval_custom_oid, eval_ospf_state,
     resolve_devices,
 )
 
@@ -89,7 +89,8 @@ def _build_title(rule: AlertRule, breach: Breach) -> str:
         "interface_down":  "interface down",
         "interface_flap":  f"interface flapping ({int(breach.value or 0)} changes)",
         "temperature":     f"temperature {breach.value:.1f}°C" if breach.value is not None else "temperature high",
-        "interface_errors": f"interface errors ({int(breach.value or 0)})",
+        "interface_errors":   f"interface errors ({int(breach.value or 0)})",
+        "interface_util_pct": f"bandwidth {breach.value:.1f}%" if breach.value is not None else "bandwidth high",
         "ospf_state":      f"OSPF neighbour {breach.extra.get('neighbour','')} {breach.extra.get('ospf_state','')}",
         "uptime":          f"rebooted (uptime {int(breach.value or 0)}s)",
     }
@@ -248,6 +249,8 @@ class AlertEngine:
                 if b: breaches.append(b)
             elif rule.metric == "interface_errors":
                 breaches.extend(await eval_interface_errors(db, device, rule.threshold or 100))
+            elif rule.metric == "interface_util_pct":
+                breaches.extend(await eval_interface_util(db, device, rule.threshold or 80))
             elif rule.metric == "ospf_state":
                 b = await eval_ospf_state(db, device)
                 if b: breaches.append(b)

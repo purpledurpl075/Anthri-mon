@@ -6,7 +6,7 @@ from typing import List, Optional
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -485,6 +485,73 @@ async def get_routes(
             "updated_at":     r.updated_at.isoformat(),
         }
         for r in rows
+    ]
+
+
+# ── VLANs ─────────────────────────────────────────────────────────────────────
+
+@router.get("/{device_id}/vlans", summary="VLAN membership")
+async def get_device_vlans(
+    device_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _assert_device_visible(device_id, current_user, db)
+    result = await db.execute(
+        text("""
+            SELECT v.vlan_id, v.name,
+                   i.name AS interface_name,
+                   iv.tagged
+            FROM vlans v
+            LEFT JOIN interface_vlans iv ON iv.vlan_id = v.vlan_id
+            LEFT JOIN interfaces i ON i.id = iv.interface_id AND i.device_id = :did
+            WHERE v.device_id = :did
+            ORDER BY v.vlan_id, i.name
+        """),
+        {"did": device_id},
+    )
+    rows = result.mappings().all()
+    vlans: dict[int, dict] = {}
+    for row in rows:
+        vid = row["vlan_id"]
+        if vid not in vlans:
+            vlans[vid] = {"vlan_id": vid, "name": row["name"], "ports": []}
+        if row["interface_name"] is not None:
+            vlans[vid]["ports"].append({
+                "interface": row["interface_name"],
+                "tagged": bool(row["tagged"]),
+            })
+    return list(vlans.values())
+
+
+# ── STP ────────────────────────────────────────────────────────────────────────
+
+@router.get("/{device_id}/stp", summary="STP port states")
+async def get_device_stp(
+    device_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _assert_device_visible(device_id, current_user, db)
+    result = await db.execute(
+        text("""
+            SELECT i.name AS interface_name, i.if_index,
+                   s.stp_state, s.stp_role
+            FROM interface_stp s
+            JOIN interfaces i ON i.id = s.interface_id
+            WHERE i.device_id = :did
+            ORDER BY i.if_index
+        """),
+        {"did": device_id},
+    )
+    rows = result.mappings().all()
+    return [
+        {
+            "interface": row["interface_name"],
+            "state": row["stp_state"],
+            "role": row["stp_role"],
+        }
+        for row in rows
     ]
 
 

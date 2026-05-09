@@ -13,7 +13,8 @@ const METRICS = [
   { value: 'interface_flap',    label: 'Interface flapping',         hasThreshold: true,  conditions: [],            unit: 'changes', thresholdLabel: 'Changes in window', simple: true },
   { value: 'uptime',            label: 'Device rebooted (low uptime)', hasThreshold: true, conditions: ['lt'],       unit: 's',    thresholdLabel: 'Uptime below (s)',   simple: true },
   { value: 'temperature',       label: 'Temperature sensor high',    hasThreshold: true,  conditions: ['gt'],        unit: '°C',   thresholdLabel: 'Threshold °C',       simple: true },
-  { value: 'interface_errors',  label: 'Interface errors',           hasThreshold: true,  conditions: ['gt'],        unit: '',     thresholdLabel: 'Error count',        simple: true },
+  { value: 'interface_errors',  label: 'Interface errors',           hasThreshold: true,  conditions: ['gt'],        unit: '',     thresholdLabel: 'Error count (5 min)', simple: true },
+  { value: 'interface_util_pct', label: 'Interface utilisation',    hasThreshold: true,  conditions: ['gt'],        unit: '%',    thresholdLabel: 'Utilisation % (5 min)', simple: true },
   { value: 'ospf_state',        label: 'OSPF neighbour not full',    hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
   { value: 'custom_oid',        label: 'Custom OID',                 hasThreshold: true,  conditions: ['gt','lt','eq'], unit: '', thresholdLabel: 'Threshold value',   simple: false },
 ]

@@ -96,6 +96,18 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 		}
 	}
 
+	if len(result.VLANs) > 0 || result.VLANs != nil {
+		if err := w.upsertVLANs(ctx, result.DeviceID, result.VLANs, result.InterfaceVLANs); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert vlans failed")
+		}
+	}
+
+	if len(result.STPPorts) > 0 {
+		if err := w.upsertSTPPorts(ctx, result.DeviceID, result.STPPorts); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert stp ports failed")
+		}
+	}
+
 	if len(result.LLDPNeighbors) > 0 {
 		if err := w.upsertLLDPNeighbors(ctx, result.DeviceID, result.LLDPNeighbors); err != nil {
 			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert lldp neighbors failed")
@@ -485,6 +497,94 @@ func (w *PostgresWriter) upsertCDPNeighbors(ctx context.Context, deviceID uuid.U
 	for i := 0; i < batch.Len(); i++ {
 		if _, err := br.Exec(); err != nil {
 			w.log.Error().Err(err).Msg("cdp neighbor batch exec error")
+		}
+	}
+	return nil
+}
+
+// ── VLANs ─────────────────────────────────────────────────────────────────────
+
+// upsertVLANs upserts per-device VLAN records and their interface memberships.
+// Interface memberships are replaced in full: old rows for this device are
+// deleted, then the current set is inserted.
+func (w *PostgresWriter) upsertVLANs(ctx context.Context, deviceID uuid.UUID, vlans []*model.VLANResult, ifvlans []*model.InterfaceVLANResult) error {
+	// Upsert each VLAN name record.
+	if len(vlans) > 0 {
+		batch := &pgx.Batch{}
+		for _, v := range vlans {
+			batch.Queue(`
+				INSERT INTO vlans (device_id, vlan_id, name, updated_at)
+				VALUES ($1, $2, $3, NOW())
+				ON CONFLICT (device_id, vlan_id) DO UPDATE SET
+					name       = EXCLUDED.name,
+					updated_at = EXCLUDED.updated_at
+			`, deviceID, v.VlanID, v.Name)
+		}
+		br := w.pool.SendBatch(ctx, batch)
+		defer br.Close()
+		for i := 0; i < batch.Len(); i++ {
+			if _, err := br.Exec(); err != nil {
+				w.log.Error().Err(err).Msg("vlan batch exec error")
+			}
+		}
+	}
+
+	// Replace interface_vlans for this device atomically.
+	// 1) Delete all current rows for this device's interfaces.
+	if _, err := w.pool.Exec(ctx, `
+		DELETE FROM interface_vlans
+		WHERE interface_id IN (
+			SELECT id FROM interfaces WHERE device_id = $1
+		)
+	`, deviceID); err != nil {
+		return fmt.Errorf("delete interface_vlans: %w", err)
+	}
+
+	// 2) Insert the fresh set, resolving ifIndex → interface_id inline.
+	if len(ifvlans) > 0 {
+		batch := &pgx.Batch{}
+		for _, iv := range ifvlans {
+			batch.Queue(`
+				INSERT INTO interface_vlans (interface_id, vlan_id, tagged)
+				SELECT id, $2, $3 FROM interfaces WHERE device_id = $1 AND if_index = $4
+				ON CONFLICT (interface_id, vlan_id) DO UPDATE SET
+					tagged = EXCLUDED.tagged
+			`, deviceID, iv.VlanID, iv.Tagged, iv.IfIndex)
+		}
+		br2 := w.pool.SendBatch(ctx, batch)
+		defer br2.Close()
+		for i := 0; i < batch.Len(); i++ {
+			if _, err := br2.Exec(); err != nil {
+				w.log.Error().Err(err).Msg("interface_vlan batch exec error")
+			}
+		}
+	}
+
+	return nil
+}
+
+// ── STP ───────────────────────────────────────────────────────────────────────
+
+// upsertSTPPorts upserts per-interface STP state rows, resolving ifIndex to
+// interface_id via the interfaces table.
+func (w *PostgresWriter) upsertSTPPorts(ctx context.Context, deviceID uuid.UUID, ports []*model.STPPortResult) error {
+	batch := &pgx.Batch{}
+	now := time.Now()
+	for _, p := range ports {
+		batch.Queue(`
+			INSERT INTO interface_stp (interface_id, stp_state, stp_role, updated_at)
+			SELECT id, $2, $3, $4 FROM interfaces WHERE device_id = $1 AND if_index = $5
+			ON CONFLICT (interface_id) DO UPDATE SET
+				stp_state  = EXCLUDED.stp_state,
+				stp_role   = EXCLUDED.stp_role,
+				updated_at = EXCLUDED.updated_at
+		`, deviceID, p.State, p.Role, now, p.IfIndex)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("interface_stp batch exec error")
 		}
 	}
 	return nil

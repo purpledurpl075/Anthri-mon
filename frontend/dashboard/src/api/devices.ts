@@ -146,3 +146,13 @@ export interface GlobalAddressesResponse {
 
 export const fetchAllAddresses = (params?: { search?: string; type?: string; device_id?: string; limit?: number; offset?: number }) =>
   api.get<GlobalAddressesResponse>('/devices/addresses', { params }).then(r => r.data)
+
+export interface VlanPort { interface: string; tagged: boolean }
+export interface VlanEntry { vlan_id: number; name: string | null; ports: VlanPort[] }
+export interface StpPort { interface: string; state: string; role: string }
+
+export const fetchDeviceVlans = (deviceId: string) =>
+  api.get<VlanEntry[]>(`/devices/${deviceId}/vlans`).then(r => r.data)
+
+export const fetchDeviceStp = (deviceId: string) =>
+  api.get<StpPort[]>(`/devices/${deviceId}/stp`).then(r => r.data)

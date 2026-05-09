@@ -168,6 +168,31 @@ type CDPNeighbor struct {
 	Duplex       string // "full" | "half" | ""
 }
 
+// VLANResult is one row from the device's VLAN table (dot1qVlanStaticName).
+type VLANResult struct {
+	DeviceID uuid.UUID
+	VlanID   int
+	Name     string
+}
+
+// InterfaceVLANResult describes VLAN membership for one interface.
+// IfIndex is resolved to interface_id by the writer.
+type InterfaceVLANResult struct {
+	DeviceID uuid.UUID
+	IfIndex  int  // resolved to interface_id by writer
+	VlanID   int
+	Tagged   bool // true = tagged (trunk), false = untagged (access/native)
+}
+
+// STPPortResult is the STP state for one bridge port.
+// IfIndex is resolved to interface_id by the writer.
+type STPPortResult struct {
+	DeviceID uuid.UUID
+	IfIndex  int    // resolved to interface_id by writer
+	State    string // "disabled"|"blocking"|"listening"|"learning"|"forwarding"
+	Role     string // "unknown"|"root"|"designated"|"alternate"|"backup"
+}
+
 // SNMPV2cCredential is the unmarshalled form of a snmp_v2c credentials record.
 type SNMPV2cCredential struct {
 	Community string `json:"community"`

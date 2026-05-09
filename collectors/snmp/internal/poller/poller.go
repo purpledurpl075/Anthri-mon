@@ -28,6 +28,9 @@ type PollResult struct {
 	RouteEntries   []*model.RouteEntry    // nil if not polled this cycle
 	ARPEntries     []*model.ARPEntry       // nil if not polled this cycle
 	MACEntries     []*model.MACEntry       // nil if not polled this cycle
+	VLANs          []*model.VLANResult          // nil if not polled this cycle
+	InterfaceVLANs []*model.InterfaceVLANResult // nil if not polled this cycle
+	STPPorts       []*model.STPPortResult       // nil if not polled this cycle
 }
 
 // ResultHandler is a callback invoked after each completed poll cycle.
@@ -312,6 +315,19 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				log.Warn().Err(err).Msg("mac poll failed (non-fatal)")
 			} else {
 				result.MACEntries = macs
+			}
+
+			if vlans, ifvlans, err := PollVLANs(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("vlan poll failed (non-fatal)")
+			} else {
+				result.VLANs = vlans
+				result.InterfaceVLANs = ifvlans
+			}
+
+			if stp, err := PollSTPPorts(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("stp poll failed (non-fatal)")
+			} else {
+				result.STPPorts = stp
 			}
 
 			m.emit(ctx, log, result)

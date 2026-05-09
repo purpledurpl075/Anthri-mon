@@ -215,6 +215,39 @@ const MACFdbTable = "1.3.6.1.2.1.17.4.3.1"
 // Indexed by bridge port number.
 const MACPortTable = "1.3.6.1.2.1.17.1.4.1"
 
+// ── Q-BRIDGE-MIB (IEEE 802.1Q) ───────────────────────────────────────────────
+
+const (
+	// dot1qVlanStaticName: VLAN name string, indexed by vlan_id.
+	Dot1qVlanStaticName = "1.3.6.1.2.1.17.7.1.4.1.1.1"
+
+	// dot1qVlanCurrentEgressPorts: tagged+untagged egress bitmap per VLAN.
+	// Indexed by (TimeMark, VlanIndex); use TimeMark=0 for current data.
+	Dot1qVlanCurrentEgressPorts = "1.3.6.1.2.1.17.7.1.4.2.1.4"
+
+	// dot1qVlanCurrentUntaggedPorts: untagged egress bitmap per VLAN.
+	// Indexed by (TimeMark, VlanIndex); use TimeMark=0 for current data.
+	Dot1qVlanCurrentUntaggedPorts = "1.3.6.1.2.1.17.7.1.4.2.1.5"
+
+	// dot1qPvid: access VLAN per bridge port, indexed by bridge port number.
+	Dot1qPvid = "1.3.6.1.2.1.17.7.1.4.5.1.1"
+)
+
+// ── BRIDGE-MIB STP (IEEE 802.1D) ─────────────────────────────────────────────
+
+const (
+	// dot1dStpPortTable: STP per-port state table.
+	Dot1dStpPortTable = "1.3.6.1.2.1.17.2.15.1"
+
+	// dot1dStpPortState: STP port state, indexed by bridge port number.
+	// Values: 1=disabled 2=blocking 3=listening 4=learning 5=forwarding
+	Dot1dStpPortState = "1.3.6.1.2.1.17.2.15.1.3"
+
+	// dot1dStpPortRole: STP port role (RSTP extension), indexed by bridge port number.
+	// Values: 0=unknown 1=root 2=designated 3=alternate 4=backup
+	Dot1dStpPortRole = "1.3.6.1.2.1.17.2.15.1.10"
+)
+
 // ── LLDP-MIB (IEEE 802.1AB) ──────────────────────────────────────────────────
 // Two OID namespaces exist: IEEE (1.0.8802) used by most enterprise gear,
 // and IETF (1.3.6.1.2.1.111) used by some Linux/open-source agents.
