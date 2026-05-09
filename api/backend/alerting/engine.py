@@ -109,6 +109,10 @@ class AlertEngine:
     def __init__(self) -> None:
         self._breach_since: dict[str, datetime] = {}   # fp → breach start (duration gating)
         self._clear_since:  dict[str, datetime] = {}   # fp → clear start (flap suppression)
+        self._last_clear:   dict[str, datetime] = {}   # fp → last time condition was clear
+        # fps manually resolved by a user while condition was still active;
+        # suppressed until the condition actually clears so we don't spam
+        self._suppress_until_clear: set[str] = set()
 
     async def run(self) -> None:
         logger.info("alert_engine_starting", interval_s=EVAL_INTERVAL)
@@ -135,7 +139,9 @@ class AlertEngine:
 
     async def _evaluate_all(self, db: AsyncSession) -> list[_PendingNotif]:
         rules = (await db.execute(
-            select(AlertRule).where(AlertRule.is_enabled == True)  # noqa: E712
+            select(AlertRule)
+            .where(AlertRule.is_enabled == True)  # noqa: E712
+            .order_by(AlertRule.name)
         )).scalars().all()
 
         # Build per-metric override map so higher-specificity rules silence broader ones
@@ -152,13 +158,17 @@ class AlertEngine:
         pending: list[_PendingNotif] = []
         for rule in rules:
             rule_id_str = str(rule.id)  # capture before any potential failure
+            # Use a savepoint so a failing rule only rolls back its own changes,
+            # not the alert creations from earlier rules in this cycle.
+            sp = await db.begin_nested()
             try:
                 rule_pending = await self._evaluate_rule(
                     db, rule, rules_by_metric.get(rule.metric, []), active_windows
                 )
+                await sp.commit()
                 pending.extend(rule_pending)
             except Exception as exc:
-                await db.rollback()
+                await sp.rollback()
                 logger.error("rule_eval_error", rule_id=rule_id_str, error=str(exc), exc_info=True)
 
         await self._purge_expired_windows(db)
@@ -282,6 +292,12 @@ class AlertEngine:
 
             firing_fps.add(fp)
 
+        # Expire manual-resolve suppression for any fp whose condition has now cleared
+        for fp in list(self._suppress_until_clear):
+            if fp not in breaching_fps:
+                self._suppress_until_clear.discard(fp)
+                self._last_clear[fp] = now
+
         # ── Correlated suppression: build set of devices whose parent is down ──
         suppressed_device_ids: set[str] = set()
         if rule.suppress_if_parent_down and rule.parent_device_id:
@@ -315,6 +331,26 @@ class AlertEngine:
             )).scalar_one_or_none()
 
             if existing is None:
+                # If this fp was manually resolved while the condition was still active,
+                # suppress re-creation until the condition actually clears.
+                if fp in self._suppress_until_clear:
+                    continue
+
+                # Check whether the most recent resolution was manual (resolved_by set).
+                # If so, and it happened more recently than the last natural clear,
+                # suppress until the condition clears so we don't spam the operator.
+                last_res = (await db.execute(
+                    select(Alert.resolved_by, Alert.resolved_at)
+                    .where(Alert.fingerprint == fp, Alert.status == "resolved")
+                    .order_by(Alert.resolved_at.desc())
+                    .limit(1)
+                )).first()
+                if last_res and last_res.resolved_by is not None:
+                    last_clear = self._last_clear.get(fp)
+                    if last_clear is None or last_res.resolved_at > last_clear:
+                        self._suppress_until_clear.add(fp)
+                        continue
+
                 suppressed = breach.device_id in suppressed_device_ids
                 alert = Alert(
                     id=uuid.uuid4(),
@@ -398,6 +434,8 @@ class AlertEngine:
             alert.resolved_at = now
             self._breach_since.pop(fp, None)
             self._clear_since.pop(fp, None)
+            self._last_clear[fp] = now
+            self._suppress_until_clear.discard(fp)
 
             if rule.metric == "device_down" and alert.device_id:
                 await db.execute(
