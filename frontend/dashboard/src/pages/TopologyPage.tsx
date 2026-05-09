@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   ReactFlow, Controls, Background, MiniMap, Panel, useReactFlow,
-  BaseEdge, EdgeLabelRenderer, getSmoothStepPath,
+  EdgeLabelRenderer,
   Handle, Position,
   type NodeProps, type Node, type Edge, type EdgeProps, type NodeMouseHandler,
 } from '@xyflow/react'
@@ -25,9 +25,9 @@ const STATUS_LABEL: Record<string, string> = {
   unknown:     'Unknown',
 }
 
-const centerHandle: React.CSSProperties = {
+const hiddenHandle: React.CSSProperties = {
   opacity: 0, width: 1, height: 1, minWidth: 1, minHeight: 1,
-  top: '50%', left: '50%', transform: 'translate(-50%,-50%)',
+  border: 'none', background: 'none',
 }
 
 // ── Device node ────────────────────────────────────────────────────────────
@@ -45,8 +45,8 @@ function DeviceNode({ data, selected }: NodeProps) {
         boxShadow: selected ? `0 0 0 3px ${color}33, 0 4px 12px rgba(0,0,0,0.12)` : undefined,
       }}
     >
-      <Handle type="source" position={Position.Right} style={centerHandle} />
-      <Handle type="target" position={Position.Left} style={centerHandle} />
+      <Handle type="source" position={Position.Top} style={hiddenHandle} />
+      <Handle type="target" position={Position.Top} style={hiddenHandle} />
 
       <div className="px-3 pt-3 pb-2">
         <div className="flex justify-center mb-2" style={{ color }}>
@@ -70,37 +70,59 @@ const NODE_TYPES = { device: DeviceNode }
 
 function TopologyEdge({
   id, sourceX, sourceY, targetX, targetY,
-  sourcePosition, targetPosition,
   data, selected,
-  markerEnd,
 }: EdgeProps) {
   const d = data as { label?: string; protocol?: string; highlighted?: boolean; dimmed?: boolean }
-  const isLLDP  = d.protocol === 'lldp'
-  const color   = isLLDP ? '#0891b2' : '#7c3aed'
-  const dimmed  = d.dimmed
-  const hilit   = d.highlighted || selected
+  const isLLDP = d.protocol === 'lldp'
+  const color  = isLLDP ? '#0891b2' : '#7c3aed'
+  const dimmed = d.dimmed
+  const hilit  = d.highlighted || selected
 
-  const [edgePath, labelX, labelY] = getSmoothStepPath({
-    sourceX, sourceY, sourcePosition,
-    targetX, targetY, targetPosition,
-    borderRadius: 12,
-  })
+  const path   = `M ${sourceX} ${sourceY} L ${targetX} ${targetY}`
+  const labelX = (sourceX + targetX) / 2
+  const labelY = (sourceY + targetY) / 2
 
   return (
     <>
-      <BaseEdge
+      {/* Glow behind highlighted edges */}
+      {hilit && (
+        <path
+          d={path}
+          fill="none"
+          stroke={color}
+          strokeWidth={10}
+          strokeOpacity={0.18}
+          strokeLinecap="round"
+        />
+      )}
+
+      {/* Hairline background track — keeps lines visible over the grid */}
+      <path
+        d={path}
+        fill="none"
+        stroke="white"
+        strokeWidth={hilit ? 4.5 : 3}
+        strokeOpacity={dimmed ? 0 : 0.55}
+        strokeLinecap="round"
+      />
+
+      {/* Main line */}
+      <path
         id={id}
-        path={edgePath}
-        markerEnd={markerEnd}
+        d={path}
+        fill="none"
+        stroke={color}
+        strokeWidth={hilit ? 2.5 : 1.5}
+        strokeOpacity={dimmed ? 0.15 : 1}
+        strokeLinecap="round"
+        strokeDasharray={hilit ? '6 3' : undefined}
         style={{
-          stroke:      color,
-          strokeWidth: hilit ? 2.5 : 1.5,
-          opacity:     dimmed ? 0.2 : 1,
-          transition:  'opacity 0.15s, stroke-width 0.15s',
-          strokeDasharray: hilit ? '6 3' : undefined,
-          animation:   hilit ? 'dash 0.8s linear infinite' : undefined,
+          animation:  hilit ? 'dash 0.8s linear infinite' : undefined,
+          transition: 'stroke-opacity 0.15s, stroke-width 0.15s',
         }}
       />
+
+      {/* Port label */}
       {d.label && !dimmed && (
         <EdgeLabelRenderer>
           <div
@@ -110,7 +132,7 @@ function TopologyEdge({
               pointerEvents: 'none',
             }}
           >
-            <span className="text-[9px] font-mono text-slate-500 bg-white/90 border border-slate-200 rounded px-1.5 py-0.5 shadow-sm leading-none whitespace-nowrap">
+            <span className="text-[9px] font-mono text-slate-500 bg-white/95 border border-slate-200 rounded px-1.5 py-0.5 shadow-sm leading-none whitespace-nowrap">
               {d.label}
             </span>
           </div>
