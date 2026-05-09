@@ -1,5 +1,7 @@
 package vendor
 
+import "github.com/purpledurpl075/anthri-mon/collectors/snmp/internal/oid"
+
 // Aruba-CX (ArubaOS-CX) switches support standard HOST-RESOURCES-MIB
 // and ENTITY-SENSOR-MIB. OID prefix 47196 is the current Aruba Networks
 // enterprise assignment; some older devices may appear under HP/Agilent (11).
@@ -19,6 +21,12 @@ func init() {
 			`ArubaOS-CX`,
 		},
 		Priority: 10,
+
+		// sysUpTime resets whenever the AOS-CX SNMP agent process restarts,
+		// which happens during config commits and watchdog cycles. Use
+		// hrSystemUptime instead — it tracks actual OS uptime and is unaffected
+		// by agent restarts.
+		UptimeOID: oid.HrSystemUptime,
 
 		CPUOIDs:    nil,
 		MemoryOIDs: nil,

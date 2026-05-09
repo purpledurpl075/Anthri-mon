@@ -19,9 +19,15 @@ import (
 // provides them; otherwise standard HOST-RESOURCES-MIB and ENTITY-SENSOR-MIB
 // are used.
 func PollHealth(s *client.Session, deviceID uuid.UUID, profile *vendor.Profile, sysUpTimeTicks uint32) (*model.HealthResult, error) {
+	uptimeTicks := sysUpTimeTicks
+	if profile != nil && profile.UptimeOID != "" {
+		if pdus, err := s.Get([]string{profile.UptimeOID}); err == nil && len(pdus) > 0 {
+			uptimeTicks = uint32(client.PDUUint64(pdus[0]))
+		}
+	}
 	result := &model.HealthResult{
 		DeviceID:   deviceID,
-		UptimeSecs: uint64(sysUpTimeTicks) / 100,
+		UptimeSecs: uint64(uptimeTicks) / 100,
 		PollTime:   time.Now().UTC(),
 	}
 

@@ -60,6 +60,12 @@ type Profile struct {
 
 	// Optional vendor-specific OID overrides. Nil = use standard MIBs.
 
+	// UptimeOID overrides sysUpTime for the health uptime metric.
+	// Use when the vendor's SNMP agent uptime diverges from actual system uptime
+	// (e.g. Aruba CX resets sysUpTime on agent restart; hrSystemUptime is stable).
+	// The OID must return a TimeTicks value (hundredths of a second).
+	UptimeOID string
+
 	// CPUOIDS overrides hrProcessorLoad for CPU collection.
 	CPUOIDs *OIDSet
 

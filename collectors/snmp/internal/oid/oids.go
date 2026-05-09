@@ -57,6 +57,11 @@ const (
 // ── HOST-RESOURCES-MIB (RFC 2790) ───────────────────────────────────────────
 
 const (
+	// System uptime from the OS (timeticks, same unit as sysUpTime).
+	// Unlike sysUpTime, this tracks how long the host has been running —
+	// SNMP agent restarts do not reset it.
+	HrSystemUptime = "1.3.6.1.2.1.25.1.1.0"
+
 	// CPU: walk returns one row per processor, value 0–100 (%)
 	HrProcessorTable = "1.3.6.1.2.1.25.3.3.1"
 	HrProcessorLoad  = "1.3.6.1.2.1.25.3.3.1.2"
