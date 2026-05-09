@@ -4,8 +4,11 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 from dataclasses import dataclass, field
 
+import httpx
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+_VM_URL = "http://localhost:8428"
 
 
 @dataclass
@@ -173,24 +176,42 @@ async def eval_temperature(db: AsyncSession, device: dict, threshold: float) -> 
 
 
 async def eval_interface_errors(db: AsyncSession, device: dict, threshold: float) -> list[Breach]:
-    """Alert on interfaces with high error counts (in+out combined)."""
-    rows = (await db.execute(
-        text("""
-            SELECT id::text, name,
-                   COALESCE(in_errors, 0) + COALESCE(out_errors, 0) AS total_errors
-            FROM interfaces
-            WHERE device_id = :did
-              AND admin_status = 'up'
-              AND COALESCE(in_errors, 0) + COALESCE(out_errors, 0) > :thresh
-        """),
-        {"did": device["id"], "thresh": int(threshold)},
-    )).mappings().all()
-    return [
-        Breach(device["id"], device["hostname"],
-               interface_id=r["id"], interface_name=r["name"],
-               value=float(r["total_errors"]))
-        for r in rows
-    ]
+    """Alert on interfaces accumulating errors faster than threshold per 5-minute window.
+
+    Error counters are stored in VictoriaMetrics (anthrimon_if_in/out_errors_total).
+    Uses increase() over 5m so a counter reset (reboot) doesn't create false positives.
+    """
+    device_id = device["id"]
+    query = (
+        f'increase(anthrimon_if_in_errors_total{{device_id="{device_id}"}}[5m])'
+        f' + increase(anthrimon_if_out_errors_total{{device_id="{device_id}"}}[5m])'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"{_VM_URL}/api/v1/query", params={"query": query})
+            resp.raise_for_status()
+            results = resp.json().get("data", {}).get("result", [])
+    except Exception:
+        return []
+
+    breaches: list[Breach] = []
+    for r in results:
+        val = float(r.get("value", [0, 0])[1] or 0)
+        if val <= threshold:
+            continue
+        if_name = r["metric"].get("if_name", "")
+        # Look up the interface row for its UUID
+        iface_row = (await db.execute(
+            text("SELECT id::text FROM interfaces WHERE device_id = :did AND name = :name LIMIT 1"),
+            {"did": device_id, "name": if_name},
+        )).first()
+        breaches.append(Breach(
+            device_id, device["hostname"],
+            interface_id=iface_row[0] if iface_row else None,
+            interface_name=if_name,
+            value=val,
+        ))
+    return breaches
 
 
 async def eval_custom_oid(db: AsyncSession, device: dict, oid: str,

@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING, Optional
 
 import structlog
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import crypto
+from ..database import AsyncSessionLocal
 from ..models.alert import NotificationChannel
 from ..models.settings import SystemSetting
 
@@ -43,27 +43,30 @@ async def _load_smtp(db: AsyncSession) -> Optional[dict]:
     return cfg
 
 
-async def dispatch(alert: Alert, rule: AlertRule, db: AsyncSession, *, resolved: bool = False) -> None:
+async def dispatch(alert: Alert, rule: AlertRule, *, resolved: bool = False) -> None:
+    """Send notifications for an alert. Opens its own DB session — never call inside an eval transaction."""
     if not rule.channel_ids:
         return
 
-    channels = (await db.execute(
-        select(NotificationChannel).where(
-            NotificationChannel.id.in_([str(c) for c in rule.channel_ids]),
-            NotificationChannel.is_enabled == True,  # noqa: E712
-        )
-    )).scalars().all()
+    async with AsyncSessionLocal() as db:
+        channels = (await db.execute(
+            select(NotificationChannel).where(
+                NotificationChannel.id.in_([str(c) for c in rule.channel_ids]),
+                NotificationChannel.is_enabled == True,  # noqa: E712
+            )
+        )).scalars().all()
 
-    email_channels = [c for c in channels if c.type == "email"]
-    other_channels = [c for c in channels if c.type != "email"]
+        email_channels = [c for c in channels if c.type == "email"]
+        other_channels = [c for c in channels if c.type != "email"]
 
-    for c in other_channels:
-        logger.debug("notify_channel_type_not_implemented", type=c.type)
+        for c in other_channels:
+            logger.debug("notify_channel_type_not_implemented", type=c.type)
 
-    if not email_channels:
-        return
+        if not email_channels:
+            return
 
-    smtp = await _load_smtp(db)
+        smtp = await _load_smtp(db)
+
     if smtp is None:
         logger.warning("notify_smtp_not_configured", alert_id=str(alert.id))
         return

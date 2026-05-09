@@ -27,6 +27,9 @@ logger = structlog.get_logger(__name__)
 
 EVAL_INTERVAL = 15  # seconds
 
+# Pending notification: (alert, rule, resolved)
+_PendingNotif = tuple[Alert, AlertRule, bool]
+
 
 def _selector_specificity(selector: Optional[dict]) -> int:
     """Higher = more specific. device_ids(3) > tags(2) > vendors(1) > all(0)."""
@@ -93,11 +96,10 @@ def _build_title(rule: AlertRule, breach: Breach) -> str:
     return f"{base}: {metric_labels.get(rule.metric, rule.metric)}"
 
 
-async def _safe_dispatch(alert: Alert, rule: AlertRule, db: AsyncSession,
-                         *, resolved: bool = False) -> None:
-    """Dispatch notifications without letting errors affect the DB transaction."""
+async def _safe_dispatch(alert: Alert, rule: AlertRule, *, resolved: bool = False) -> None:
+    """Dispatch notifications in a fresh session, outside the eval transaction."""
     try:
-        await notify.dispatch(alert, rule, db, resolved=resolved)
+        await notify.dispatch(alert, rule, resolved=resolved)
     except Exception as exc:
         logger.error("notify_dispatch_failed", alert_id=str(alert.id),
                      rule=rule.name, error=str(exc))
@@ -113,20 +115,25 @@ class AlertEngine:
         while True:
             try:
                 await asyncio.sleep(EVAL_INTERVAL)
+                pending: list[_PendingNotif] = []
                 async with AsyncSessionLocal() as db:
                     try:
-                        await self._evaluate_all(db)
+                        pending = await self._evaluate_all(db)
                         await db.commit()
                     except Exception as exc:
                         await db.rollback()
-                        logger.error("alert_engine_eval_error", error=str(exc), exc_info=exc)
+                        logger.error("alert_engine_eval_error", error=str(exc), exc_info=True)
+                # Dispatch notifications after the commit — never inside the eval transaction.
+                # expire_on_commit=False keeps alert/rule attrs accessible after commit.
+                for alert, rule, resolved in pending:
+                    await _safe_dispatch(alert, rule, resolved=resolved)
             except asyncio.CancelledError:
                 logger.info("alert_engine_stopped")
                 return
             except Exception as exc:
-                logger.error("alert_engine_error", error=str(exc), exc_info=exc)
+                logger.error("alert_engine_error", error=str(exc), exc_info=True)
 
-    async def _evaluate_all(self, db: AsyncSession) -> None:
+    async def _evaluate_all(self, db: AsyncSession) -> list[_PendingNotif]:
         rules = (await db.execute(
             select(AlertRule).where(AlertRule.is_enabled == True)  # noqa: E712
         )).scalars().all()
@@ -142,14 +149,20 @@ class AlertEngine:
         for tid in tenant_ids:
             active_windows.extend(await load_active_windows(db, tid))
 
+        pending: list[_PendingNotif] = []
         for rule in rules:
+            rule_id_str = str(rule.id)  # capture before any potential failure
             try:
-                await self._evaluate_rule(db, rule, rules_by_metric.get(rule.metric, []), active_windows)
+                rule_pending = await self._evaluate_rule(
+                    db, rule, rules_by_metric.get(rule.metric, []), active_windows
+                )
+                pending.extend(rule_pending)
             except Exception as exc:
                 await db.rollback()
-                logger.error("rule_eval_error", rule_id=str(rule.id), error=str(exc))
+                logger.error("rule_eval_error", rule_id=rule_id_str, error=str(exc), exc_info=True)
 
         await self._purge_expired_windows(db)
+        return pending
 
     async def _purge_expired_windows(self, db: AsyncSession) -> None:
         """Delete one-time maintenance windows that have passed their end time."""
@@ -166,11 +179,13 @@ class AlertEngine:
 
     async def _evaluate_rule(self, db: AsyncSession, rule: AlertRule,
                               peer_rules: list[AlertRule] = [],
-                              active_windows: list = []) -> None:
+                              active_windows: list = []) -> list[_PendingNotif]:
         tenant_id = str(rule.tenant_id)
         devices = await resolve_devices(db, tenant_id, rule.device_selector)
         if not devices:
-            return
+            return []
+
+        pending: list[_PendingNotif] = []
 
         # ── Collect breaches ───────────────────────────────────────────────────
         breaches: list[Breach] = []
@@ -326,7 +341,7 @@ class AlertEngine:
                 if not suppressed:
                     logger.info("alert_fired", rule=rule.name, device=breach.device_name,
                                 iface=breach.interface_name, severity=rule.severity)
-                    await _safe_dispatch(alert, rule, db)
+                    pending.append((alert, rule, False))
             elif existing.status == "suppressed" and breach.device_id not in suppressed_device_ids:
                 # Parent recovered — unsuppress
                 existing.status = "open"
@@ -363,7 +378,7 @@ class AlertEngine:
                     elapsed = (now - alert.last_notified_at).total_seconds()
                     if elapsed >= rule.renotify_seconds:
                         alert.last_notified_at = now
-                        await _safe_dispatch(alert, rule, db)
+                        pending.append((alert, rule, False))
                 continue
 
             # Acknowledged alerts are not auto-resolved — operator must clear them
@@ -391,7 +406,9 @@ class AlertEngine:
                 )
             logger.info("alert_auto_resolved", alert_id=str(alert.id), rule=rule.name)
             if rule.notify_on_resolve:
-                await _safe_dispatch(alert, rule, db, resolved=True)
+                pending.append((alert, rule, True))
+
+        return pending
 
 
 _engine = AlertEngine()
