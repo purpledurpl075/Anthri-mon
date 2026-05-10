@@ -8,7 +8,7 @@ export default defineConfig({
     host: true,          // bind to 0.0.0.0 so WSL2 is reachable from Windows host
     port: 5173,
     proxy: {
-      '/api': { target: 'http://localhost:8000', changeOrigin: true },
+      '/api': { target: 'http://localhost:8001', changeOrigin: true },
     },
   },
 })

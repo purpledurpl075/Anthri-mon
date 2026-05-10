@@ -9,7 +9,7 @@ import {
   type NodeMouseHandler, type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { fetchTopology, type TopologyNode, type TopologyEdge as ApiEdge } from '../api/topology'
+import { fetchTopology, fetchLinkUtil, type TopologyNode, type TopologyEdge as ApiEdge, type LinkUtilisation } from '../api/topology'
 import { DeviceTypeIcon, DEVICE_TYPE_COLOR as TYPE_COLOR, DEVICE_TYPE_LABEL as TYPE_LABEL } from '../components/DeviceTypeIcon'
 
 // ── Palette ────────────────────────────────────────────────────────────────
@@ -34,6 +34,22 @@ const V_STEP  = 190   // center-to-center vertical spacing between layers
 const ROOT_PRIO: Record<string, number> = {
   router: 5, firewall: 5, load_balancer: 4,
   switch: 3, wireless_controller: 2, access_point: 0, unknown: 1,
+}
+
+// ── Formatters ────────────────────────────────────────────────────────────
+
+function fmtSpeed(bps: number): string {
+  if (bps >= 1e9) return `${bps / 1e9} Gbps`
+  if (bps >= 1e6) return `${bps / 1e6} Mbps`
+  if (bps >= 1e3) return `${bps / 1e3} Kbps`
+  return `${bps} bps`
+}
+
+function fmtBps(bps: number): string {
+  if (bps >= 1e9) return `${(bps / 1e9).toFixed(2)} Gbps`
+  if (bps >= 1e6) return `${(bps / 1e6).toFixed(1)} Mbps`
+  if (bps >= 1e3) return `${(bps / 1e3).toFixed(0)} Kbps`
+  return `${bps.toFixed(0)} bps`
 }
 
 // ── Hierarchical layout ────────────────────────────────────────────────────
@@ -216,16 +232,30 @@ const NODE_TYPES = { device: DeviceNode }
 
 // ── Edge ───────────────────────────────────────────────────────────────────
 
+type EdgeData = {
+  label?: string
+  protocol?: string
+  highlighted?: boolean
+  dimmed?: boolean
+  source_port?: string
+  target_port?: string
+  speed_bps?: number | null
+  source_hostname?: string
+  target_hostname?: string
+  source_iface_id?: string | null
+}
+
 function TopologyEdge({
   id, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition,
   data, selected,
 }: EdgeProps) {
-  const d       = data as { label?: string; protocol?: string; highlighted?: boolean; dimmed?: boolean }
-  const isLLDP  = d.protocol === 'lldp'
-  const color   = isLLDP ? '#0891b2' : '#7c3aed'
-  const dimmed  = !!d.dimmed
-  const hilit   = !!d.highlighted || selected
+  const [hovered, setHovered] = useState(false)
+  const d      = data as EdgeData
+  const isLLDP = d.protocol === 'lldp'
+  const color  = isLLDP ? '#0891b2' : '#7c3aed'
+  const dimmed = !!d.dimmed
+  const hilit  = !!d.highlighted || selected
 
   const [path, labelX, labelY] = getSmoothStepPath({
     sourceX, sourceY, sourcePosition,
@@ -239,7 +269,6 @@ function TopologyEdge({
       {hilit && (
         <path d={path} fill="none" stroke={color} strokeWidth={12} strokeOpacity={0.12} strokeLinecap="round" />
       )}
-      {/* White knockout track so lines stay visible over the grid */}
       <path
         d={path} fill="none" stroke="white"
         strokeWidth={hilit ? 5 : 3.5}
@@ -258,18 +287,49 @@ function TopologyEdge({
           transition: 'stroke-opacity 0.15s, stroke-width 0.15s',
         }}
       />
-      {d.label && !dimmed && (
+      {/* Wide invisible hit area for hover/click */}
+      <path
+        d={path} fill="none" stroke="transparent" strokeWidth={20}
+        style={{ cursor: 'pointer' }}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      />
+      {!dimmed && (
         <EdgeLabelRenderer>
           <div
             style={{
               position: 'absolute',
               transform: `translate(-50%,-50%) translate(${labelX}px,${labelY}px)`,
               pointerEvents: 'none',
+              zIndex: hovered ? 20 : 1,
             }}
           >
-            <span className="text-[9px] font-mono text-slate-500 bg-white border border-slate-200 rounded px-1.5 py-0.5 shadow-sm leading-none whitespace-nowrap">
-              {d.label}
-            </span>
+            {hovered ? (
+              <div className="bg-slate-900/95 text-white rounded-lg shadow-xl whitespace-nowrap" style={{ fontSize: 10, padding: '6px 10px' }}>
+                <div className="font-mono space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400 w-12 shrink-0">Local</span>
+                    <span className="text-white font-semibold">{d.source_port ?? '—'}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400 w-12 shrink-0">Remote</span>
+                    <span className="text-slate-300">{d.target_port ?? '—'}</span>
+                  </div>
+                  {d.speed_bps != null && (
+                    <div className="flex items-center gap-2 pt-0.5 border-t border-slate-700 mt-0.5">
+                      <span className="text-slate-400 w-12 shrink-0">Speed</span>
+                      <span className="text-cyan-300">{fmtSpeed(d.speed_bps)}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              d.label && (
+                <span className="text-[9px] font-mono text-slate-500 bg-white border border-slate-200 rounded px-1.5 py-0.5 shadow-sm leading-none whitespace-nowrap">
+                  {d.label}
+                </span>
+              )
+            )}
           </div>
         </EdgeLabelRenderer>
       )}
@@ -393,6 +453,206 @@ function DevicePanel({
   )
 }
 
+// ── Sparkline ──────────────────────────────────────────────────────────────
+
+function Sparkline({ inSeries, outSeries, w = 248, h = 64 }: {
+  inSeries:  [number, number][]
+  outSeries: [number, number][]
+  w?: number
+  h?: number
+}) {
+  const allVals = [...inSeries, ...outSeries].map(([, v]) => v)
+  const max     = Math.max(...allVals, 1)
+  const allT    = [...inSeries, ...outSeries].map(([t]) => t)
+  const minT    = Math.min(...allT)
+  const maxT    = Math.max(...allT)
+  const rangeT  = maxT - minT || 1
+
+  const sx = (t: number) => ((t - minT) / rangeT) * w
+  const sy = (v: number) => h - 2 - (v / max) * (h - 6)
+
+  const linePts = (s: [number, number][]) => s.map(([t, v]) => `${sx(t)},${sy(v)}`).join(' ')
+  const areaPath = (s: [number, number][]) => {
+    if (s.length < 2) return ''
+    const pts = s.map(([t, v]) => `${sx(t)},${sy(v)}`).join(' L ')
+    return `M ${sx(s[0][0])},${h} L ${pts} L ${sx(s.at(-1)![0])},${h} Z`
+  }
+
+  if (inSeries.length < 2 && outSeries.length < 2) {
+    return (
+      <div style={{ width: w, height: h }} className="flex items-center justify-center text-[10px] text-slate-300">
+        No data yet
+      </div>
+    )
+  }
+
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
+      {inSeries.length >= 2 && <>
+        <path d={areaPath(inSeries)} fill="#0891b2" fillOpacity={0.12} />
+        <polyline points={linePts(inSeries)} fill="none" stroke="#0891b2" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      </>}
+      {outSeries.length >= 2 && <>
+        <path d={areaPath(outSeries)} fill="#f59e0b" fillOpacity={0.12} />
+        <polyline points={linePts(outSeries)} fill="none" stroke="#f59e0b" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      </>}
+    </svg>
+  )
+}
+
+// ── Link panel ─────────────────────────────────────────────────────────────
+
+function LinkPanel({
+  edge, nodesById, clickPos, onClose, onNavigate,
+}: {
+  edge: ApiEdge
+  nodesById: Record<string, TopologyNode>
+  clickPos: { x: number; y: number }
+  onClose: () => void
+  onNavigate: (id: string) => void
+}) {
+  const src = nodesById[edge.source]
+  const tgt = nodesById[edge.target]
+
+  const { data: util, isLoading } = useQuery<LinkUtilisation>({
+    queryKey:        ['link-util', edge.source_iface_id],
+    queryFn:         () => fetchLinkUtil(edge.source_iface_id!),
+    enabled:         !!edge.source_iface_id,
+    staleTime:       30_000,
+    refetchInterval: 60_000,
+  })
+
+  const speed   = util?.speed_bps ?? edge.source_speed_bps
+  const inLast  = util?.in_bps?.at(-1)?.[1]  ?? null
+  const outLast = util?.out_bps?.at(-1)?.[1]  ?? null
+  const inPct   = speed && inLast  != null ? inLast  / speed * 100 : null
+  const outPct  = speed && outLast != null ? outLast / speed * 100 : null
+
+  // Position near click, clamped to viewport
+  const W = 284
+  const left = Math.min(Math.max(clickPos.x - W / 2, 8), window.innerWidth - W - 8)
+  const below = clickPos.y + 12
+  const above = clickPos.y - 12  // panel will grow upward via bottom anchor
+  const fitsBelow = below + 420 < window.innerHeight
+
+  return (
+    <div
+      style={{
+        position:  'fixed',
+        left,
+        ...(fitsBelow ? { top: below } : { bottom: window.innerHeight - above }),
+        width:     W,
+        maxHeight: 420,
+        zIndex:    50,
+      }}
+      className="bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
+    >
+      {/* Header */}
+      <div className="px-3 py-2.5 flex items-center justify-between bg-slate-800 rounded-t-2xl">
+        <div className="flex items-center gap-2 min-w-0">
+          <svg className="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+          </svg>
+          <span className="text-xs font-semibold text-white truncate">
+            {edge.source_port ?? src?.hostname ?? '?'}
+          </span>
+          <span className="text-slate-500 text-xs">↔</span>
+          <span className="text-xs text-slate-300 truncate">
+            {edge.target_port ?? tgt?.hostname ?? '?'}
+          </span>
+        </div>
+        <button onClick={onClose} className="ml-2 p-1 text-slate-400 hover:text-white rounded transition-colors shrink-0">
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Body */}
+      <div className="overflow-y-auto flex-1">
+        {/* Port row */}
+        <div className="grid grid-cols-2 divide-x divide-slate-100 border-b border-slate-100">
+          {[
+            { device: src, port: edge.source_port, side: 'Local' },
+            { device: tgt, port: edge.target_port, side: 'Remote' },
+          ].map(({ device, port, side }) => (
+            <button
+              key={side}
+              onClick={() => device && onNavigate(device.id)}
+              disabled={!device}
+              className="px-3 py-2 text-left hover:bg-slate-50 transition-colors disabled:cursor-default"
+            >
+              <div className="text-[9px] text-slate-400 uppercase tracking-wide mb-0.5">{side}</div>
+              <div className="text-xs font-semibold text-slate-800 truncate">{device?.hostname ?? '—'}</div>
+              <div className="font-mono text-[10px] text-cyan-600 mt-0.5 truncate">{port ?? '—'}</div>
+            </button>
+          ))}
+        </div>
+
+        {/* Speed */}
+        {speed != null && (
+          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
+            <span className="text-[11px] text-slate-500">Port speed</span>
+            <span className="text-[11px] font-semibold text-slate-800">{fmtSpeed(speed)}</span>
+          </div>
+        )}
+
+        {/* Graph + stats */}
+        {edge.source_iface_id ? (
+          <div className="px-3 pt-2.5 pb-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wide">Bandwidth — 30 min</span>
+              <div className="flex items-center gap-2.5 text-[9px] text-slate-400">
+                <span className="flex items-center gap-1"><span className="w-2 h-0.5 rounded bg-cyan-500 inline-block" />In</span>
+                <span className="flex items-center gap-1"><span className="w-2 h-0.5 rounded bg-amber-400 inline-block" />Out</span>
+              </div>
+            </div>
+
+            {isLoading ? (
+              <div className="flex items-center justify-center h-16 text-[10px] text-slate-300">Loading…</div>
+            ) : util ? (
+              <>
+                <div className="rounded-xl bg-slate-50 px-1 py-1.5 mb-2.5">
+                  <Sparkline
+                    inSeries={util.in_bps as [number, number][]}
+                    outSeries={util.out_bps as [number, number][]}
+                    w={248}
+                    h={64}
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  {([
+                    { label: 'In',  val: inLast,  pct: inPct,  c: '#0891b2' },
+                    { label: 'Out', val: outLast, pct: outPct, c: '#f59e0b' },
+                  ] as const).map(({ label, val, pct, c }) => (
+                    <div key={label} className="flex items-center gap-2">
+                      <span className="text-[10px] text-slate-400 w-6 shrink-0">{label}</span>
+                      <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${Math.min(pct ?? 0, 100)}%`, backgroundColor: c }} />
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-600 w-20 text-right shrink-0">
+                        {val != null ? fmtBps(val) : '—'}
+                      </span>
+                      <span className="text-[10px] text-slate-400 w-10 text-right shrink-0">
+                        {pct != null ? `${pct.toFixed(1)}%` : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <div className="text-[10px] text-slate-400 py-1">No utilisation data</div>
+            )}
+          </div>
+        ) : (
+          <div className="px-3 py-2 text-[10px] text-slate-400">No interface metrics available</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Fit-view button ────────────────────────────────────────────────────────
 
 function FitBtn() {
@@ -415,6 +675,8 @@ function FitBtn() {
 export default function TopologyPage() {
   const navigate = useNavigate()
   const [selectedId,     setSelectedId]    = useState<string | null>(null)
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+  const [edgePanelPos,   setEdgePanelPos]  = useState<{ x: number; y: number } | null>(null)
   const [showIsolated,   setShowIsolated]  = useState(false)
   const [showLabels,     setShowLabels]    = useState(true)
   const [protocolFilter, setProtocol]      = useState<'all' | 'lldp' | 'cdp'>('all')
@@ -474,7 +736,18 @@ export default function TopologyPage() {
             id: e.id, source: e.source, target: e.target,
             sourceHandle: sh, targetHandle: th,
             type: 'topology',
-            data: { label, protocol: e.protocol, highlighted: !!selectedId && isAdj, dimmed: !!selectedId && !isAdj },
+            data: {
+              label,
+              protocol:        e.protocol,
+              highlighted:     !!selectedId && isAdj,
+              dimmed:          !!selectedId && !isAdj,
+              source_port:     e.source_port,
+              target_port:     e.target_port,
+              speed_bps:       e.source_speed_bps,
+              source_hostname: nodesById[e.source]?.hostname,
+              target_hostname: nodesById[e.target]?.hostname,
+              source_iface_id: e.source_iface_id,
+            },
           }
         })
     )
@@ -484,8 +757,19 @@ export default function TopologyPage() {
     setRfNodes(prev => applyNodeChanges(changes, prev))
   }, [])
 
-  const onNodeClick: NodeMouseHandler = (_, node) =>
+  const onNodeClick: NodeMouseHandler = (_, node) => {
+    setSelectedEdgeId(null)
     setSelectedId(id => id === node.id ? null : node.id)
+  }
+
+  const onEdgeClick = useCallback((e: React.MouseEvent, edge: Edge) => {
+    setSelectedId(null)
+    setSelectedEdgeId(prev => {
+      if (prev === edge.id) { setEdgePanelPos(null); return null }
+      setEdgePanelPos({ x: e.clientX, y: e.clientY })
+      return edge.id
+    })
+  }, [])
 
   const selectedNode = selectedId ? nodesById[selectedId] : null
   const toggleType   = (t: string) =>
@@ -624,7 +908,8 @@ export default function TopologyPage() {
               edgeTypes={EDGE_TYPES}
               onNodesChange={onNodesChange}
               onNodeClick={onNodeClick}
-              onPaneClick={() => { setSelectedId(null); setTypeMenuOpen(false) }}
+              onEdgeClick={onEdgeClick}
+              onPaneClick={() => { setSelectedId(null); setSelectedEdgeId(null); setEdgePanelPos(null); setTypeMenuOpen(false) }}
               fitView
               fitViewOptions={{ padding: 0.22 }}
               minZoom={0.1}
@@ -653,6 +938,18 @@ export default function TopologyPage() {
                 onNavigate={id => navigate(`/devices/${id}`)}
               />
             )}
+            {selectedEdgeId && edgePanelPos && (() => {
+              const edge = data?.edges.find(e => e.id === selectedEdgeId)
+              return edge ? (
+                <LinkPanel
+                  edge={edge}
+                  nodesById={nodesById}
+                  clickPos={edgePanelPos}
+                  onClose={() => { setSelectedEdgeId(null); setEdgePanelPos(null) }}
+                  onNavigate={id => navigate(`/devices/${id}`)}
+                />
+              ) : null
+            })()}
           </>
         )}
       </div>

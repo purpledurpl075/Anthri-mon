@@ -16,7 +16,7 @@ from .alerting.engine import start_alert_engine
 from .routers import (admin_router, alerts_router, auth_router, channels_router,
                       credentials_router, devices_router, discovery_router,
                       interfaces_router, maintenance_router, overview_router,
-                      policies_router, topology_router)
+                      policies_router, topology_router, users_router)
 
 configure_logging()
 logger = structlog.get_logger(__name__)
@@ -96,3 +96,4 @@ app.include_router(discovery_router,   prefix=PREFIX)
 app.include_router(overview_router,    prefix=PREFIX)
 app.include_router(policies_router,    prefix=PREFIX)
 app.include_router(topology_router,    prefix=PREFIX)
+app.include_router(users_router,       prefix=PREFIX)

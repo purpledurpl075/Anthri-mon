@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import time
 import uuid
 from typing import List, Optional
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -276,6 +279,95 @@ async def get_device_health(
             if health.mem_used_bytes and health.mem_total_bytes else None,
         "temperatures": health.temperatures,
         "uptime_seconds": health.uptime_seconds,
+    }
+
+
+_VM_URL = "http://localhost:8428"
+
+
+@router.get("/{device_id}/health/history", summary="Health metric history from VictoriaMetrics")
+async def get_device_health_history(
+    device_id: uuid.UUID,
+    hours: float = Query(default=1.0, ge=0.1, le=48.0),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _assert_device_visible(device_id, current_user, db)
+    did   = str(device_id)
+    now   = int(time.time())
+    start = now - int(hours * 3600)
+    step  = 60 if hours <= 1 else 300 if hours <= 6 else 900
+
+    async def vm_range(query: str) -> list:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(f"{_VM_URL}/api/v1/query_range",
+                    params={"query": query, "start": start, "end": now, "step": step})
+                r.raise_for_status()
+                results = r.json().get("data", {}).get("result", [])
+                if results:
+                    return [[int(v[0]), float(v[1])] for v in results[0].get("values", [])]
+        except Exception:
+            pass
+        return []
+
+    # Parallel fetch of CPU, mem used, mem total
+    cpu_series, mem_used, mem_total = await asyncio.gather(
+        vm_range(f'avg(anthrimon_device_cpu_util_pct{{device_id="{did}"}})'),
+        vm_range(f'anthrimon_device_mem_used_bytes{{device_id="{did}",mem_type="ram"}}'),
+        vm_range(f'anthrimon_device_mem_total_bytes{{device_id="{did}",mem_type="ram"}}'),
+    )
+
+    # Compute memory % from raw byte series
+    mem_pct: list = []
+    if mem_used and mem_total:
+        total_map = {int(ts): v for ts, v in mem_total}
+        for ts, used in mem_used:
+            tot = total_map.get(int(ts))
+            if tot and tot > 0:
+                mem_pct.append([int(ts), round(used / tot * 100, 1)])
+
+    # Temperature + optical power series — one series per sensor/iface
+    temp_series:   dict[str, list] = {}
+    dom_tx_series: dict[str, list] = {}
+    dom_rx_series: dict[str, list] = {}
+
+    async def vm_multi(query: str) -> list[dict]:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(f"{_VM_URL}/api/v1/query_range",
+                    params={"query": query, "start": start, "end": now, "step": step})
+                r.raise_for_status()
+                return r.json().get("data", {}).get("result", [])
+        except Exception:
+            return []
+
+    temp_results, dom_tx_results, dom_rx_results = await asyncio.gather(
+        vm_multi(f'anthrimon_device_temp_celsius{{device_id="{did}"}}'),
+        vm_multi(f'anthrimon_if_dom_tx_power_dbm{{device_id="{did}"}}'),
+        vm_multi(f'anthrimon_if_dom_rx_power_dbm{{device_id="{did}"}}'),
+    )
+
+    for result in temp_results:
+        sensor = result["metric"].get("sensor", "unknown")
+        temp_series[sensor] = [[int(v[0]), float(v[1])] for v in result.get("values", [])]
+
+    for result in dom_tx_results:
+        iface = result["metric"].get("iface", "unknown")
+        dom_tx_series[iface] = [[int(v[0]), float(v[1])] for v in result.get("values", [])]
+
+    for result in dom_rx_results:
+        iface = result["metric"].get("iface", "unknown")
+        dom_rx_series[iface] = [[int(v[0]), float(v[1])] for v in result.get("values", [])]
+
+    return {
+        "cpu_pct":     cpu_series,
+        "mem_pct":     mem_pct,
+        "mem_used":    mem_used,
+        "mem_total":   mem_total,
+        "temp_series": temp_series,
+        "dom_tx":      dom_tx_series,
+        "dom_rx":      dom_rx_series,
     }
 
 

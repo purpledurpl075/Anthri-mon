@@ -1,4 +1,5 @@
 import React, { useState, useRef, useMemo, useCallback } from 'react'
+import { useRole, hasRole } from '../hooks/useCurrentUser'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   ReactFlow, Controls, Background, MiniMap,
@@ -7,7 +8,8 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort } from '../api/devices'
+import TimeSeriesChart from '../components/TimeSeriesChart'
 import { fetchCredentials } from '../api/credentials'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
@@ -879,18 +881,18 @@ function CredentialSection({ deviceId }: { deviceId: string }) {
             <span className="ml-2 text-slate-400">{CRED_TYPE_LABEL[a.type] ?? a.type}</span>
             <span className="ml-2 text-slate-300">priority {a.priority}</span>
           </div>
-          {confirmDel === a.credential_id ? (
+          {canOperate && (confirmDel === a.credential_id ? (
             <div className="flex items-center gap-2">
               <button onClick={() => unlinkMut.mutate(a.credential_id)} className="text-red-600 hover:underline">Remove</button>
               <button onClick={() => setConfirmDel(null)} className="text-slate-400 hover:underline">Cancel</button>
             </div>
           ) : (
             <button onClick={() => setConfirmDel(a.credential_id)} className="text-slate-400 hover:text-red-500">✕</button>
-          )}
+          ))}
         </div>
       ))}
 
-      {available.length > 0 && (
+      {canOperate && available.length > 0 && (
         <div className="flex gap-2 pt-1">
           <select value={selectedId} onChange={e => setSelectedId(e.target.value)}
             className="flex-1 border border-slate-300 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500">
@@ -987,6 +989,7 @@ function fmt(iso: string) {
 
 function MaintenanceSection({ deviceId }: { deviceId: string }) {
   const qc = useQueryClient()
+  const canOperate = hasRole(useRole(), 'operator')
   const [showForm, setShowForm]     = useState(false)
   const [name, setName]             = useState('')
   const [startsAt, setStartsAt]     = useState('')
@@ -1041,14 +1044,14 @@ function MaintenanceSection({ deviceId }: { deviceId: string }) {
               {w.is_recurring && (
                 <span className="px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded text-xs">Recurring</span>
               )}
-              {confirmDel === w.id ? (
+              {canOperate && (confirmDel === w.id ? (
                 <>
                   <button onClick={() => deleteMut.mutate(w.id)} className="text-red-600 hover:underline">Confirm</button>
                   <button onClick={() => setConfirmDel(null)} className="text-slate-400 hover:underline">Cancel</button>
                 </>
               ) : (
                 <button onClick={() => setConfirmDel(w.id)} className="text-slate-400 hover:text-red-600">Delete</button>
-              )}
+              ))}
             </div>
           </div>
           {w.is_recurring
@@ -1102,23 +1105,288 @@ function MaintenanceSection({ deviceId }: { deviceId: string }) {
             </button>
           </div>
         </div>
-      ) : (
+      ) : canOperate ? (
         <button onClick={() => setShowForm(true)}
           className="w-full mt-1 border border-slate-300 text-slate-600 text-sm rounded-lg py-2 hover:bg-slate-50 transition-colors">
           + Schedule downtime
         </button>
+      ) : null}
+    </div>
+  )
+}
+
+// ── Health tab ─────────────────────────────────────────────────────────────────
+
+const HEALTH_RANGES = [{ label: '1h', hours: 1 }, { label: '6h', hours: 6 }, { label: '24h', hours: 24 }]
+
+function fmtPct(v: number)  { return `${v.toFixed(1)}%` }
+function fmtTemp(v: number) { return `${v.toFixed(1)}°C` }
+function fmtBytes(b: number) {
+  if (b >= 1_073_741_824) return `${(b / 1_073_741_824).toFixed(1)} GB`
+  return `${(b / 1_048_576).toFixed(0)} MB`
+}
+
+function HealthTab({ deviceId, currentHealth }: { deviceId: string; currentHealth: any }) {
+  const [hours, setHours] = useState(1)
+
+  const { data: hist, isLoading } = useQuery({
+    queryKey:        ['device-health-history', deviceId, hours],
+    queryFn:         () => fetchDeviceHealthHistory(deviceId, hours),
+    staleTime:       30_000,
+    refetchInterval: 60_000,
+  })
+
+  const temps: { sensor: string; celsius: number; ok: boolean }[] = currentHealth?.temperatures ?? []
+  const domTemps    = temps.filter(t => t.sensor.toLowerCase().includes('dom'))
+  const systemTemps = temps.filter(t => !t.sensor.toLowerCase().includes('dom'))
+
+  const cpuNow = currentHealth?.cpu_util_pct != null ? Number(currentHealth.cpu_util_pct) : null
+  const memNow = currentHealth?.mem_util_pct != null ? Number(currentHealth.mem_util_pct) : null
+  const memUsed  = currentHealth?.mem_used_bytes
+  const memTotal = currentHealth?.mem_total_bytes
+
+  return (
+    <div className="p-5 space-y-5">
+      {/* Time range */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-400">Historical data from VictoriaMetrics</p>
+        <div className="flex rounded-lg overflow-hidden border border-slate-200">
+          {HEALTH_RANGES.map(r => (
+            <button key={r.hours} onClick={() => setHours(r.hours)}
+              className={`px-3 py-1 text-xs font-medium transition-colors ${
+                hours === r.hours ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'
+              } ${r.hours !== 1 ? 'border-l border-slate-200' : ''}`}>
+              {r.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* CPU */}
+      <div className="bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-violet-100 flex items-center justify-center">
+              <svg className="w-4 h-4 text-violet-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/>
+                <path d="M15 2v2M9 2v2M15 20v2M9 20v2M2 15h2M2 9h2M20 15h2M20 9h2"/>
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-800">CPU Utilisation</p>
+              {cpuNow != null && (
+                <p className="text-xs text-slate-400">
+                  Current: <span className="font-semibold" style={{ color: cpuNow > 90 ? '#dc2626' : cpuNow > 70 ? '#f59e0b' : '#16a34a' }}>
+                    {cpuNow.toFixed(1)}%
+                  </span>
+                </p>
+              )}
+            </div>
+          </div>
+          {cpuNow != null && (
+            <div className="text-right">
+              <p className="text-2xl font-bold text-slate-800">{cpuNow.toFixed(1)}%</p>
+              <div className="w-24 h-1.5 bg-slate-200 rounded-full overflow-hidden mt-1">
+                <div className="h-full rounded-full"
+                  style={{ width: `${Math.min(cpuNow, 100)}%`, backgroundColor: cpuNow > 90 ? '#dc2626' : cpuNow > 70 ? '#f59e0b' : '#7c3aed' }} />
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="px-4 pt-3 pb-2 bg-white">
+          {isLoading ? (
+            <div className="h-44 flex items-center justify-center text-slate-300 text-sm">Loading…</div>
+          ) : (
+            <TimeSeriesChart height={160} yFmt={fmtPct}
+              series={[{ name: 'CPU', color: '#7c3aed', data: (hist?.cpu_pct ?? []) as [number,number][] }]} />
+          )}
+        </div>
+      </div>
+
+      {/* Memory */}
+      <div className="bg-slate-50 rounded-2xl border border-slate-200 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-blue-100 flex items-center justify-center">
+              <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path d="M4 7h16M4 7a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2M9 11h.01M12 11h.01M15 11h.01"/>
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-800">Memory</p>
+              {memUsed && memTotal && (
+                <p className="text-xs text-slate-400">
+                  {fmtBytes(memUsed)} / {fmtBytes(memTotal)}
+                  {memNow != null && <span className="ml-1 font-semibold text-blue-600">{memNow.toFixed(1)}%</span>}
+                </p>
+              )}
+            </div>
+          </div>
+          {memNow != null && (
+            <div className="text-right">
+              <p className="text-2xl font-bold text-slate-800">{memNow.toFixed(1)}%</p>
+              <div className="w-24 h-1.5 bg-slate-200 rounded-full overflow-hidden mt-1">
+                <div className="h-full rounded-full bg-blue-500"
+                  style={{ width: `${Math.min(memNow, 100)}%` }} />
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="px-4 pt-3 pb-2 bg-white">
+          {isLoading ? (
+            <div className="h-44 flex items-center justify-center text-slate-300 text-sm">Loading…</div>
+          ) : (
+            <TimeSeriesChart height={160} yFmt={fmtPct}
+              series={[{ name: 'Memory', color: '#2563eb', data: (hist?.mem_pct ?? []) as [number,number][] }]} />
+          )}
+        </div>
+      </div>
+
+      {/* Uptime */}
+      {currentHealth?.uptime_seconds != null && (
+        <div className="bg-white rounded-2xl border border-slate-200 px-5 py-4 flex items-center gap-4">
+          <div className="w-8 h-8 rounded-xl bg-green-100 flex items-center justify-center shrink-0">
+            <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+            </svg>
+          </div>
+          <div>
+            <p className="text-xs text-slate-400 font-medium uppercase tracking-wide">Uptime</p>
+            <p className="text-lg font-bold text-slate-800">{formatUptime(currentHealth.uptime_seconds)}</p>
+          </div>
+          <div className="ml-auto text-xs text-slate-400">
+            Last polled {currentHealth.collected_at ? formatAge(new Date(currentHealth.collected_at).toISOString()) : '—'}
+          </div>
+        </div>
+      )}
+
+      {/* System temperature sensors */}
+      {systemTemps.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">System Temperature Sensors</p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {systemTemps.map((t, i) => (
+              <div key={i} className={`rounded-xl border px-4 py-3 ${t.ok ? 'bg-white border-slate-200' : 'bg-red-50 border-red-200'}`}>
+                <p className="text-[10px] font-medium text-slate-400 truncate mb-1">{t.sensor}</p>
+                <p className={`text-xl font-bold ${t.ok ? 'text-slate-800' : 'text-red-600'}`}>{t.celsius}°C</p>
+                {hist?.temp_series?.[t.sensor] && hist.temp_series[t.sensor].length >= 2 && (
+                  <div className="mt-2">
+                    <TimeSeriesChart height={40} yFmt={fmtTemp}
+                      series={[{ name: t.sensor, color: t.ok ? '#64748b' : '#dc2626', data: hist.temp_series[t.sensor] as [number,number][] }]} />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* DOM / Optical temperature sensors */}
+      {/* Optical transceivers — power + temperature combined per port */}
+      {(() => {
+        const domIfaces = Array.from(new Set([
+          ...domTemps.map(t => t.sensor.replace(/DOM Temperature Sensor for /i, '').trim()),
+          ...Object.keys(hist?.dom_tx ?? {}),
+          ...Object.keys(hist?.dom_rx ?? {}),
+        ])).filter(Boolean)
+
+        if (domIfaces.length === 0) return null
+
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
+              Optical Transceivers (DOM)
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {domIfaces.map(iface => {
+                const tempEntry = domTemps.find(t =>
+                  t.sensor.replace(/DOM Temperature Sensor for /i, '').trim() === iface
+                )
+                const txNow = hist?.dom_tx?.[iface]?.at(-1)?.[1] ?? null
+                const rxNow = hist?.dom_rx?.[iface]?.at(-1)?.[1] ?? null
+                const txSeries = (hist?.dom_tx?.[iface] ?? []) as [number,number][]
+                const rxSeries = (hist?.dom_rx?.[iface] ?? []) as [number,number][]
+                const hasPower = txNow !== null || rxNow !== null || txSeries.length > 0
+
+                return (
+                  <div key={iface} className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                    {/* Header */}
+                    <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-100 bg-slate-50">
+                      <svg className="w-3.5 h-3.5 text-cyan-500 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                        <path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h10a2 2 0 0 1 2 2v4M9 3v18m0 0h10a2 2 0 0 0 2-2V9M9 21H5a2 2 0 0 1-2-2V9m0 0h18"/>
+                      </svg>
+                      <span className="text-xs font-semibold text-slate-700">{iface}</span>
+                      {tempEntry && (
+                        <span className={`ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${tempEntry.ok ? 'bg-slate-100 text-slate-500' : 'bg-red-100 text-red-600'}`}>
+                          {tempEntry.celsius}°C
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="px-4 py-3 space-y-2">
+                      {/* Tx / Rx power current values */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Tx Power</p>
+                          <p className={`text-lg font-bold ${txNow === null ? 'text-slate-300' : txNow < -30 ? 'text-red-600' : 'text-slate-800'}`}>
+                            {txNow !== null ? `${txNow.toFixed(2)} dBm` : '—'}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-[9px] font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Rx Power</p>
+                          <p className={`text-lg font-bold ${rxNow === null ? 'text-slate-300' : rxNow < -30 ? 'text-red-600' : 'text-slate-800'}`}>
+                            {rxNow !== null ? `${rxNow.toFixed(2)} dBm` : '—'}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Sparkline for Tx + Rx power history */}
+                      {hasPower && (txSeries.length >= 2 || rxSeries.length >= 2) && (
+                        <TimeSeriesChart height={52} yFmt={v => `${v.toFixed(1)}`}
+                          series={[
+                            ...(txSeries.length >= 2 ? [{ name: 'Tx', color: '#0891b2', data: txSeries }] : []),
+                            ...(rxSeries.length >= 2 ? [{ name: 'Rx', color: '#f59e0b', data: rxSeries }] : []),
+                          ]} />
+                      )}
+
+                      {!hasPower && (
+                        <p className="text-[10px] text-slate-400">Optical power data will appear after the next collector poll.</p>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })()}
+
+      {temps.length === 0 && !currentHealth && (
+        <div className="text-center py-8 text-slate-400 text-sm">No health data available yet.</div>
       )}
     </div>
   )
+}
+
+function formatAge(iso: string | null) {
+  if (!iso) return '—'
+  const secs = Math.floor((Date.now() - new Date(iso).getTime()) / 1000)
+  if (secs < 120) return `${secs}s ago`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`
+  return `${Math.floor(secs / 86400)}d ago`
 }
 
 export default function DeviceDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const role = useRole()
+  const canOperate = hasRole(role, 'operator')
+  const canAdmin   = hasRole(role, 'admin')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes' | 'vlans' | 'stp'>('interfaces')
+  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes' | 'vlans' | 'stp' | 'health'>('interfaces')
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(id!),
@@ -1223,24 +1491,165 @@ export default function DeviceDetail() {
     polling_interval_s: Number(pollingInterval),
   })
 
+  const typeColor = DEVICE_TYPE_COLOR[device.device_type] ?? '#475569'
+  const statusColor: Record<string, string> = {
+    up: '#16a34a', down: '#dc2626', unreachable: '#f97316', unknown: '#94a3b8',
+  }
+  const sc = statusColor[device.status] ?? '#94a3b8'
+  const statusLabel: Record<string, string> = {
+    up: 'Up', down: 'Down', unreachable: 'Unreachable', unknown: 'Unknown',
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
-        <nav className="flex items-center gap-2 text-sm">
-          <Link to="/devices" className="text-blue-600 hover:underline">Devices</Link>
-          <span className="text-slate-400">/</span>
-          <span className="font-medium text-slate-800">{device.fqdn ?? device.hostname}</span>
+
+      {/* Breadcrumb */}
+      <div className="px-6 py-3 border-b border-slate-200 bg-white flex items-center justify-between">
+        <nav className="flex items-center gap-1.5 text-xs text-slate-400">
+          <Link to="/devices" className="hover:text-blue-600 transition-colors flex items-center gap-1">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+            Devices
+          </Link>
+          <span>/</span>
+          <span className="text-slate-600 font-medium">{device.fqdn ?? device.hostname}</span>
         </nav>
-        <div className="flex items-center gap-3">
-          <StatusBadge status={device.status} />
-          <MaintenanceBadge deviceId={id!} />
-          <button
-            onClick={openSettings}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
-            title="Device settings"
-          >
-            <GearIcon />
-          </button>
+        <button
+          onClick={openSettings}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors"
+        >
+          <GearIcon />
+          Settings
+        </button>
+      </div>
+
+      {/* Hero */}
+      <div className="bg-white border-b border-slate-200" style={{ borderLeft: `4px solid ${typeColor}` }}>
+        <div className="px-6 py-5 flex items-start gap-5">
+          {/* Device type icon */}
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 mt-0.5"
+            style={{ backgroundColor: `${typeColor}18` }}>
+            <span style={{ color: typeColor }}>
+              <DeviceTypeIcon type={device.device_type} size={28} />
+            </span>
+          </div>
+
+          {/* Identity */}
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-3 flex-wrap mb-1">
+              <h1 className="text-xl font-bold text-slate-900 truncate">
+                {device.fqdn ?? device.hostname}
+              </h1>
+              {/* Status */}
+              <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full"
+                style={{ backgroundColor: `${sc}15`, color: sc }}>
+                <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: sc }} />
+                {statusLabel[device.status] ?? device.status}
+              </span>
+              <MaintenanceBadge deviceId={id!} />
+            </div>
+
+            <div className="flex items-center gap-3 flex-wrap text-sm text-slate-500 mb-3">
+              <span className="flex items-center gap-1" style={{ color: typeColor }}>
+                <DeviceTypeIcon type={device.device_type} size={13} />
+                <span className="font-medium">{DEVICE_TYPE_LABEL[device.device_type] ?? device.device_type}</span>
+              </span>
+              <span className="text-slate-300">·</span>
+              <VendorBadge vendor={device.vendor} />
+              <span className="text-slate-300">·</span>
+              <span className="font-mono text-slate-600">{device.mgmt_ip}</span>
+              {device.fqdn && device.fqdn !== device.hostname && (
+                <>
+                  <span className="text-slate-300">·</span>
+                  <span className="text-slate-400">{device.hostname}</span>
+                </>
+              )}
+            </div>
+
+            <div className="flex items-center gap-4 flex-wrap text-xs text-slate-400">
+              {device.platform && (
+                <span><span className="text-slate-500 font-medium">Platform</span> {device.platform}</span>
+              )}
+              {device.os_version && (
+                <span><span className="text-slate-500 font-medium">OS</span> {device.os_version}</span>
+              )}
+              <span><span className="text-slate-500 font-medium">SNMP</span> {device.snmp_version?.toUpperCase() ?? '—'} :{device.snmp_port}</span>
+              {(device.tags ?? []).length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  {(device.tags ?? []).map((tag: string) => (
+                    <span key={tag} className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium">{tag}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Health metrics row */}
+        <div className="grid grid-cols-2 md:grid-cols-4 border-t border-slate-100">
+          {/* CPU */}
+          <div className="px-5 py-4 border-r border-slate-100">
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">CPU</p>
+            {health?.cpu_util_pct != null ? (
+              <>
+                <p className="text-2xl font-bold text-slate-800 mb-2">{Number(health.cpu_util_pct).toFixed(1)}%</p>
+                <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full transition-all"
+                    style={{
+                      width: `${Math.min(Number(health.cpu_util_pct), 100)}%`,
+                      backgroundColor: Number(health.cpu_util_pct) > 90 ? '#dc2626' : Number(health.cpu_util_pct) > 70 ? '#f59e0b' : '#16a34a',
+                    }} />
+                </div>
+              </>
+            ) : <p className="text-2xl font-bold text-slate-300">—</p>}
+          </div>
+
+          {/* Memory */}
+          <div className="px-5 py-4 border-r border-slate-100">
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Memory</p>
+            {health?.mem_used_bytes && health?.mem_total_bytes ? (
+              <>
+                <p className="text-2xl font-bold text-slate-800 mb-2">
+                  {Math.round((Number(health.mem_used_bytes) / Number(health.mem_total_bytes)) * 100)}%
+                </p>
+                <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div className="h-full rounded-full bg-blue-500 transition-all"
+                    style={{ width: `${Math.min(Math.round((Number(health.mem_used_bytes) / Number(health.mem_total_bytes)) * 100), 100)}%` }} />
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">{formatBytes(health.mem_used_bytes)} / {formatBytes(health.mem_total_bytes)}</p>
+              </>
+            ) : <p className="text-2xl font-bold text-slate-300">—</p>}
+          </div>
+
+          {/* Uptime */}
+          <div className="px-5 py-4 border-r border-slate-100">
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Uptime</p>
+            <p className="text-2xl font-bold text-slate-800">{formatUptime(health?.uptime_seconds ?? null)}</p>
+            {health?.temperatures && health.temperatures.length > 0 && (
+              <div className="flex gap-1.5 mt-2 flex-wrap">
+                {health.temperatures.map((t, i) => (
+                  <span key={i} className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${t.ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {t.celsius}°C
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Interfaces */}
+          <div className="px-5 py-4">
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Interfaces</p>
+            <p className="text-2xl font-bold text-slate-800">
+              {upIfaces}
+              <span className="text-base font-normal text-slate-400"> / {totalIfaces}</span>
+            </p>
+            {totalIfaces > 0 && (
+              <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-2">
+                <div className="h-full rounded-full bg-green-500 transition-all"
+                  style={{ width: `${Math.round((upIfaces / totalIfaces) * 100)}%` }} />
+              </div>
+            )}
+            <p className="text-[10px] text-slate-400 mt-1">ports up</p>
+          </div>
         </div>
       </div>
 
@@ -1432,131 +1841,69 @@ export default function DeviceDetail() {
                 <MaintenanceSection deviceId={id!} />
               </Section>
 
-              <Section title="Danger zone">
-                {confirmDelete ? (
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-2">
-                    <p className="text-xs text-red-700 font-medium">Remove {device.fqdn ?? device.hostname}?</p>
-                    <p className="text-xs text-red-500">This will delete all interfaces, health data and alerts for this device.</p>
-                    <div className="flex gap-2 mt-2">
-                      <button
-                        onClick={() => deleteMutation.mutate()}
-                        disabled={deleteMutation.isPending}
-                        className="flex-1 bg-red-600 text-white text-xs rounded-lg py-1.5 hover:bg-red-700 disabled:opacity-50"
-                      >
-                        {deleteMutation.isPending ? 'Removing…' : 'Confirm remove'}
-                      </button>
-                      <button onClick={() => setConfirmDelete(false)} className="flex-1 text-xs text-slate-500 border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">
-                        Cancel
-                      </button>
+              {canAdmin && (
+                <Section title="Danger zone">
+                  {confirmDelete ? (
+                    <div className="rounded-lg border border-red-200 bg-red-50 p-3 space-y-2">
+                      <p className="text-xs text-red-700 font-medium">Remove {device.fqdn ?? device.hostname}?</p>
+                      <p className="text-xs text-red-500">This will delete all interfaces, health data and alerts for this device.</p>
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={() => deleteMutation.mutate()}
+                          disabled={deleteMutation.isPending}
+                          className="flex-1 bg-red-600 text-white text-xs rounded-lg py-1.5 hover:bg-red-700 disabled:opacity-50"
+                        >
+                          {deleteMutation.isPending ? 'Removing…' : 'Confirm remove'}
+                        </button>
+                        <button onClick={() => setConfirmDelete(false)} className="flex-1 text-xs text-slate-500 border border-slate-200 rounded-lg py-1.5 hover:bg-slate-50">
+                          Cancel
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setConfirmDelete(true)}
-                    className="w-full text-sm text-red-600 border border-red-200 rounded-lg py-2 hover:bg-red-50 transition-colors"
-                  >
-                    Remove device
-                  </button>
-                )}
-              </Section>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmDelete(true)}
+                      className="w-full text-sm text-red-600 border border-red-200 rounded-lg py-2 hover:bg-red-50 transition-colors"
+                    >
+                      Remove device
+                    </button>
+                  )}
+                </Section>
+              )}
             </div>
           </div>
         </>
       )}
 
 
-      <main className="p-6 space-y-6">
-        {/* Device info + health cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          {/* Device info card */}
-          <div className="md:col-span-2 bg-white rounded-xl border border-slate-200 p-5">
-            <h2 className="text-base font-semibold text-slate-800 mb-3">
-              {device.fqdn ?? device.hostname}
-              {device.fqdn && device.fqdn !== device.hostname && (
-                <span className="ml-2 text-xs font-normal text-slate-400">({device.hostname})</span>
-              )}
-            </h2>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-              <dt className="text-slate-500">IP</dt>
-              <dd className="font-mono text-slate-700">{device.mgmt_ip}</dd>
-              <dt className="text-slate-500">Type</dt>
-              <dd>
-                <span className="flex items-center gap-1.5" style={{ color: DEVICE_TYPE_COLOR[device.device_type] ?? '#64748b' }}>
-                  <DeviceTypeIcon type={device.device_type} size={14} />
-                  <span className="text-slate-700 text-sm">{DEVICE_TYPE_LABEL[device.device_type] ?? device.device_type}</span>
-                </span>
-              </dd>
-              <dt className="text-slate-500">Vendor</dt>
-              <dd><VendorBadge vendor={device.vendor} /></dd>
-              <dt className="text-slate-500">Platform</dt>
-              <dd className="text-slate-700">{device.platform ?? '—'}</dd>
-              <dt className="text-slate-500">OS version</dt>
-              <dd className="text-slate-700">{device.os_version ?? '—'}</dd>
-              <dt className="text-slate-500">SNMP</dt>
-              <dd className="text-slate-700">{device.snmp_version?.toUpperCase() ?? '—'} :{device.snmp_port}</dd>
-              <dt className="text-slate-500">Interfaces</dt>
-              <dd className="text-slate-700">{upIfaces} up / {totalIfaces} total</dd>
-              {(device.tags ?? []).length > 0 && (
-                <>
-                  <dt className="text-slate-500">Tags</dt>
-                  <dd className="flex flex-wrap gap-1">
-                    {(device.tags ?? []).map((tag: string) => (
-                      <span key={tag} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 text-xs">{tag}</span>
-                    ))}
-                  </dd>
-                </>
-              )}
-            </dl>
-          </div>
+      <main className="p-6 space-y-4">
 
-          {/* CPU card */}
-          <div className="bg-white rounded-xl border border-slate-200 p-5 flex flex-col">
-            <span className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">CPU</span>
-            {health?.cpu_util_pct != null ? (
-              <>
-                <span className="text-3xl font-bold text-slate-800">
-                  {Number(health.cpu_util_pct).toFixed(1)}%
-                </span>
-                <div className="mt-3 h-2 bg-slate-200 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full rounded-full ${Number(health.cpu_util_pct) > 90 ? 'bg-red-500' : Number(health.cpu_util_pct) > 70 ? 'bg-yellow-500' : 'bg-green-500'}`}
-                    style={{ width: `${Math.min(Number(health.cpu_util_pct), 100)}%` }}
-                  />
-                </div>
-              </>
-            ) : (
-              <span className="text-2xl text-slate-400">—</span>
-            )}
-          </div>
-
-          {/* Memory + Uptime card */}
-          <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-            <div>
-              <span className="text-xs font-medium text-slate-500 uppercase tracking-wide block mb-2">Memory</span>
-              <MemBar used={health?.mem_used_bytes ?? null} total={health?.mem_total_bytes ?? null} />
-            </div>
-            <div>
-              <span className="text-xs font-medium text-slate-500 uppercase tracking-wide block mb-1">Uptime</span>
-              <span className="text-sm font-medium text-slate-700">{formatUptime(health?.uptime_seconds ?? null)}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Tabbed panel: Interfaces / Neighbours */}
-        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <div className="border-b border-slate-100 px-5 flex items-center justify-between">
-            <nav className="flex gap-1 -mb-px">
-              {(['interfaces', 'neighbours', 'addresses', 'routes', 'vlans', 'stp'] as const).map(t => (
-                <button key={t} onClick={() => setTab(t)}
-                  className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-                    tab === t
-                      ? 'border-blue-600 text-blue-600'
-                      : 'border-transparent text-slate-500 hover:text-slate-700'
-                  }`}>
-                  {t === 'interfaces' ? `Interfaces${totalIfaces ? ` (${totalIfaces})` : ''}` : t === 'neighbours' ? 'Neighbours' : t === 'addresses' ? 'Addresses' : t === 'routes' ? 'Routes' : t === 'vlans' ? 'VLANs' : 'STP'}
-                </button>
-              ))}
-            </nav>
+        {/* Tabbed panel */}
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="border-b border-slate-100 px-4 flex items-center gap-1">
+            {([
+              { id: 'interfaces',  label: 'Interfaces', badge: totalIfaces || undefined },
+              { id: 'neighbours',  label: 'Neighbours' },
+              { id: 'addresses',   label: 'Addresses' },
+              { id: 'routes',      label: 'Routes' },
+              { id: 'vlans',       label: 'VLANs' },
+              { id: 'stp',         label: 'STP' },
+              { id: 'health',      label: 'Health' },
+            ] as const).map(t => (
+              <button key={t.id} onClick={() => setTab(t.id as typeof tab)}
+                className={`flex items-center gap-1.5 px-3 py-3 text-sm font-medium border-b-2 transition-colors ${
+                  tab === t.id
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}>
+                {t.label}
+                {'badge' in t && t.badge ? (
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
+                    tab === t.id ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
+                  }`}>{t.badge}</span>
+                ) : null}
+              </button>
+            ))}
           </div>
 
           {tab === 'interfaces' && (
@@ -1569,25 +1916,41 @@ export default function DeviceDetail() {
                     <tr className="bg-slate-50 border-b border-slate-100">
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Name</th>
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Description</th>
-                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">Type</th>
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Speed</th>
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Admin</th>
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Oper</th>
+                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">IP Address</th>
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">MAC</th>
+                      <th className="px-4 py-2.5" />
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
-                    {(interfaces ?? []).map((iface) => (
-                      <tr key={iface.id} className="hover:bg-slate-50">
-                        <td className="px-4 py-2 font-medium text-slate-700">{iface.name}</td>
-                        <td className="px-4 py-2 text-slate-500 max-w-[200px] truncate">{iface.description ?? '—'}</td>
-                        <td className="px-4 py-2 text-slate-500 text-xs">{iface.if_type ?? '—'}</td>
-                        <td className="px-4 py-2 text-slate-600">{formatSpeed(iface.speed_bps)}</td>
-                        <td className="px-4 py-2"><StatusBadge status={iface.admin_status} /></td>
-                        <td className="px-4 py-2"><StatusBadge status={iface.oper_status} /></td>
-                        <td className="px-4 py-2 font-mono text-xs text-slate-400">{iface.mac_address ?? '—'}</td>
-                      </tr>
-                    ))}
+                    {(interfaces ?? []).map((iface) => {
+                      const ips: string[] = Array.isArray(iface.ip_addresses)
+                        ? iface.ip_addresses.map((a: any) => typeof a === 'string' ? a : a?.address ?? String(a))
+                        : []
+                      return (
+                        <tr
+                          key={iface.id}
+                          className="hover:bg-blue-50/40 cursor-pointer group transition-colors"
+                          onClick={() => navigate(`/devices/${id}/interfaces/${iface.id}`)}
+                        >
+                          <td className="px-4 py-2 font-medium text-slate-700 font-mono text-sm group-hover:text-blue-600 transition-colors">{iface.name}</td>
+                          <td className="px-4 py-2 text-slate-500 max-w-[180px] truncate text-xs">{iface.description ?? '—'}</td>
+                          <td className="px-4 py-2 text-slate-600 text-sm">{formatSpeed(iface.speed_bps)}</td>
+                          <td className="px-4 py-2"><StatusBadge status={iface.admin_status} /></td>
+                          <td className="px-4 py-2"><StatusBadge status={iface.oper_status} /></td>
+                          <td className="px-4 py-2 font-mono text-xs text-slate-500">
+                            {ips.length > 0 ? ips[0] : <span className="text-slate-300">—</span>}
+                            {ips.length > 1 && <span className="text-slate-400 ml-1">+{ips.length - 1}</span>}
+                          </td>
+                          <td className="px-4 py-2 font-mono text-xs text-slate-400">{iface.mac_address ?? '—'}</td>
+                          <td className="px-4 py-2 text-slate-300 group-hover:text-blue-400 transition-colors">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1623,24 +1986,11 @@ export default function DeviceDetail() {
               <STPSection deviceId={id!} />
             </div>
           )}
+          {tab === 'health' && (
+            <HealthTab deviceId={id!} currentHealth={health ?? null} />
+          )}
         </div>
 
-        {/* Temperature sensors (shown only if data exists) */}
-        {health && health.temperatures.length > 0 && (
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-100">
-              <h3 className="text-sm font-semibold text-slate-800">Temperature Sensors</h3>
-            </div>
-            <div className="p-4 flex flex-wrap gap-3">
-              {health.temperatures.map((t, i) => (
-                <div key={i} className={`rounded-lg border px-4 py-3 text-sm ${t.ok ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
-                  <div className="font-medium text-slate-700">{t.sensor}</div>
-                  <div className={`text-lg font-bold ${t.ok ? 'text-green-700' : 'text-red-700'}`}>{t.celsius}°C</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </main>
     </div>
   )

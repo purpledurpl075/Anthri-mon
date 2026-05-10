@@ -14,6 +14,8 @@ import AdminPage from './pages/AdminPage'
 import AddressesPage from './pages/AddressesPage'
 import TopologyPage from './pages/TopologyPage'
 import AlertDetailPage from './pages/AlertDetailPage'
+import InterfaceDetailPage from './pages/InterfaceDetailPage'
+import MaintenancePage from './pages/MaintenancePage'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 
@@ -31,6 +33,7 @@ export default function App() {
             <Route path="/"            element={<OverviewPage />} />
             <Route path="/devices"     element={<DeviceList />} />
             <Route path="/devices/:id" element={<DeviceDetail />} />
+            <Route path="/devices/:id/interfaces/:ifaceId" element={<InterfaceDetailPage />} />
             <Route path="/discover"    element={<DiscoverPage />} />
             <Route path="/credentials" element={<CredentialsPage />} />
             <Route path="/account"      element={<AccountPage />} />
@@ -40,7 +43,8 @@ export default function App() {
             <Route path="/admin"        element={<AdminPage />} />
             <Route path="/addresses"    element={<AddressesPage />} />
             <Route path="/topology"     element={<TopologyPage />} />
-            <Route path="/alerts/:id"   element={<AlertDetailPage />} />
+            <Route path="/alerts/:id"    element={<AlertDetailPage />} />
+            <Route path="/maintenance"   element={<MaintenancePage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

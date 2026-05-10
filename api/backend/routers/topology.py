@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 from typing import Optional
 
@@ -12,9 +14,51 @@ from ..dependencies import get_current_user, get_db
 from ..models.device import Device
 from ..models.interface import Interface, LLDPNeighbor, CDPNeighbor
 from ..models.tenant import User
+from ..database import AsyncSessionLocal
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/topology", tags=["topology"])
+
+_ZERO_UUID = "00000000-0000-0000-0000-000000000000"
+
+
+async def _persist_topology_links(tenant_id: str, edges: list[dict]) -> None:
+    """Upsert computed topology edges into topology_links and prune stale ones."""
+    try:
+        async with AsyncSessionLocal() as db:
+            for edge in edges:
+                src, dst = edge["source"], edge["target"]
+                # Enforce canonical ordering required by the check constraint
+                if src > dst:
+                    src, dst = dst, src
+                    meta = {"source_port": edge.get("target_port"), "dest_port": edge.get("source_port")}
+                else:
+                    meta = {"source_port": edge.get("source_port"), "dest_port": edge.get("target_port")}
+                meta = {k: v for k, v in meta.items() if v}
+
+                await db.execute(text("""
+                    INSERT INTO topology_links
+                        (tenant_id, source_device_id, dest_device_id, link_type, metadata, discovered_at, updated_at)
+                    VALUES
+                        (:tid::uuid, :src::uuid, :dst::uuid, :ltype::topology_link_type, :meta::jsonb, now(), now())
+                    ON CONFLICT (source_device_id, dest_device_id, link_type,
+                        COALESCE(source_interface_id, :zero::uuid),
+                        COALESCE(dest_interface_id,   :zero::uuid))
+                    DO UPDATE SET metadata = EXCLUDED.metadata, updated_at = now()
+                """), {"tid": tenant_id, "src": src, "dst": dst,
+                       "ltype": edge.get("protocol", "lldp"),
+                       "meta": json.dumps(meta), "zero": _ZERO_UUID})
+
+            # Prune edges not refreshed in the last 10 minutes
+            await db.execute(text("""
+                DELETE FROM topology_links
+                WHERE tenant_id = :tid::uuid
+                AND updated_at < now() - interval '10 minutes'
+            """), {"tid": tenant_id})
+
+            await db.commit()
+    except Exception:
+        logger.exception("topology_links_persist_failed")
 
 
 @router.get("", summary="Network topology graph derived from LLDP/CDP neighbour data")
@@ -60,8 +104,13 @@ async def get_topology(
             Interface.device_id.in_([d.id for d in devices])
         )
     )).scalars().all()
-    iface_by_device_name: dict[str, str] = {
-        f"{str(i.device_id)}:{i.name}": str(i.id) for i in ifaces
+    iface_info: dict[str, dict] = {
+        f"{str(i.device_id)}:{i.name}": {
+            "id":        str(i.id),
+            "speed_bps": i.speed_bps,
+            "if_index":  i.if_index,
+        }
+        for i in ifaces
     }
 
     # ── Collect edges from LLDP ─────────────────────────────────────────────
@@ -83,15 +132,17 @@ async def get_topology(
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
-        src_iface_id = iface_by_device_name.get(f"{src_id}:{n.local_port_name}")
+        src_iface = iface_info.get(f"{src_id}:{n.local_port_name}", {})
         edges.append({
-            "id":              f"lldp-{src_id[:8]}-{dst_id[:8]}",
-            "source":          src_id,
-            "target":          dst_id,
-            "source_port":     n.local_port_name,
-            "target_port":     n.remote_port_id or n.remote_port_desc,
-            "source_iface_id": src_iface_id,
-            "protocol":        "lldp",
+            "id":               f"lldp-{src_id[:8]}-{dst_id[:8]}",
+            "source":           src_id,
+            "target":           dst_id,
+            "source_port":      n.local_port_name,
+            "target_port":      n.remote_port_id or n.remote_port_desc,
+            "source_iface_id":  src_iface.get("id"),
+            "source_speed_bps": src_iface.get("speed_bps"),
+            "source_if_index":  src_iface.get("if_index"),
+            "protocol":         "lldp",
         })
 
     # ── Collect edges from CDP (skip if LLDP already found the pair) ────────
@@ -110,14 +161,17 @@ async def get_topology(
         if pair in seen_pairs:
             continue
         seen_pairs.add(pair)
+        src_iface = iface_info.get(f"{src_id}:{n.local_port_name}", {})
         edges.append({
-            "id":              f"cdp-{src_id[:8]}-{dst_id[:8]}",
-            "source":          src_id,
-            "target":          dst_id,
-            "source_port":     n.local_port_name,
-            "target_port":     n.remote_port_id,
-            "source_iface_id": None,
-            "protocol":        "cdp",
+            "id":               f"cdp-{src_id[:8]}-{dst_id[:8]}",
+            "source":           src_id,
+            "target":           dst_id,
+            "source_port":      n.local_port_name,
+            "target_port":      n.remote_port_id,
+            "source_iface_id":  src_iface.get("id"),
+            "source_speed_bps": src_iface.get("speed_bps"),
+            "source_if_index":  src_iface.get("if_index"),
+            "protocol":         "cdp",
         })
 
     # ── Build node list (only devices that appear in at least one edge) ──────
@@ -136,4 +190,9 @@ async def get_topology(
         for d in devices
     ]
 
-    return {"nodes": nodes, "edges": edges}
+    result = {"nodes": nodes, "edges": edges}
+
+    # Persist computed edges to topology_links in the background (non-blocking)
+    asyncio.create_task(_persist_topology_links(str(tenant_id), edges))
+
+    return result

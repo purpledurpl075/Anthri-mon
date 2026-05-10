@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchAlert, acknowledgeAlert, resolveAlert } from '../api/alerts'
+import { fetchAlert, fetchAlertRule, acknowledgeAlert, resolveAlert } from '../api/alerts'
 import { fetchDevice } from '../api/devices'
 import api from '../api/client'
 import { DeviceTypeIcon, DEVICE_TYPE_COLOR, DEVICE_TYPE_LABEL } from '../components/DeviceTypeIcon'
@@ -10,6 +10,21 @@ interface AlertComment { id: string; body: string; author: string; created_at: s
 const fetchComments = (id: string) => api.get<AlertComment[]>(`/alerts/${id}/comments`).then(r => r.data)
 const postComment   = (id: string, body: string) => api.post<AlertComment>(`/alerts/${id}/comments`, { body }).then(r => r.data)
 
+const SEVERITY_COLOR: Record<string, string> = {
+  critical: '#dc2626',
+  major:    '#ea580c',
+  minor:    '#d97706',
+  warning:  '#ca8a04',
+  info:     '#2563eb',
+  resolved: '#16a34a',
+}
+const SEVERITY_BG: Record<string, string> = {
+  critical: 'bg-red-100 text-red-700',
+  major:    'bg-orange-100 text-orange-700',
+  minor:    'bg-amber-100 text-amber-700',
+  warning:  'bg-yellow-100 text-yellow-700',
+  info:     'bg-blue-100 text-blue-700',
+}
 const SEVERITY_STYLE: Record<string, string> = {
   critical: 'bg-red-100 text-red-700 border-red-200',
   major:    'bg-orange-100 text-orange-700 border-orange-200',
@@ -68,6 +83,12 @@ export default function AlertDetailPage() {
     enabled: !!alert?.device_id,
   })
 
+  const { data: rule } = useQuery({
+    queryKey: ['alert-rule', alert?.rule_id],
+    queryFn:  () => fetchAlertRule(alert!.rule_id!),
+    enabled:  !!alert?.rule_id,
+  })
+
   const ackMut = useMutation({
     mutationFn: () => acknowledgeAlert(id!),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['alert', id] }),
@@ -91,127 +112,136 @@ export default function AlertDetailPage() {
   const condition = ctx.condition as string | undefined
   const isPct = metric === 'cpu_util_pct' || metric === 'mem_util_pct'
 
+  const sevColor   = alert.status === 'resolved'
+    ? SEVERITY_COLOR.resolved
+    : (SEVERITY_COLOR[alert.severity] ?? '#475569')
+  const statusLabel: Record<string, string> = {
+    open: 'Open', acknowledged: 'Acknowledged', resolved: 'Resolved', suppressed: 'Suppressed',
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
-      {/* Header */}
-      <div className="px-6 py-4 border-b border-slate-200 bg-white">
-        <nav className="flex items-center gap-2 text-xs text-slate-400 mb-3">
-          <Link to="/alerts" className="hover:text-blue-600">Alerts</Link>
+
+      {/* Breadcrumb */}
+      <div className="px-6 py-3 border-b border-slate-200 bg-white flex items-center justify-between">
+        <nav className="flex items-center gap-1.5 text-xs text-slate-400">
+          <Link to="/alerts" className="hover:text-blue-600 flex items-center gap-1">
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>
+            Alerts
+          </Link>
           <span>/</span>
-          <span className="text-slate-600 truncate max-w-xs">{alert.title}</span>
+          <span className="text-slate-600 font-medium truncate max-w-xs">{alert.title}</span>
         </nav>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-base font-semibold text-slate-800 mb-2">{alert.title}</h1>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className={`inline-flex items-center px-2.5 py-1 rounded border text-xs font-semibold capitalize ${SEVERITY_STYLE[alert.severity] ?? ''}`}>
-                {alert.severity}
-              </span>
-              <span className={`inline-flex items-center px-2.5 py-1 rounded border text-xs font-medium capitalize ${STATUS_STYLE[alert.status] ?? ''}`}>
-                {alert.status}
-              </span>
-              {metric && (
-                <span className="text-xs text-slate-400 bg-slate-100 px-2 py-1 rounded">
-                  {METRIC_LABEL[metric] ?? metric}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            {alert.status === 'open' && (
-              <button onClick={() => ackMut.mutate()} disabled={ackMut.isPending}
-                className="px-3 py-1.5 text-xs font-medium text-yellow-700 border border-yellow-300 rounded-lg hover:bg-yellow-50 disabled:opacity-50 transition-colors">
-                {ackMut.isPending ? 'Acknowledging…' : 'Acknowledge'}
-              </button>
-            )}
-            {(alert.status === 'open' || alert.status === 'acknowledged') && (
-              <button onClick={() => resolveMut.mutate()} disabled={resolveMut.isPending}
-                className="px-3 py-1.5 text-xs font-medium text-green-700 border border-green-300 rounded-lg hover:bg-green-50 disabled:opacity-50 transition-colors">
-                {resolveMut.isPending ? 'Resolving…' : 'Resolve'}
-              </button>
-            )}
-            <button onClick={() => navigate(-1)}
-              className="px-3 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors">
-              Back
+        <div className="flex items-center gap-2">
+          {alert.status === 'open' && (
+            <button onClick={() => ackMut.mutate()} disabled={ackMut.isPending}
+              className="px-3 py-1.5 text-xs font-medium text-amber-700 border border-amber-300 bg-amber-50 rounded-lg hover:bg-amber-100 disabled:opacity-50 transition-colors">
+              {ackMut.isPending ? 'Acknowledging…' : 'Acknowledge'}
             </button>
-          </div>
+          )}
+          {(alert.status === 'open' || alert.status === 'acknowledged') && (
+            <button onClick={() => resolveMut.mutate()} disabled={resolveMut.isPending}
+              className="px-3 py-1.5 text-xs font-medium text-green-700 border border-green-300 bg-green-50 rounded-lg hover:bg-green-100 disabled:opacity-50 transition-colors">
+              {resolveMut.isPending ? 'Resolving…' : 'Resolve'}
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-5xl">
-        {/* Alert details */}
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <h2 className="text-sm font-semibold text-slate-700 mb-3">Alert details</h2>
-          <div>
-            {alert.message && <Row label="Description">{alert.message}</Row>}
-            <Row label="Alert ID"><span className="font-mono text-[10px]">{alert.id}</span></Row>
-            {value !== undefined && (
-              <Row label="Value">
-                <span className="font-semibold">{value}{isPct ? '%' : ''}</span>
-                {threshold !== undefined && (
-                  <span className="text-slate-400 ml-2">
-                    threshold: {condition} {threshold}{isPct ? '%' : ''}
-                  </span>
-                )}
-              </Row>
+      {/* Hero */}
+      <div className="bg-white border-b border-slate-200" style={{ borderLeft: `4px solid ${sevColor}` }}>
+        <div className="px-6 py-5">
+          {/* Badges row */}
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full uppercase tracking-wide ${SEVERITY_BG[alert.severity] ?? 'bg-slate-100 text-slate-500'}`}>
+              {alert.severity}
+            </span>
+            <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full uppercase tracking-wide"
+              style={{ backgroundColor: `${sevColor}18`, color: sevColor }}>
+              {statusLabel[alert.status] ?? alert.status}
+            </span>
+            {metric && (
+              <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-slate-100 text-slate-500 uppercase tracking-wide">
+                {METRIC_LABEL[metric] ?? metric}
+              </span>
             )}
-            {Object.entries(ctx)
-              .filter(([k]) => !['metric','value','threshold','condition'].includes(k))
-              .map(([k, v]) => (
-                <Row key={k} label={k}>
-                  <span className="font-mono text-[10px]">{String(v)}</span>
-                </Row>
-              ))
-            }
           </div>
+
+          {/* Title */}
+          <h1 className="text-xl font-bold text-slate-900 mb-1">{alert.title}</h1>
+          {alert.message && <p className="text-sm text-slate-500 mb-4">{alert.message}</p>}
+
+          {/* Value / threshold */}
+          {value !== undefined && (
+            <div className="flex gap-4 mt-3">
+              <div className="bg-slate-50 rounded-xl px-5 py-3 border border-slate-100">
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Value</p>
+                <p className="text-2xl font-bold" style={{ color: sevColor }}>
+                  {value}{isPct ? '%' : ''}
+                </p>
+              </div>
+              {threshold !== undefined && (
+                <div className="bg-slate-50 rounded-xl px-5 py-3 border border-slate-100">
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Threshold</p>
+                  <p className="text-2xl font-bold text-slate-700">
+                    {condition === 'gt' ? '>' : condition === 'lt' ? '<' : ''} {threshold}{isPct ? '%' : ''}
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Timeline */}
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <h2 className="text-sm font-semibold text-slate-700 mb-3">Timeline</h2>
-          <div className="space-y-3">
-            {[
-              { label: 'Triggered',     ts: alert.triggered_at,    color: 'bg-red-500' },
-              { label: 'Acknowledged',  ts: alert.acknowledged_at,  color: 'bg-yellow-500' },
-              { label: 'Resolved',      ts: alert.resolved_at,      color: 'bg-green-500' },
-            ].map(({ label, ts, color }) => ts && (
-              <div key={label} className="flex items-start gap-3">
-                <div className={`w-2 h-2 rounded-full mt-1 shrink-0 ${color}`} />
-                <div>
-                  <p className="text-xs font-medium text-slate-700">{label}</p>
-                  <p className="text-[10px] text-slate-400">{fmt(ts)}</p>
-                </div>
+        {/* Timeline strip */}
+        <div className="flex border-t border-slate-100">
+          {[
+            { label: 'Triggered',     ts: alert.triggered_at,   color: '#dc2626' },
+            { label: 'Acknowledged',  ts: alert.acknowledged_at, color: '#d97706' },
+            { label: 'Resolved',      ts: alert.resolved_at,     color: '#16a34a' },
+          ].filter(e => e.ts).map(({ label, ts, color }, i, arr) => (
+            <div key={label} className={`px-5 py-3 flex-1 ${i < arr.length - 1 ? 'border-r border-slate-100' : ''}`}>
+              <div className="flex items-center gap-1.5 mb-0.5">
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">{label}</span>
               </div>
-            ))}
-          </div>
+              <span className="text-xs text-slate-700">{fmt(ts)}</span>
+            </div>
+          ))}
         </div>
+      </div>
+
+      {/* Detail cards */}
+      <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-5xl">
 
         {/* Device */}
         {device && (
-          <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <h2 className="text-sm font-semibold text-slate-700 mb-3">Device</h2>
-            <div>
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Device</h2>
+              <Link to={`/devices/${device.id}`}
+                className="text-xs text-blue-600 hover:underline flex items-center gap-1">
+                Open device
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+              </Link>
+            </div>
+            <div className="px-5 py-1">
               <Row label="Hostname">
-                <Link to={`/devices/${device.id}`} className="text-blue-600 hover:underline font-medium">
-                  {device.fqdn ?? device.hostname}
-                </Link>
+                <span className="font-medium text-slate-800">{device.fqdn ?? device.hostname}</span>
               </Row>
-              <Row label="IP address"><span className="font-mono">{device.mgmt_ip}</span></Row>
-              <Row label="Vendor">{device.vendor ?? '—'}</Row>
-              <Row label="Type">
-              {device.device_type ? (
-                <span className="flex items-center gap-1.5"
-                  style={{ color: DEVICE_TYPE_COLOR[device.device_type] ?? '#64748b' }}>
-                  <DeviceTypeIcon type={device.device_type} size={14} />
-                  <span className="text-slate-700">{DEVICE_TYPE_LABEL[device.device_type] ?? device.device_type}</span>
-                </span>
-              ) : '—'}
-            </Row>
+              <Row label="IP"><span className="font-mono">{device.mgmt_ip}</span></Row>
+              {device.vendor && <Row label="Vendor">{device.vendor}</Row>}
+              {device.device_type && (
+                <Row label="Type">
+                  <span className="flex items-center gap-1.5" style={{ color: DEVICE_TYPE_COLOR[device.device_type] ?? '#64748b' }}>
+                    <DeviceTypeIcon type={device.device_type} size={13} />
+                    <span className="text-slate-700">{DEVICE_TYPE_LABEL[device.device_type] ?? device.device_type}</span>
+                  </span>
+                </Row>
+              )}
               <Row label="Status">
-                <span className={`inline-flex items-center gap-1 text-xs font-medium capitalize ${
-                  device.status === 'up' ? 'text-green-600' : 'text-red-600'
-                }`}>
-                  <span className={`w-1.5 h-1.5 rounded-full ${device.status === 'up' ? 'bg-green-500' : 'bg-red-500'}`}/>
+                <span className="flex items-center gap-1.5 text-xs font-medium"
+                  style={{ color: device.status === 'up' ? '#16a34a' : '#dc2626' }}>
+                  <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: device.status === 'up' ? '#16a34a' : '#dc2626' }} />
                   {device.status}
                 </span>
               </Row>
@@ -221,13 +251,52 @@ export default function AlertDetailPage() {
 
         {/* Rule */}
         {alert.rule_id && (
-          <div className="bg-white rounded-xl border border-slate-200 p-5">
-            <h2 className="text-sm font-semibold text-slate-700 mb-3">Rule</h2>
-            <Row label="Rule ID">
-              <Link to={`/alert-rules`} className="text-blue-600 hover:underline font-mono text-[10px]">
-                {alert.rule_id}
-              </Link>
-            </Row>
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Alert Rule</h2>
+              <Link to="/alert-rules" className="text-xs text-blue-600 hover:underline">View rules</Link>
+            </div>
+            <div className="px-5 py-1">
+              <Row label="Name">
+                <span className="font-medium text-slate-800">
+                  {rule?.name ?? <span className="font-mono text-[10px] text-slate-400">{alert.rule_id}</span>}
+                </span>
+              </Row>
+              {rule?.metric && (
+                <Row label="Metric"><span className="font-mono text-xs">{METRIC_LABEL[rule.metric] ?? rule.metric}</span></Row>
+              )}
+              {rule?.threshold != null && (
+                <Row label="Threshold">
+                  <span className="font-semibold">{rule.threshold}{rule.metric?.includes('pct') ? '%' : ''}</span>
+                </Row>
+              )}
+              {rule?.severity && (
+                <Row label="Severity">
+                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${SEVERITY_BG[rule.severity] ?? ''}`}>
+                    {rule.severity}
+                  </span>
+                </Row>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Extra context */}
+        {Object.keys(ctx).some(k => !['metric','value','threshold','condition'].includes(k)) && (
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-100">
+              <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Context</h2>
+            </div>
+            <div className="px-5 py-1">
+              {Object.entries(ctx)
+                .filter(([k]) => !['metric','value','threshold','condition'].includes(k))
+                .map(([k, v]) => (
+                  <Row key={k} label={k}>
+                    <span className="font-mono text-[10px] text-slate-600">{String(v)}</span>
+                  </Row>
+                ))}
+              <Row label="Alert ID"><span className="font-mono text-[10px] text-slate-400">{alert.id}</span></Row>
+            </div>
           </div>
         )}
 

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchCredentials, createCredential, updateCredential, deleteCredential, type Credential } from '../api/credentials'
+import { useRole, hasRole } from '../hooks/useCurrentUser'
 
 // ── Type metadata ──────────────────────────────────────────────────────────────
 
@@ -254,6 +255,9 @@ function CredentialModal({ editing, onClose }: { editing: Credential | null; onC
 
 export default function CredentialsPage() {
   const qc = useQueryClient()
+  const role = useRole()
+  const canWrite  = hasRole(role, 'operator')
+  const canDelete = hasRole(role, 'admin')
   const [modal, setModal] = useState<'new' | Credential | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
@@ -271,11 +275,13 @@ export default function CredentialsPage() {
     <div>
       <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <h1 className="text-base font-semibold text-slate-800">Credentials</h1>
-        <button onClick={() => setModal('new')}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-          Add credential
-        </button>
+        {canWrite && (
+          <button onClick={() => setModal('new')}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            Add credential
+          </button>
+        )}
       </div>
 
       <div className="p-6">
@@ -304,15 +310,15 @@ export default function CredentialsPage() {
                     <td className="px-4 py-3"><TypeBadge type={c.type} /></td>
                     <td className="px-4 py-3 text-xs text-slate-400">{dataSummary(c.type, c.data)}</td>
                     <td className="px-4 py-3 text-right space-x-3">
-                      <button onClick={() => setModal(c)} className="text-xs text-blue-600 hover:underline">Edit</button>
-                      {confirmDelete === c.id ? (
+                      {canWrite && <button onClick={() => setModal(c)} className="text-xs text-blue-600 hover:underline">Edit</button>}
+                      {canDelete && (confirmDelete === c.id ? (
                         <>
                           <button onClick={() => deleteMut.mutate(c.id)} className="text-xs text-red-600 hover:underline font-medium">Confirm</button>
                           <button onClick={() => setConfirmDelete(null)} className="text-xs text-slate-400 hover:underline">Cancel</button>
                         </>
                       ) : (
                         <button onClick={() => setConfirmDelete(c.id)} className="text-xs text-slate-400 hover:text-red-600">Delete</button>
-                      )}
+                      ))}
                     </td>
                   </tr>
                 ))}

@@ -399,6 +399,17 @@ async def eval_ospf_state(db: AsyncSession, device: dict) -> Optional[Breach]:
     )
 
 
+async def eval_route_missing(db: AsyncSession, device: dict, prefix: str) -> list[Breach]:
+    """Alert when a specific route prefix is absent from route_entries for this device."""
+    result = await db.execute(
+        text("SELECT id FROM route_entries WHERE device_id = :did AND destination = :prefix LIMIT 1"),
+        {"did": device["id"], "prefix": prefix},
+    )
+    if result.first() is None:
+        return [Breach(device["id"], device["hostname"], extra={"prefix": prefix})]
+    return []
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _check(value: float, condition: str, threshold: float) -> bool:

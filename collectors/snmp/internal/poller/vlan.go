@@ -44,15 +44,21 @@ func PollVLANs(s *client.Session, deviceID uuid.UUID, ifByIndex map[int]string) 
 		vlanNames[vlanID] = client.PDUString(pdu)
 	}
 
-	// Fallback: if static table gave nothing, probe current egress table for VLAN IDs
-	// (devices that only populate dot1qVlanCurrentTable, e.g. some ProCurve firmware).
+	// Fallback: probe current VLAN table for IDs when static table is empty.
+	// Try EgressPorts (col 3) first; some vendors (e.g. Arista EOS) only populate
+	// UntaggedPorts (col 4), so fall through to that if col 3 is empty.
 	if len(vlanNames) == 0 {
-		egressProbe, _ := s.BulkWalkAll(oid.Dot1qVlanCurrentEgressPorts)
-		for _, pdu := range egressProbe {
-			if vlanID, ok := parseVlanCurrentIndex(pdu.Name, oid.Dot1qVlanCurrentEgressPorts); ok {
-				if _, exists := vlanNames[vlanID]; !exists {
-					vlanNames[vlanID] = "" // no name available
+		for _, probeOID := range []string{oid.Dot1qVlanCurrentEgressPorts, oid.Dot1qVlanCurrentUntaggedPorts} {
+			probe, _ := s.BulkWalkAll(probeOID)
+			for _, pdu := range probe {
+				if vlanID, ok := parseVlanCurrentIndex(pdu.Name, probeOID); ok {
+					if _, exists := vlanNames[vlanID]; !exists {
+						vlanNames[vlanID] = ""
+					}
 				}
+			}
+			if len(vlanNames) > 0 {
+				break
 			}
 		}
 		if len(vlanNames) == 0 {
@@ -73,39 +79,52 @@ func PollVLANs(s *client.Session, deviceID uuid.UUID, ifByIndex map[int]string) 
 	// ── 2. Build bridge port → ifIndex mapping (dot1dBasePortTable col 2) ─────
 	bridgePortToIfIdx := buildBridgePortMap(s)
 
-	// ── 3. Walk dot1qVlanCurrentEgressPorts ───────────────────────────────────
-	egressPDUs, err := s.BulkWalkAll(oid.Dot1qVlanCurrentEgressPorts)
-	if err != nil || len(egressPDUs) == 0 {
-		if err != nil {
-			log.Warn().Err(err).Msg("vlan: dot1qVlanCurrentEgressPorts walk failed")
-		}
-		// Return VLANs we have but no interface membership.
+	// ── 3+4. Walk egress and untagged port bitmaps ────────────────────────────
+	// EgressPorts (col 3) = all ports (tagged+untagged) in the VLAN.
+	// UntaggedPorts (col 4) = access/native ports (untagged egress).
+	// Some devices (e.g. Arista EOS) only populate col 4; in that case use it
+	// as egress too — all reported ports are access ports, correctly untagged.
+	egressPDUs, _ := s.BulkWalkAll(oid.Dot1qVlanCurrentEgressPorts)
+	untagPDUs, _ := s.BulkWalkAll(oid.Dot1qVlanCurrentUntaggedPorts)
+
+	// If egress is empty but untagged has data, treat untagged as egress.
+	useUntagAsEgress := len(egressPDUs) == 0 && len(untagPDUs) > 0
+	if useUntagAsEgress {
+		egressPDUs = untagPDUs
+	}
+	if len(egressPDUs) == 0 {
 		return vlans, nil, nil
 	}
-	egressBitmaps := make(map[int][]byte) // vlanID → bitmap
+
+	egressBitmaps := make(map[int][]byte)
 	for _, pdu := range egressPDUs {
 		vlanID, ok := parseVlanCurrentIndex(pdu.Name, oid.Dot1qVlanCurrentEgressPorts)
 		if !ok {
+			vlanID, ok = parseVlanCurrentIndex(pdu.Name, oid.Dot1qVlanCurrentUntaggedPorts)
+		}
+		if !ok {
 			continue
 		}
-		if b, ok := pdu.Value.([]byte); ok {
+		if b, ok2 := pdu.Value.([]byte); ok2 {
 			egressBitmaps[vlanID] = b
 		}
 	}
 
-	// ── 4. Walk dot1qVlanCurrentUntaggedPorts ─────────────────────────────────
-	untagPDUs, err := s.BulkWalkAll(oid.Dot1qVlanCurrentUntaggedPorts)
-	if err != nil {
-		log.Warn().Err(err).Msg("vlan: dot1qVlanCurrentUntaggedPorts walk failed (non-fatal)")
-	}
-	untagBitmaps := make(map[int][]byte) // vlanID → bitmap
-	for _, pdu := range untagPDUs {
-		vlanID, ok := parseVlanCurrentIndex(pdu.Name, oid.Dot1qVlanCurrentUntaggedPorts)
-		if !ok {
-			continue
+	untagBitmaps := make(map[int][]byte)
+	if useUntagAsEgress {
+		// Same data for both — all ports are untagged access ports
+		for k, v := range egressBitmaps {
+			untagBitmaps[k] = v
 		}
-		if b, ok := pdu.Value.([]byte); ok {
-			untagBitmaps[vlanID] = b
+	} else {
+		for _, pdu := range untagPDUs {
+			vlanID, ok := parseVlanCurrentIndex(pdu.Name, oid.Dot1qVlanCurrentUntaggedPorts)
+			if !ok {
+				continue
+			}
+			if b, ok2 := pdu.Value.([]byte); ok2 {
+				untagBitmaps[vlanID] = b
+			}
 		}
 	}
 

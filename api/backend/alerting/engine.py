@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import AsyncSessionLocal
 from ..models.alert import Alert, AlertRule, MaintenanceWindow
+from ..models.settings import SystemSetting
 from . import notify
 from .maintenance import device_in_maintenance, load_active_windows
 from .evaluators import (
@@ -19,7 +20,7 @@ from .evaluators import (
     eval_cpu, eval_mem, eval_device_down,
     eval_interface_down, eval_interface_flap,
     eval_uptime, eval_temperature, eval_interface_errors, eval_interface_util,
-    eval_custom_oid, eval_ospf_state,
+    eval_custom_oid, eval_ospf_state, eval_route_missing,
     resolve_devices,
 )
 
@@ -87,12 +88,13 @@ def _build_title(rule: AlertRule, breach: Breach) -> str:
         "mem_util_pct":    f"Memory {breach.value:.1f}%" if breach.value is not None else "Memory high",
         "device_down":     "device unreachable",
         "interface_down":  "interface down",
-        "interface_flap":  f"interface flapping ({int(breach.value or 0)} changes)",
+        "interface_flap":  f"interface flapping ({int(min(breach.value or 0, 1e9))} changes)",
         "temperature":     f"temperature {breach.value:.1f}°C" if breach.value is not None else "temperature high",
         "interface_errors":   f"interface errors ({int(breach.value or 0)})",
         "interface_util_pct": f"bandwidth {breach.value:.1f}%" if breach.value is not None else "bandwidth high",
         "ospf_state":      f"OSPF neighbour {breach.extra.get('neighbour','')} {breach.extra.get('ospf_state','')}",
         "uptime":          f"rebooted (uptime {int(breach.value or 0)}s)",
+        "route_missing":   f"route {breach.extra.get('prefix', rule.custom_oid or '?')} missing",
     }
     return f"{base}: {metric_labels.get(rule.metric, rule.metric)}"
 
@@ -117,19 +119,32 @@ class AlertEngine:
 
     async def run(self) -> None:
         logger.info("alert_engine_starting", interval_s=EVAL_INTERVAL)
+        _housekeeping_counter = 0
         while True:
             try:
                 await asyncio.sleep(EVAL_INTERVAL)
                 pending: list[_PendingNotif] = []
                 async with AsyncSessionLocal() as db:
+                    # Load platform settings once per cycle
+                    prow = (await db.execute(
+                        select(SystemSetting).where(SystemSetting.key == "platform")
+                    )).scalar_one_or_none()
+                    platform = prow.value if prow else {}
+
                     try:
-                        pending = await self._evaluate_all(db)
+                        pending = await self._evaluate_all(db, platform)
                         await db.commit()
                     except Exception as exc:
                         await db.rollback()
                         logger.error("alert_engine_eval_error", error=str(exc), exc_info=True)
+
+                # Housekeeping every ~5 minutes (20 × 15 s cycles)
+                _housekeeping_counter += 1
+                if _housekeeping_counter >= 20:
+                    _housekeeping_counter = 0
+                    await self._housekeeping(platform)
+
                 # Dispatch notifications after the commit — never inside the eval transaction.
-                # expire_on_commit=False keeps alert/rule attrs accessible after commit.
                 for alert, rule, resolved in pending:
                     await _safe_dispatch(alert, rule, resolved=resolved)
             except asyncio.CancelledError:
@@ -138,7 +153,29 @@ class AlertEngine:
             except Exception as exc:
                 logger.error("alert_engine_error", error=str(exc), exc_info=True)
 
-    async def _evaluate_all(self, db: AsyncSession) -> list[_PendingNotif]:
+    async def _housekeeping(self, platform: dict) -> None:
+        """Periodic cleanup: auto-close stale alerts."""
+        auto_close_days = int(platform.get("auto_close_stale_days", 0))
+        if auto_close_days <= 0:
+            return
+        try:
+            async with AsyncSessionLocal() as db:
+                cutoff = f"now() - interval '{auto_close_days} days'"
+                result = await db.execute(text(f"""
+                    UPDATE alerts
+                    SET status = 'resolved', resolved_at = now()
+                    WHERE status IN ('open','acknowledged')
+                      AND triggered_at < {cutoff}
+                    RETURNING id
+                """))
+                closed = result.rowcount
+                if closed:
+                    logger.info("auto_closed_stale_alerts", count=closed, days=auto_close_days)
+                await db.commit()
+        except Exception as exc:
+            logger.error("housekeeping_error", error=str(exc))
+
+    async def _evaluate_all(self, db: AsyncSession, platform: dict | None = None) -> list[_PendingNotif]:
         rules = (await db.execute(
             select(AlertRule)
             .where(AlertRule.is_enabled == True)  # noqa: E712
@@ -164,7 +201,7 @@ class AlertEngine:
             sp = await db.begin_nested()
             try:
                 rule_pending = await self._evaluate_rule(
-                    db, rule, rules_by_metric.get(rule.metric, []), active_windows
+                    db, rule, rules_by_metric.get(rule.metric, []), active_windows, platform or {}
                 )
                 await sp.commit()
                 pending.extend(rule_pending)
@@ -190,7 +227,8 @@ class AlertEngine:
 
     async def _evaluate_rule(self, db: AsyncSession, rule: AlertRule,
                               peer_rules: list[AlertRule] = [],
-                              active_windows: list = []) -> list[_PendingNotif]:
+                              active_windows: list = [],
+                              platform: dict | None = None) -> list[_PendingNotif]:
         tenant_id = str(rule.tenant_id)
         devices = await resolve_devices(db, tenant_id, rule.device_selector)
         if not devices:
@@ -258,6 +296,8 @@ class AlertEngine:
                 b = await eval_custom_oid(db, device, rule.custom_oid,
                                            rule.condition or "gt", rule.threshold or 0)
                 if b: breaches.append(b)
+            elif rule.metric == "route_missing" and rule.custom_oid:
+                breaches.extend(await eval_route_missing(db, device, rule.custom_oid))
 
             # Extra conditions — ALL must also be true (AND logic)
             if len(breaches) > pre_breach_count and rule.extra_conditions:
@@ -352,6 +392,19 @@ class AlertEngine:
                     last_clear = self._last_clear.get(fp)
                     if last_clear is None or last_res.resolved_at > last_clear:
                         self._suppress_until_clear.add(fp)
+                        continue
+
+                # ── Storm protection ────────────────────────────────────────────
+                storm_limit = int((platform or {}).get("max_alerts_per_device_per_hour", 0))
+                if storm_limit > 0 and breach.device_id:
+                    recent_count = (await db.execute(text(
+                        "SELECT count(*) FROM alerts "
+                        "WHERE device_id = :did::uuid "
+                        "  AND triggered_at > now() - interval '1 hour'"
+                    ), {"did": breach.device_id})).scalar_one()
+                    if recent_count >= storm_limit:
+                        logger.warning("storm_protection_triggered",
+                                       device=breach.device_id, limit=storm_limit)
                         continue
 
                 suppressed = breach.device_id in suppressed_device_ids

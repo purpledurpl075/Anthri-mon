@@ -97,8 +97,11 @@ const (
 	EntPhySensorPrecision = "1.3.6.1.2.1.99.1.1.1.3" // decimal places 0–9
 	EntPhySensorValue     = "1.3.6.1.2.1.99.1.1.1.4"
 
-	EntSensorTypeCelsius  = 8 // entPhySensorType value indicating temperature
-	EntSensorScaleUnits   = 9 // entPhySensorScale: units (10^0); most common for temp
+	EntSensorTypeCelsius = 8 // entPhySensorType value indicating temperature
+	EntSensorTypeWatts   = 6 // watts — used for optical power (TX/RX) on Arista and others
+	EntSensorScaleUnits  = 9 // entPhySensorScale: units(9) = 10^0
+	// RFC 3433 SensorDataScale: actual exponent = (enum - 9) * 3
+	// e.g. milli(8) → (8-9)*3 = -3, units(9) → 0, kilo(10) → +3
 )
 
 // ── Cisco: CISCO-PROCESS-MIB ─────────────────────────────────────────────────

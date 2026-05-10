@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/gosnmp/gosnmp"
 	"github.com/google/uuid"
@@ -47,7 +48,158 @@ func PollHealth(s *client.Session, deviceID uuid.UUID, profile *vendor.Profile, 
 		return nil, err
 	}
 
+	// Optical power collection is best-effort; never fail PollHealth on error.
+	result.OpticalSamples, _ = pollOpticalSensors(s)
+
 	return result, nil
+}
+
+// pollOpticalSensors walks ENTITY-SENSOR-MIB for watts-type sensors (type 6)
+// whose names contain "DOM TX" or "DOM RX". On Arista EOS (and similar vendors),
+// optical TX/RX power is stored as watts with milli(8) scale, precision 4 —
+// i.e. the actual unit is milliwatts. We convert to dBm for storage.
+func pollOpticalSensors(s *client.Session) ([]model.OpticalSample, error) {
+	typePDUs, err := s.BulkWalkAll(oid.EntPhySensorType)
+	if err != nil || len(typePDUs) == 0 {
+		return nil, nil
+	}
+
+	// Collect indexes of watts-type sensors.
+	dbmIndexes := make(map[string]bool)
+	for _, pdu := range typePDUs {
+		if client.PDUInt(pdu) == oid.EntSensorTypeWatts {
+			idx := formatIndex(pdu.Name, oid.EntPhySensorType)
+			if idx != "" {
+				dbmIndexes[idx] = true
+			}
+		}
+	}
+	if len(dbmIndexes) == 0 {
+		return nil, nil
+	}
+
+	// Read raw sensor values.
+	valuePDUs, err := s.BulkWalkAll(oid.EntPhySensorValue)
+	if err != nil {
+		return nil, nil
+	}
+	valueByIdx := make(map[string]int)
+	for _, pdu := range valuePDUs {
+		idx := formatIndex(pdu.Name, oid.EntPhySensorValue)
+		if dbmIndexes[idx] {
+			valueByIdx[idx] = client.PDUInt(pdu)
+		}
+	}
+
+	// Read scale and precision for unit conversion.
+	scaleByIdx := make(map[string]int)
+	if sp, e := s.BulkWalkAll(oid.EntPhySensorScale); e == nil {
+		for _, pdu := range sp {
+			idx := formatIndex(pdu.Name, oid.EntPhySensorScale)
+			if dbmIndexes[idx] {
+				scaleByIdx[idx] = client.PDUInt(pdu)
+			}
+		}
+	}
+	precByIdx := make(map[string]int)
+	if pp, e := s.BulkWalkAll(oid.EntPhySensorPrecision); e == nil {
+		for _, pdu := range pp {
+			idx := formatIndex(pdu.Name, oid.EntPhySensorPrecision)
+			if dbmIndexes[idx] {
+				precByIdx[idx] = client.PDUInt(pdu)
+			}
+		}
+	}
+
+	// Resolve sensor names from entPhysicalName / entPhysicalDescr.
+	nameByIdx := make(map[string]string)
+	if np, e := s.BulkWalkAll(oid.EntPhysicalName); e == nil {
+		for _, pdu := range np {
+			idx := formatIndex(pdu.Name, oid.EntPhysicalName)
+			if v := client.PDUString(pdu); v != "" {
+				nameByIdx[idx] = v
+			}
+		}
+	}
+	if dp, e := s.BulkWalkAll(oid.EntPhysicalDescr); e == nil {
+		for _, pdu := range dp {
+			idx := formatIndex(pdu.Name, oid.EntPhysicalDescr)
+			if _, already := nameByIdx[idx]; !already {
+				if v := client.PDUString(pdu); v != "" {
+					nameByIdx[idx] = v
+				}
+			}
+		}
+	}
+
+	var samples []model.OpticalSample
+	for idx, rawVal := range valueByIdx {
+		name := nameByIdx[idx]
+		if name == "" {
+			continue
+		}
+		// Only collect sensors whose description looks like DOM optical power.
+		lower := strings.ToLower(name)
+		if !strings.Contains(lower, "dom") && !strings.Contains(lower, "tx power") && !strings.Contains(lower, "rx power") {
+			continue
+		}
+
+		// RFC 3433 scale: exponent = (enum - 9) * 3
+		scaleEnum := scaleByIdx[idx]
+		if scaleEnum == 0 {
+			scaleEnum = oid.EntSensorScaleUnits
+		}
+		scaleExp  := (scaleEnum - oid.EntSensorScaleUnits) * 3
+		precision := precByIdx[idx]
+
+		// Type 6 = watts; convert to mW then to dBm.
+		watts := float64(rawVal) * math.Pow10(scaleExp) / math.Pow10(precision)
+		mw    := watts * 1000.0
+		var dbm float64
+		if mw > 0 {
+			dbm = 10.0 * math.Log10(mw)
+		} else {
+			dbm = -40.0 // clamp to -40 dBm for zero / negative readings
+		}
+		dbm = math.Round(dbm*1000) / 1000
+
+		samples = append(samples, model.OpticalSample{
+			IfaceName:  extractIfaceName(name),
+			SensorName: name,
+			Direction:  classifyOpticalDirection(name),
+			PowerDBm:   dbm,
+		})
+	}
+	return samples, nil
+}
+
+// extractIfaceName extracts the interface name from an ENTITY-SENSOR-MIB
+// sensor description of the form "... for <IfaceName>".
+// Falls back to the full name if the pattern is not found.
+func extractIfaceName(sensorName string) string {
+	const sep = " for "
+	idx := strings.LastIndex(strings.ToLower(sensorName), sep)
+	if idx < 0 {
+		return sensorName
+	}
+	iface := strings.TrimSpace(sensorName[idx+len(sep):])
+	// Strip any trailing non-printable / non-ASCII characters.
+	return strings.TrimRightFunc(iface, func(r rune) bool {
+		return !unicode.IsPrint(r) || r > 127
+	})
+}
+
+// classifyOpticalDirection returns "tx", "rx", or "unknown" from the sensor name.
+func classifyOpticalDirection(name string) string {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "tx") || strings.Contains(lower, "transmit"):
+		return "tx"
+	case strings.Contains(lower, "rx") || strings.Contains(lower, "receive"):
+		return "rx"
+	default:
+		return "unknown"
+	}
 }
 
 // ── CPU ───────────────────────────────────────────────────────────────────────
@@ -393,13 +545,13 @@ func pollTempEntitySensor(s *client.Session) ([]model.TempSample, error) {
 			name = "Sensor " + idx
 		}
 
-		// Apply scale factor: scale enum maps to SI prefix exponents.
-		// units(9)=10^0, milli(8)=10^-3, kilo(10)=10^3, etc.
+		// RFC 3433 SensorDataScale: exponent = (enum - 9) * 3
+		// milli(8)→-3, units(9)→0, kilo(10)→+3, mega(11)→+6, etc.
 		scaleEnum := scaleByIdx[idx]
 		if scaleEnum == 0 {
-			scaleEnum = oid.EntSensorScaleUnits // default to units if missing
+			scaleEnum = oid.EntSensorScaleUnits
 		}
-		scaleExp := scaleEnum - oid.EntSensorScaleUnits // offset from units(9)
+		scaleExp  := (scaleEnum - oid.EntSensorScaleUnits) * 3
 		precision := precisionByIdx[idx]
 
 		celsius := float64(rawVal) * math.Pow10(scaleExp) / math.Pow10(precision)

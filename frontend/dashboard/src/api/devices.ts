@@ -13,6 +13,19 @@ export const fetchDeviceInterfaces = (id: string) =>
 export const fetchDeviceHealth = (id: string) =>
   api.get<HealthData>(`/devices/${id}/health`).then((r) => r.data)
 
+export interface HealthHistory {
+  cpu_pct:     [number, number][]
+  mem_pct:     [number, number][]
+  mem_used:    [number, number][]
+  mem_total:   [number, number][]
+  temp_series: Record<string, [number, number][]>
+  dom_tx:      Record<string, [number, number][]>
+  dom_rx:      Record<string, [number, number][]>
+}
+
+export const fetchDeviceHealthHistory = (id: string, hours: number) =>
+  api.get<HealthHistory>(`/devices/${id}/health/history`, { params: { hours } }).then(r => r.data)
+
 export const deleteDevice = (id: string) =>
   api.delete(`/devices/${id}`)
 

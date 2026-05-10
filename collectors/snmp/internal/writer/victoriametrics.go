@@ -130,6 +130,13 @@ func (w *VMWriter) encode(result *poller.PollResult) []string {
 		for _, temp := range h.TempSamples {
 			line(`anthrimon_device_temp_celsius{%s,sensor="%s"} %.1f %d`, baseLbls, escapeLabelValue(temp.SensorName), temp.Celsius, ts)
 		}
+		for _, opt := range h.OpticalSamples {
+			metric := "anthrimon_if_dom_rx_power_dbm"
+			if opt.Direction == "tx" {
+				metric = "anthrimon_if_dom_tx_power_dbm"
+			}
+			line(`%s{%s,iface="%s"} %.4f %d`, metric, baseLbls, escapeLabelValue(opt.IfaceName), opt.PowerDBm, ts)
+		}
 		line(`anthrimon_device_uptime_seconds{%s} %d %d`, baseLbls, h.UptimeSecs, ts)
 	}
 

@@ -36,5 +36,6 @@ __pycache__/
 # .vscode/
 brain/
 CLAUDE.md
+collectors/snmp/snmp-collector
 ./claude
 .claude/

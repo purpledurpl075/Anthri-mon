@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from '../api/alerts'
+import { useRole, hasRole } from '../hooks/useCurrentUser'
 import { fetchChannels } from '../api/channels'
 import { fetchMaintenanceWindows } from '../api/maintenance'
 import type { AlertRule } from '../api/types'
@@ -16,6 +17,7 @@ const METRICS = [
   { value: 'interface_errors',  label: 'Interface errors',           hasThreshold: true,  conditions: ['gt'],        unit: '',     thresholdLabel: 'Error count (5 min)', simple: true },
   { value: 'interface_util_pct', label: 'Interface utilisation',    hasThreshold: true,  conditions: ['gt'],        unit: '%',    thresholdLabel: 'Utilisation % (5 min)', simple: true },
   { value: 'ospf_state',        label: 'OSPF neighbour not full',    hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
+  { value: 'route_missing',     label: 'Route prefix missing',       hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
   { value: 'custom_oid',        label: 'Custom OID',                 hasThreshold: true,  conditions: ['gt','lt','eq'], unit: '', thresholdLabel: 'Threshold value',   simple: false },
 ]
 
@@ -119,7 +121,7 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
         metric: f.metric,
         condition: m.conditions[0] ?? f.condition,
         threshold: m.hasThreshold ? Number(f.threshold) : null,
-        custom_oid: f.metric === 'custom_oid' ? (f.custom_oid || null) : null,
+        custom_oid: (f.metric === 'custom_oid' || f.metric === 'route_missing') ? (f.custom_oid || null) : null,
         duration_seconds: Number(f.duration_seconds),
         severity: f.severity,
         escalation_severity: f.escalation_severity || null,
@@ -185,7 +187,7 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
             </select>
           </div>
 
-          {/* Custom OID input */}
+          {/* Custom OID / prefix input */}
           {f.metric === 'custom_oid' && (
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">
@@ -193,6 +195,16 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
               </label>
               <input value={f.custom_oid} onChange={e => set('custom_oid', e.target.value)}
                 placeholder="1.3.6.1.4.1.9.9.109.1.1.1.1.3.1"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+          )}
+          {f.metric === 'route_missing' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                Prefix to monitor <span className="text-slate-400 font-normal">exact match on destination</span>
+              </label>
+              <input value={f.custom_oid} onChange={e => set('custom_oid', e.target.value)}
+                placeholder="0.0.0.0/0"
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
           )}
@@ -376,6 +388,7 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
 
 export default function AlertRulesPage() {
   const qc = useQueryClient()
+  const canEdit = hasRole(useRole(), 'admin')
   const [modal, setModal] = useState<AlertRule | 'new' | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
 
@@ -398,11 +411,13 @@ export default function AlertRulesPage() {
     <div className="min-h-screen bg-slate-50">
       <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
         <h1 className="text-base font-semibold text-slate-800">Alert Rules</h1>
-        <button onClick={() => setModal('new')}
-          className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-          New rule
-        </button>
+        {canEdit && (
+          <button onClick={() => setModal('new')}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+            New rule
+          </button>
+        )}
       </div>
 
       <main className="p-6">
@@ -457,22 +472,23 @@ export default function AlertRulesPage() {
                       </td>
                       <td className="px-4 py-3">
                         <button
-                          onClick={() => toggleMutation.mutate({ id: r.id, enabled: !r.is_enabled })}
-                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${r.is_enabled ? 'bg-blue-600' : 'bg-slate-200'}`}
+                          onClick={() => canEdit && toggleMutation.mutate({ id: r.id, enabled: !r.is_enabled })}
+                          disabled={!canEdit}
+                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${r.is_enabled ? 'bg-blue-600' : 'bg-slate-200'}`}
                         >
                           <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${r.is_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
                         </button>
                       </td>
                       <td className="px-4 py-3 text-right space-x-3">
-                        <button onClick={() => setModal(r)} className="text-xs text-blue-600 hover:underline">Edit</button>
-                        {confirmDelete === r.id ? (
+                        {canEdit && <button onClick={() => setModal(r)} className="text-xs text-blue-600 hover:underline">Edit</button>}
+                        {canEdit && (confirmDelete === r.id ? (
                           <>
                             <button onClick={() => deleteMutation.mutate(r.id)} className="text-xs text-red-600 hover:underline font-medium">Confirm</button>
                             <button onClick={() => setConfirmDelete(null)} className="text-xs text-slate-400 hover:underline">Cancel</button>
                           </>
                         ) : (
                           <button onClick={() => setConfirmDelete(r.id)} className="text-xs text-slate-400 hover:text-red-600">Delete</button>
-                        )}
+                        ))}
                       </td>
                     </tr>
                   )

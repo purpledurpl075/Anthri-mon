@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { fetchAlerts, acknowledgeAlert, resolveAlert } from '../api/alerts'
 import type { Alert } from '../api/types'
+import { useRole, hasRole } from '../hooks/useCurrentUser'
 
 const SEVERITY_STYLE: Record<string, string> = {
   critical: 'bg-red-100 text-red-700 border-red-200',
@@ -37,6 +38,8 @@ function timeAgo(iso: string) {
 export default function AlertsPage() {
   const qc = useQueryClient()
   const navigate = useNavigate()
+  const role = useRole()
+  const canAct = hasRole(role, 'operator')
   const [statusFilter, setStatusFilter] = useState('open')
   const [severityFilter, setSeverityFilter] = useState('')
   const [showHistory, setShowHistory] = useState(false)
@@ -67,137 +70,146 @@ export default function AlertsPage() {
 
   const alerts = data?.items ?? []
 
+  const SEV_COLOR: Record<string, string> = {
+    critical: '#dc2626', major: '#ea580c', minor: '#d97706', warning: '#ca8a04', info: '#2563eb',
+  }
+
+  const statusPills = showHistory
+    ? ['', 'open', 'acknowledged', 'resolved', 'suppressed']
+    : ['open', 'acknowledged', 'suppressed']
+  const statusLabel: Record<string, string> = {
+    '': 'All', open: 'Open', acknowledged: 'Acked', resolved: 'Resolved', suppressed: 'Suppressed',
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
-      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="text-base font-semibold text-slate-800">Alerts</h1>
-          {data && (
-            <span className="text-xs text-slate-400">{data.total} total</span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+      {/* Header */}
+      <div className="px-6 py-4 border-b border-slate-200 bg-white">
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <h1 className="text-base font-semibold text-slate-800">Alerts</h1>
+            {data && <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{data.total}</span>}
+          </div>
           <button
             onClick={() => { setShowHistory(h => !h); if (!showHistory) setStatusFilter('') }}
-            className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-              showHistory
-                ? 'bg-slate-700 text-white border-slate-700'
-                : 'text-slate-500 border-slate-200 hover:border-slate-400'
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+              showHistory ? 'bg-slate-800 text-white border-slate-800' : 'text-slate-500 border-slate-200 hover:border-slate-400'
             }`}
           >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/>
+            </svg>
             {showHistory ? 'History on' : 'History'}
           </button>
-          <select
-            value={statusFilter}
-            onChange={e => setStatusFilter(e.target.value)}
-            className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            {showHistory ? (
-              <>
-                <option value="">All statuses</option>
-                <option value="open">Open</option>
-                <option value="acknowledged">Acknowledged</option>
-                <option value="resolved">Resolved</option>
-                <option value="suppressed">Suppressed</option>
-              </>
-            ) : (
-              <>
-                <option value="open">Open</option>
-                <option value="acknowledged">Acknowledged</option>
-                <option value="suppressed">Suppressed</option>
-              </>
-            )}
-          </select>
-          <select
-            value={severityFilter}
-            onChange={e => setSeverityFilter(e.target.value)}
-            className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">All severities</option>
-            <option value="critical">Critical</option>
-            <option value="major">Major</option>
-            <option value="minor">Minor</option>
-            <option value="warning">Warning</option>
-            <option value="info">Info</option>
-          </select>
+        </div>
+
+        {/* Filter bar */}
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Status pills */}
+          <div className="flex rounded-lg overflow-hidden border border-slate-200">
+            {statusPills.map(s => (
+              <button key={s} onClick={() => setStatusFilter(s)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  statusFilter === s
+                    ? 'bg-slate-800 text-white'
+                    : 'bg-white text-slate-500 hover:bg-slate-50'
+                } ${s !== statusPills[0] ? 'border-l border-slate-200' : ''}`}>
+                {statusLabel[s]}
+              </button>
+            ))}
+          </div>
+
+          {/* Severity filter */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {['', 'critical', 'major', 'minor', 'warning', 'info'].map(sev => (
+              <button key={sev} onClick={() => setSeverityFilter(sev)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
+                  severityFilter === sev
+                    ? sev
+                      ? 'text-white border-transparent'
+                      : 'bg-slate-800 text-white border-slate-800'
+                    : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+                }`}
+                style={severityFilter === sev && sev ? { backgroundColor: SEV_COLOR[sev], borderColor: SEV_COLOR[sev] } : {}}>
+                {sev ? sev.charAt(0).toUpperCase() + sev.slice(1) : 'All severities'}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
-      <main className="p-6">
+      <main className="p-6 max-w-6xl">
         {alerts.length === 0 ? (
-          <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+          <div className="bg-white rounded-2xl border border-slate-200 py-16 text-center">
             <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">
               <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-                <path d="M5 13l4 4L19 7" />
+                <path d="M5 13l4 4L19 7"/>
               </svg>
             </div>
-            <p className="text-slate-500 text-sm">No alerts{statusFilter ? ` with status "${statusFilter}"` : ''}.</p>
+            <p className="text-slate-500 text-sm font-medium">All clear</p>
+            <p className="text-slate-400 text-xs mt-1">No alerts match the current filters.</p>
           </div>
         ) : (
-          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden" >
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-100">
-                  <th className="text-left px-4 py-3 font-medium text-slate-600 w-6"></th>
-                  <th className="text-left px-4 py-3 font-medium text-slate-600">Alert</th>
-                  <th className="text-left px-4 py-3 font-medium text-slate-600">Severity</th>
-                  <th className="text-left px-4 py-3 font-medium text-slate-600">Status</th>
-                  <th className="text-left px-4 py-3 font-medium text-slate-600">Triggered</th>
-                  <th className="px-4 py-3 w-36"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {alerts.map((a: Alert) => (
-                  <tr key={a.id} className="hover:bg-slate-50 cursor-pointer"
-                    onClick={() => navigate(`/alerts/${a.id}`)}>
-                    <td className="px-4 py-3">
-                      <div className={`w-2 h-2 rounded-full ${SEVERITY_DOT[a.severity] ?? 'bg-slate-300'}`} />
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-slate-800">{a.title}</div>
-                      {a.message && <div className="text-xs text-slate-400 mt-0.5">{a.message}</div>}
+          <div className="space-y-1.5">
+            {alerts.map((a: Alert) => {
+              const sc = SEV_COLOR[a.severity] ?? '#94a3b8'
+              const isPct = a.context?.metric === 'cpu_util_pct' || a.context?.metric === 'mem_util_pct'
+              return (
+                <div
+                  key={a.id}
+                  onClick={() => navigate(`/alerts/${a.id}`)}
+                  className="group bg-white border border-slate-200 rounded-xl px-4 py-3.5 cursor-pointer hover:shadow-sm hover:-translate-y-px transition-all duration-150 flex items-center gap-4"
+                  style={{ borderLeft: `3px solid ${sc}` }}
+                >
+                  {/* Severity dot */}
+                  <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: sc }} />
+
+                  {/* Main content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                      <span className="font-semibold text-slate-800 truncate">{a.title}</span>
                       {a.context?.value != null && (
-                        <div className="text-xs text-slate-400 mt-0.5">
-                          Current: {String(a.context.value)}{a.context?.metric === 'cpu_util_pct' || a.context?.metric === 'mem_util_pct' ? '%' : ''}
-                          {a.context?.threshold != null && ` · Threshold: ${a.context.threshold}${a.context?.metric === 'cpu_util_pct' || a.context?.metric === 'mem_util_pct' ? '%' : ''}`}
-                        </div>
+                        <span className="text-xs font-mono text-slate-500 shrink-0">
+                          {String(a.context.value)}{isPct ? '%' : ''}
+                          {a.context?.threshold != null && ` / ${a.context.threshold}${isPct ? '%' : ''}`}
+                        </span>
                       )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded border text-xs font-medium capitalize ${SEVERITY_STYLE[a.severity] ?? 'bg-slate-100 text-slate-600 border-slate-200'}`}>
-                        {a.severity}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium capitalize ${STATUS_STYLE[a.status] ?? 'text-slate-500 bg-slate-50'}`}>
-                        {a.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-xs text-slate-400">{timeAgo(a.triggered_at)}</td>
-                    <td className="px-4 py-3 text-right space-x-2" onClick={e => e.stopPropagation()}>
-                      {a.status === 'open' && (
-                        <button
-                          onClick={() => ackMutation.mutate(a.id)}
-                          disabled={ackMutation.isPending}
-                          className="text-xs text-yellow-600 border border-yellow-200 rounded px-2 py-1 hover:bg-yellow-50 disabled:opacity-50"
-                        >
-                          Ack
-                        </button>
-                      )}
-                      {(a.status === 'open' || a.status === 'acknowledged') && (
-                        <button
-                          onClick={() => resolveMutation.mutate(a.id)}
-                          disabled={resolveMutation.isPending}
-                          className="text-xs text-green-600 border border-green-200 rounded px-2 py-1 hover:bg-green-50 disabled:opacity-50"
-                        >
-                          Resolve
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </div>
+                    {a.message && <p className="text-xs text-slate-400 truncate">{a.message}</p>}
+                  </div>
+
+                  {/* Badges */}
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full capitalize ${SEVERITY_STYLE[a.severity] ?? ''}`}>
+                      {a.severity}
+                    </span>
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize ${STATUS_STYLE[a.status] ?? ''}`}>
+                      {a.status}
+                    </span>
+                    <span className="text-xs text-slate-400 w-16 text-right">{timeAgo(a.triggered_at)}</span>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+                    {canAct && a.status === 'open' && (
+                      <button onClick={() => ackMutation.mutate(a.id)} disabled={ackMutation.isPending}
+                        className="text-[10px] font-semibold text-amber-700 border border-amber-200 bg-amber-50 rounded-lg px-2.5 py-1 hover:bg-amber-100 disabled:opacity-50 transition-colors">
+                        Ack
+                      </button>
+                    )}
+                    {canAct && (a.status === 'open' || a.status === 'acknowledged') && (
+                      <button onClick={() => resolveMutation.mutate(a.id)} disabled={resolveMutation.isPending}
+                        className="text-[10px] font-semibold text-green-700 border border-green-200 bg-green-50 rounded-lg px-2.5 py-1 hover:bg-green-100 disabled:opacity-50 transition-colors">
+                        Resolve
+                      </button>
+                    )}
+                    <svg className="w-4 h-4 text-slate-300 group-hover:text-slate-400 transition-colors" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="m9 18 6-6-6-6"/>
+                    </svg>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
       </main>

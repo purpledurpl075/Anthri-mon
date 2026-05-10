@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchCredentials, startSweep, getSweepJob, type DiscoveredDevice, type SweepJob } from '../api/discovery'
 import api from '../api/client'
 import VendorBadge from '../components/VendorBadge'
+import { useRole, hasRole } from '../hooks/useCurrentUser'
 
 function ProgressBar({ value, max }: { value: number; max: number }) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0
@@ -22,6 +23,7 @@ function ProgressBar({ value, max }: { value: number; max: number }) {
 
 export default function DiscoverPage() {
   const queryClient = useQueryClient()
+  const canAct = hasRole(useRole(), 'operator')
 
   const [cidr, setCidr] = useState('')
   const [credId, setCredId] = useState('')
@@ -144,8 +146,9 @@ export default function DiscoverPage() {
           <div className="mt-4 flex items-center gap-4">
             <button
               onClick={() => sweepMutation.mutate()}
-              disabled={!cidr || !credId || isRunning}
+              disabled={!cidr || !credId || isRunning || !canAct}
               className="bg-blue-600 text-white rounded-lg px-5 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+              title={!canAct ? 'Operator role required' : undefined}
             >
               {isRunning ? 'Scanning…' : 'Start sweep'}
             </button>
@@ -210,13 +213,17 @@ export default function DiscoverPage() {
                       ) : added.has(d.ip) ? (
                         <span className="text-xs text-green-600 font-medium">Added</span>
                       ) : (
-                        <button
-                          onClick={() => handleAddDevice(d)}
-                          disabled={adding.has(d.ip)}
-                          className="text-xs bg-green-600 text-white rounded px-3 py-1 hover:bg-green-700 disabled:opacity-50 transition-colors"
-                        >
-                          {adding.has(d.ip) ? 'Adding…' : 'Add'}
-                        </button>
+                        canAct ? (
+                          <button
+                            onClick={() => handleAddDevice(d)}
+                            disabled={adding.has(d.ip)}
+                            className="text-xs bg-green-600 text-white rounded px-3 py-1 hover:bg-green-700 disabled:opacity-50 transition-colors"
+                          >
+                            {adding.has(d.ip) ? 'Adding…' : 'Add'}
+                          </button>
+                        ) : (
+                          <span className="text-xs text-slate-300">—</span>
+                        )
                       )}
                     </td>
                   </tr>

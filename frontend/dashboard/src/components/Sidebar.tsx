@@ -2,6 +2,8 @@ import { useState, createContext, useContext } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import api from '../api/client'
+import { hasRole } from '../hooks/useCurrentUser'
+import { useTheme, type Theme } from '../hooks/useTheme'
 
 const fetchMe = () => api.get<{ username: string; role: string }>('/auth/me').then(r => r.data)
 const fetchAlertCount = () =>
@@ -22,6 +24,7 @@ const I = {
   policies: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z"/></svg>,
   key:      <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>,
   settings: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+  calendar: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>,
   logout:   <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
   chevronDown: <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>,
   chevronLeft: <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>,
@@ -101,6 +104,38 @@ function Section({ label, defaultOpen = true, children }: {
 }
 
 // ── Sidebar ────────────────────────────────────────────────────────────────
+// ── Theme toggle ───────────────────────────────────────────────────────────
+
+const THEME_ICONS: Record<Theme, React.ReactNode> = {
+  light:  <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>,
+  dark:   <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>,
+  system: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>,
+}
+const THEME_ORDER: Theme[] = ['light', 'dark', 'system']
+const THEME_LABEL: Record<Theme, string> = { light: 'Light', dark: 'Dark', system: 'System' }
+
+function ThemeToggle({ collapsed }: { collapsed: boolean }) {
+  const { theme, setTheme } = useTheme()
+  const next = THEME_ORDER[(THEME_ORDER.indexOf(theme) + 1) % THEME_ORDER.length]
+
+  return (
+    <button
+      onClick={() => setTheme(next)}
+      title={collapsed ? `Theme: ${THEME_LABEL[theme]}` : undefined}
+      className={`flex items-center w-full rounded-lg text-sm text-slate-500 hover:text-slate-300 hover:bg-white/5 transition-all ${
+        collapsed ? 'justify-center px-0 py-2.5 mx-1' : 'gap-2.5 px-2.5 py-2'
+      }`}
+    >
+      {THEME_ICONS[theme]}
+      {!collapsed && (
+        <span className="flex-1 text-left">
+          {THEME_LABEL[theme]}
+        </span>
+      )}
+    </button>
+  )
+}
+
 export default function Sidebar() {
   const navigate  = useNavigate()
   const location  = useLocation()
@@ -179,19 +214,23 @@ export default function Sidebar() {
           </Section>
 
           <Section label="Monitoring">
-            <Item to="/alerts"      label="Alerts"      icon={I.bell}     badge={openAlerts} />
-            <Item to="/alert-rules" label="Alert Rules"  icon={I.rules} />
-            <Item to="/policies"    label="Policies"     icon={I.policies} />
+            <Item to="/alerts"       label="Alerts"       icon={I.bell}     badge={openAlerts} />
+            <Item to="/alert-rules"  label="Alert Rules"  icon={I.rules} />
+            <Item to="/policies"     label="Policies"     icon={I.policies} />
+            <Item to="/maintenance"  label="Maintenance"  icon={I.calendar} />
           </Section>
 
           <Section label="Configuration">
             <Item to="/credentials" label="Credentials"    icon={I.key} />
-            <Item to="/admin"       label="Administration" icon={I.settings} />
+            {hasRole(me?.role ?? 'readonly', 'admin') && (
+              <Item to="/admin" label="Administration" icon={I.settings} />
+            )}
           </Section>
         </nav>
 
         {/* Account */}
         <div className={`border-t border-slate-800 py-3 space-y-0.5 ${collapsed ? 'px-0' : 'px-3'}`}>
+          <ThemeToggle collapsed={collapsed} />
           <NavLink to="/account"
             title={collapsed ? (me?.username ?? 'Account') : undefined}
             className={`flex items-center rounded-lg text-sm transition-all ${

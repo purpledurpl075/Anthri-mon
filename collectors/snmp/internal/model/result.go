@@ -91,14 +91,24 @@ type TempSample struct {
 	StatusOK    bool // false = warning or critical threshold exceeded
 }
 
+// OpticalSample holds a DOM optical power reading for one interface.
+// Direction is "tx" or "rx". Value is in dBm.
+type OpticalSample struct {
+	IfaceName  string  // "Ethernet2"
+	SensorName string  // full ENTITY-SENSOR-MIB description
+	Direction  string  // "tx" | "rx" | "unknown"
+	PowerDBm   float64
+}
+
 // HealthResult is the complete health snapshot for one device from one poll.
 type HealthResult struct {
-	DeviceID    uuid.UUID
-	CPUSamples  []CPUSample
-	MemSamples  []MemorySample
-	TempSamples []TempSample
-	UptimeSecs  uint64
-	PollTime    time.Time
+	DeviceID       uuid.UUID
+	CPUSamples     []CPUSample
+	MemSamples     []MemorySample
+	TempSamples    []TempSample
+	OpticalSamples []OpticalSample
+	UptimeSecs     uint64
+	PollTime       time.Time
 }
 
 // RouteEntry is one row from ipCidrRouteTable for a device.

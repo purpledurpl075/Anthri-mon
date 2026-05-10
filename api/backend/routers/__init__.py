@@ -1,4 +1,5 @@
 from .admin import router as admin_router
+from .users import router as users_router
 from .topology import router as topology_router
 from .auth import router as auth_router
 from .maintenance import router as maintenance_router
@@ -13,4 +14,4 @@ from .policies import router as policies_router
 
 __all__ = ["admin_router", "auth_router", "topology_router", "channels_router", "credentials_router", "maintenance_router",
            "devices_router", "discovery_router", "interfaces_router", "alerts_router",
-           "overview_router", "policies_router"]
+           "overview_router", "policies_router", "users_router"]

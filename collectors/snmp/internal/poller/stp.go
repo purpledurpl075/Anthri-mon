@@ -76,7 +76,10 @@ func PollSTPPorts(s *client.Session, deviceID uuid.UUID, ifByIndex map[int]strin
 		}
 		ifIdx, ok := bridgePortToIfIdx[portNum]
 		if !ok {
-			continue
+			if len(bridgePortToIfIdx) > 0 {
+				continue // map exists but port not in it — skip
+			}
+			ifIdx = portNum // no bridge map → assume portNum == ifIndex (Arista EOS)
 		}
 		results = append(results, &model.STPPortResult{
 			DeviceID: deviceID,
