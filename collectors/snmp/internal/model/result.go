@@ -21,6 +21,11 @@ type DeviceInfo struct {
 	SysUpTimeTicks uint32
 	VendorName     string // matched profile name, "" if unknown
 	DBVendorType   string // postgres vendor_type enum value
+	DBDeviceType   string // postgres device_type enum value, "" = don't update
+	OSVersion      string // parsed from sysDescr, "" if unknown
+	Platform       string // parsed from sysDescr, "" if unknown
+	SysLocationStr string // sysLocation value
+	SysContactStr  string // sysContact value
 	PollTime       time.Time
 }
 
@@ -52,8 +57,16 @@ type InterfaceResult struct {
 
 	// ifLastChange as an absolute UTC timestamp (best-effort, derived from
 	// sysUpTime + ifLastChange timeticks). May be zero if unavailable.
-	LastChange time.Time
-	PollTime   time.Time
+	LastChange  time.Time
+	PollTime    time.Time
+	IPAddresses []InterfaceIP // populated from ipAddrTable
+}
+
+// InterfaceIP is one IP address entry from ipAddrTable.
+type InterfaceIP struct {
+	Address   string // dotted-decimal IPv4
+	PrefixLen int    // derived from subnet mask
+	Version   int    // 4 or 6
 }
 
 // CPUSample holds a single CPU utilisation reading.
@@ -78,14 +91,116 @@ type TempSample struct {
 	StatusOK    bool // false = warning or critical threshold exceeded
 }
 
+// OpticalSample holds a DOM optical power reading for one interface.
+// Direction is "tx" or "rx". Value is in dBm.
+type OpticalSample struct {
+	IfaceName  string  // "Ethernet2"
+	SensorName string  // full ENTITY-SENSOR-MIB description
+	Direction  string  // "tx" | "rx" | "unknown"
+	PowerDBm   float64
+}
+
 // HealthResult is the complete health snapshot for one device from one poll.
 type HealthResult struct {
-	DeviceID    uuid.UUID
-	CPUSamples  []CPUSample
-	MemSamples  []MemorySample
-	TempSamples []TempSample
-	UptimeSecs  uint64
-	PollTime    time.Time
+	DeviceID       uuid.UUID
+	CPUSamples     []CPUSample
+	MemSamples     []MemorySample
+	TempSamples    []TempSample
+	OpticalSamples []OpticalSample
+	UptimeSecs     uint64
+	PollTime       time.Time
+}
+
+// RouteEntry is one row from ipCidrRouteTable for a device.
+type RouteEntry struct {
+	DeviceID      uuid.UUID
+	Destination   string // "10.0.2.0/24"
+	NextHop       string // "" for connected routes
+	Protocol      string // "connected" | "static" | "ospf" | "other"
+	Metric        int
+	InterfaceName string // resolved from ifIndex, "" if unknown
+}
+
+// OSPFNeighbour is one row from ospfNbrTable for a device.
+type OSPFNeighbour struct {
+	DeviceID      uuid.UUID
+	NeighbourIP   string // ospfNbrIpAddr (dotted decimal)
+	RouterID      string // ospfNbrRtrId
+	State         string // "full" | "loading" | "exchange" | "init" | "down" etc.
+	Priority      int    // ospfNbrPriority
+	Events        int64  // ospfNbrEvents (state-change counter)
+	Area          string // from ospfIfTable, "" if unavailable
+	InterfaceName string // resolved from ospfIfTable → ifIndex → ifName
+}
+
+// ARPEntry is one row from the device's ARP table (ipNetToMediaTable).
+type ARPEntry struct {
+	DeviceID      uuid.UUID
+	IPAddress     string // dotted-decimal IPv4
+	MACAddress    string // "aa:bb:cc:dd:ee:ff"
+	InterfaceName string // resolved from ifIndex, "" if unknown
+	EntryType     string // "dynamic" | "static" | "other"
+}
+
+// MACEntry is one row from the device's MAC forwarding table (dot1dTpFdbTable).
+type MACEntry struct {
+	DeviceID   uuid.UUID
+	MACAddress string // "aa:bb:cc:dd:ee:ff"
+	PortName   string // resolved from bridge port → ifIndex → ifName
+	EntryType  string // "learned" | "self" | "static" | "other"
+}
+
+// LLDPNeighbor is a single entry from the lldpRemTable for one device.
+type LLDPNeighbor struct {
+	DeviceID   uuid.UUID
+	LocalPort  string // lldpLocPortDesc (ifName of the local interface)
+	// Remote
+	ChassisIDSubtype string // "macAddress" | "networkAddress" | "local" | …
+	ChassisID        string // formatted chassis ID (MAC or string)
+	PortIDSubtype    string // "interfaceName" | "macAddress" | …
+	PortID           string
+	PortDesc         string
+	SystemName       string
+	MgmtIP           string // first IPv4 management address, "" if unavailable
+	Capabilities     []string
+}
+
+// CDPNeighbor is a single entry from cdpCacheTable for one device.
+type CDPNeighbor struct {
+	DeviceID     uuid.UUID
+	LocalPort    string // ifName of the local interface
+	RemoteDevice string // cdpCacheDeviceId (usually the hostname)
+	RemotePort   string // cdpCacheDevicePort
+	MgmtIP       string // first IPv4 from cdpCacheAddresses
+	Platform     string // cdpCachePlatform
+	Capabilities []string
+	NativeVLAN   int
+	Duplex       string // "full" | "half" | ""
+}
+
+// VLANResult is one row from the device's VLAN table (dot1qVlanStaticName).
+type VLANResult struct {
+	DeviceID uuid.UUID
+	VlanID   int
+	Name     string
+}
+
+// InterfaceVLANResult describes VLAN membership for one interface.
+// IfIndex is resolved to interface_id by the writer.
+type InterfaceVLANResult struct {
+	DeviceID uuid.UUID
+	IfIndex  int  // resolved to interface_id by writer
+	VlanID   int
+	Tagged   bool // true = tagged (trunk), false = untagged (access/native)
+}
+
+// STPPortResult is the STP state for one bridge port.
+// IfIndex is resolved to interface_id by the writer.
+type STPPortResult struct {
+	DeviceID uuid.UUID
+	IfIndex  int    // resolved to interface_id by writer
+	State    string // "disabled"|"blocking"|"listening"|"learning"|"forwarding"
+	Role     string // "unknown"|"root"|"designated"|"alternate"|"backup"
 }
 
 // SNMPV2cCredential is the unmarshalled form of a snmp_v2c credentials record.

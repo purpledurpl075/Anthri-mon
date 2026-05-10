@@ -4,7 +4,16 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress
+from pydantic import BaseModel, ConfigDict, Field, IPvAnyAddress, field_validator
+
+
+_VALID_VENDORS = frozenset({
+    "cisco_ios", "cisco_iosxe", "cisco_iosxr", "cisco_nxos",
+    "juniper", "arista", "aruba_cx", "fortios", "procurve", "unknown",
+})
+_VALID_DEVICE_TYPES = frozenset({
+    "router", "switch", "firewall", "load_balancer", "wireless_controller", "unknown",
+})
 
 
 class DeviceCreate(BaseModel):
@@ -12,6 +21,16 @@ class DeviceCreate(BaseModel):
     mgmt_ip: IPvAnyAddress
     vendor: str = "unknown"
     device_type: str = "unknown"
+
+    @field_validator("vendor")
+    @classmethod
+    def coerce_vendor(cls, v: str) -> str:
+        return v if v in _VALID_VENDORS else "unknown"
+
+    @field_validator("device_type")
+    @classmethod
+    def coerce_device_type(cls, v: str) -> str:
+        return v if v in _VALID_DEVICE_TYPES else "unknown"
     platform: Optional[str] = None
     os_version: Optional[str] = None
     serial_number: Optional[str] = None
@@ -20,7 +39,7 @@ class DeviceCreate(BaseModel):
     snmp_port: int = 161
     gnmi_port: int = 57400
     gnmi_tls: bool = True
-    polling_interval_s: int = Field(default=300, ge=10, le=86400)
+    polling_interval_s: int = Field(default=15, ge=10, le=86400)
     site_id: Optional[uuid.UUID] = None
     collector_id: Optional[uuid.UUID] = None
     tags: list[str] = []
@@ -72,6 +91,11 @@ class DeviceRead(BaseModel):
     id: uuid.UUID
     tenant_id: uuid.UUID
     hostname: str
+
+    @field_validator("mgmt_ip", mode="before")
+    @classmethod
+    def coerce_ip(cls, v: object) -> str:
+        return str(v)
     fqdn: Optional[str] = None
     mgmt_ip: str
     vendor: str
@@ -80,6 +104,8 @@ class DeviceRead(BaseModel):
     os_version: Optional[str] = None
     serial_number: Optional[str] = None
     sys_description: Optional[str] = None
+    sys_location: Optional[str] = None
+    sys_contact: Optional[str] = None
     collection_method: str
     snmp_version: str
     snmp_port: int
@@ -92,6 +118,7 @@ class DeviceRead(BaseModel):
     is_active: bool
     tags: list[Any] = []
     notes: Optional[str] = None
+    alert_exclusions: dict = {}
     site_id: Optional[uuid.UUID] = None
     collector_id: Optional[uuid.UUID] = None
     created_at: datetime
@@ -108,7 +135,13 @@ class DeviceListRead(BaseModel):
 
     id: uuid.UUID
     hostname: str
+    fqdn: Optional[str] = None
     mgmt_ip: str
+
+    @field_validator("mgmt_ip", mode="before")
+    @classmethod
+    def coerce_ip(cls, v: object) -> str:
+        return str(v)
     vendor: str
     device_type: str
     platform: Optional[str] = None

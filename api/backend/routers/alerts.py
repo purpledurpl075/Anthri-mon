@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_current_user, get_db, require_role
-from ..models.alert import Alert, AlertRule
+from ..models.alert import Alert, AlertComment, AlertRule
 from ..models.tenant import User
 from ..schemas.alert import AlertRead, AlertRuleCreate, AlertRuleRead, AlertRuleUpdate
 from ..schemas.common import PaginatedResponse
@@ -134,7 +134,7 @@ async def create_alert_rule(
 ) -> AlertRuleRead:
     rule = AlertRule(
         tenant_id=current_user.tenant_id,
-        **body.model_dump(exclude_none=True),
+        **body.model_dump(mode='json', exclude_none=True),
     )
     db.add(rule)
     await db.commit()
@@ -162,7 +162,7 @@ async def update_alert_rule(
 ) -> AlertRuleRead:
     rule = await _get_rule(rule_id, current_user.tenant_id, db)
 
-    for field, value in body.model_dump(exclude_none=True).items():
+    for field, value in body.model_dump(mode='json', exclude_none=True).items():
         setattr(rule, field, value)
 
     await db.commit()
@@ -170,7 +170,7 @@ async def update_alert_rule(
     return AlertRuleRead.model_validate(rule)
 
 
-@router.delete("/alert-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete an alert rule")
+@router.delete("/alert-rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None, summary="Delete an alert rule")
 async def delete_alert_rule(
     rule_id: uuid.UUID,
     current_user: User = Depends(require_role("admin", "superadmin")),
@@ -180,6 +180,61 @@ async def delete_alert_rule(
     await db.delete(rule)
     await db.commit()
     logger.info("alert_rule_deleted", rule_id=str(rule_id))
+
+
+# ── Comments ───────────────────────────────────────────────────────────────────
+
+@router.get("/alerts/{alert_id}/comments", summary="List comments on an alert")
+async def list_comments(
+    alert_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _get_alert(alert_id, current_user.tenant_id, db)
+    rows = (await db.execute(
+        select(AlertComment, User)
+        .join(User, User.id == AlertComment.user_id)
+        .where(AlertComment.alert_id == alert_id)
+        .order_by(AlertComment.created_at)
+    )).all()
+    return [
+        {
+            "id":         str(c.id),
+            "body":       c.body,
+            "author":     u.username,
+            "created_at": c.created_at.isoformat(),
+        }
+        for c, u in rows
+    ]
+
+
+@router.post("/alerts/{alert_id}/comments", status_code=status.HTTP_201_CREATED,
+             summary="Add a comment to an alert")
+async def add_comment(
+    alert_id: uuid.UUID,
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    text = (body.get("body") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Comment body cannot be empty")
+    await _get_alert(alert_id, current_user.tenant_id, db)
+    comment = AlertComment(
+        alert_id=alert_id,
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.id,
+        body=text,
+    )
+    db.add(comment)
+    await db.commit()
+    await db.refresh(comment)
+    return {
+        "id":         str(comment.id),
+        "body":       comment.body,
+        "author":     current_user.username,
+        "created_at": comment.created_at.isoformat(),
+    }
 
 
 # ── Internal helpers ───────────────────────────────────────────────────────────

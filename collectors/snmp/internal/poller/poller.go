@@ -2,7 +2,6 @@ package poller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"sync"
@@ -19,10 +18,19 @@ import (
 
 // PollResult carries all results from one complete poll cycle for a device.
 type PollResult struct {
-	DeviceID   uuid.UUID
-	SysInfo    *model.DeviceInfo      // nil if not yet polled or failed
-	Interfaces []*model.InterfaceResult
-	Health     *model.HealthResult    // nil if health poll not run this cycle
+	DeviceID      uuid.UUID
+	SysInfo       *model.DeviceInfo        // nil if not yet polled or failed
+	Interfaces    []*model.InterfaceResult
+	Health        *model.HealthResult      // nil if health poll not run this cycle
+	LLDPNeighbors  []*model.LLDPNeighbor   // nil if not polled this cycle
+	CDPNeighbors   []*model.CDPNeighbor    // nil if not polled this cycle
+	OSPFNeighbours []*model.OSPFNeighbour  // nil if not polled this cycle
+	RouteEntries   []*model.RouteEntry    // nil if not polled this cycle
+	ARPEntries     []*model.ARPEntry       // nil if not polled this cycle
+	MACEntries     []*model.MACEntry       // nil if not polled this cycle
+	VLANs          []*model.VLANResult          // nil if not polled this cycle
+	InterfaceVLANs []*model.InterfaceVLANResult // nil if not polled this cycle
+	STPPorts       []*model.STPPortResult       // nil if not polled this cycle
 }
 
 // ResultHandler is a callback invoked after each completed poll cycle.
@@ -170,6 +178,7 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 	var session *client.Session
 	var currentProfile *vendor.Profile
 	var lastSysUpTime uint32
+	ifByIndex := make(map[int]string) // shared between ifaceTicker and healthTicker
 
 	// Stagger startup across the poll interval to avoid thundering herd on launch.
 	stagger := time.Duration(rand.Int63n(int64(pollInterval)))
@@ -178,7 +187,10 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 	}
 
 	ifaceTicker := time.NewTicker(pollInterval)
-	healthTicker := time.NewTicker(healthInterval)
+	// Offset health ticker by half a poll interval so it never fires at the
+	// same instant as the interface ticker (avoids select starvation when
+	// healthInterval is an exact multiple of pollInterval).
+	healthTicker := time.NewTicker(healthInterval + pollInterval/2)
 	defer ifaceTicker.Stop()
 	defer healthTicker.Stop()
 
@@ -243,10 +255,9 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 		case <-ifaceTicker.C:
 			result := &PollResult{DeviceID: dev.ID}
 
-			// Refresh sysUpTime for ifLastChange calculations.
-			if info, err := PollSysInfo(session, dev.ID); err == nil {
-				lastSysUpTime = info.SysUpTimeTicks
-				result.SysInfo = info
+			// Only fetch sysUpTime — full PollSysInfo runs on connect/reconnect only.
+			if ticks, err := PollSysUpTime(session); err == nil {
+				lastSysUpTime = ticks
 			}
 
 			ifaces, err := PollInterfaces(session, dev.ID, lastSysUpTime)
@@ -259,6 +270,73 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				continue
 			}
 			result.Interfaces = ifaces
+
+			// Refresh the shared ifIndex → ifName map used by address/CDP pollers.
+			ifByIndex = make(map[int]string, len(ifaces))
+			for _, iface := range ifaces {
+				name := iface.IfName
+				if name == "" {
+					name = iface.IfDescr
+				}
+				ifByIndex[iface.IfIndex] = name
+			}
+
+			if lldp, err := PollLLDPNeighbors(session, dev.ID); err != nil {
+				log.Warn().Err(err).Msg("lldp poll failed (non-fatal)")
+			} else {
+				result.LLDPNeighbors = lldp
+			}
+
+			if cdp, err := PollCDPNeighbors(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("cdp poll failed (non-fatal)")
+			} else {
+				result.CDPNeighbors = cdp
+			}
+
+			if ospf, err := PollOSPFNeighbours(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("ospf poll failed (non-fatal)")
+			} else if len(ospf) > 0 {
+				result.OSPFNeighbours = ospf
+			}
+
+			if routes, err := PollRouteTable(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("route table poll failed (non-fatal)")
+			} else if len(routes) > 0 {
+				result.RouteEntries = routes
+			}
+
+			if arp, err := PollARPTable(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("arp poll failed (non-fatal)")
+			} else {
+				result.ARPEntries = arp
+			}
+
+			if macs, err := PollMACTable(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("mac poll failed (non-fatal)")
+			} else {
+				result.MACEntries = macs
+			}
+
+			if currentProfile != nil && currentProfile.HpicfVlan {
+				if vlans, ifvlans, err := PollVLANsHPICF(session, dev.ID); err != nil {
+					log.Warn().Err(err).Msg("hpicf vlan poll failed (non-fatal)")
+				} else {
+					result.VLANs = vlans
+					result.InterfaceVLANs = ifvlans
+				}
+			} else if vlans, ifvlans, err := PollVLANs(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("vlan poll failed (non-fatal)")
+			} else {
+				result.VLANs = vlans
+				result.InterfaceVLANs = ifvlans
+			}
+
+			if stp, err := PollSTPPorts(session, dev.ID, ifByIndex); err != nil {
+				log.Warn().Err(err).Msg("stp poll failed (non-fatal)")
+			} else {
+				result.STPPorts = stp
+			}
+
 			m.emit(ctx, log, result)
 
 		case <-healthTicker.C:
@@ -310,10 +388,3 @@ type DeviceSource interface {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// prettyJSON is a debug helper that renders any value as indented JSON.
-func prettyJSON(v interface{}) string {
-	b, _ := json.MarshalIndent(v, "", "  ")
-	return string(b)
-}
-
-var _ = prettyJSON // silence unused warning; used in debug logging

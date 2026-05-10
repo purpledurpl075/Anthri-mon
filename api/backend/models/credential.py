@@ -4,8 +4,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, PrimaryKeyConstraint, String, Text, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import ForeignKey, Integer, PrimaryKeyConstraint, Text, func
+from sqlalchemy.dialects.postgresql import ENUM as PgEnum, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
@@ -22,8 +22,11 @@ class Credential(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id"), nullable=False)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    # "snmp_v2c" | "snmp_v3" | "gnmi_tls" | "ssh" | "api_token" | "netconf"
-    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    type: Mapped[str] = mapped_column(
+        PgEnum("snmp_v2c", "snmp_v3", "gnmi_tls", "ssh", "api_token", "netconf",
+               name="credential_type", create_type=False),
+        nullable=False,
+    )
     data: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())

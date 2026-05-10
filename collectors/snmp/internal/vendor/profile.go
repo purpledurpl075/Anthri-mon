@@ -14,6 +14,14 @@ package vendor
 type OIDSet struct {
 	Walk   []string // table/subtree OIDs — use BulkWalkAll
 	Scalar []string // scalar OIDs — use a single GET
+
+	// IdleComplement: scalar returns CPU idle %; actual load = 100 - value.
+	// Used for UCD-SNMP-MIB ssCpuIdle on Linux/NET-SNMP devices.
+	IdleComplement bool
+
+	// KBAvailable: scalars are [totalKB, availKB]; used = total - avail.
+	// Used for UCD-SNMP-MIB memTotalReal/memAvailReal on Linux/NET-SNMP devices.
+	KBAvailable bool
 }
 
 // Profile describes one vendor's SNMP characteristics.
@@ -28,6 +36,11 @@ type Profile struct {
 	// New vendors not yet in the DB enum should use "unknown" here until
 	// the enum is extended with ALTER TYPE vendor_type ADD VALUE '...'.
 	DBVendorType string
+
+	// PostgreSQL device_type enum value inferred from the vendor profile.
+	// One of: router, switch, firewall, load_balancer, wireless_controller, unknown.
+	// Leave empty to keep the current value in the DB (no overwrite).
+	DBDeviceType string
 
 	// SysObjectID OID prefix(es) for this vendor.
 	// Detection: if the device's sysObjectID starts with ANY of these prefixes,
@@ -46,6 +59,17 @@ type Profile struct {
 	Priority int
 
 	// Optional vendor-specific OID overrides. Nil = use standard MIBs.
+
+	// HpicfVlan: when true, use HP-ICF-VLAN-MIB instead of Q-BRIDGE-MIB for
+	// VLAN collection.  Set on HP ProCurve / Aruba ProVision switches, which do
+	// not populate the standard dot1qVlanStaticTable.
+	HpicfVlan bool
+
+	// UptimeOID overrides sysUpTime for the health uptime metric.
+	// Use when the vendor's SNMP agent uptime diverges from actual system uptime
+	// (e.g. Aruba CX resets sysUpTime on agent restart; hrSystemUptime is stable).
+	// The OID must return a TimeTicks value (hundredths of a second).
+	UptimeOID string
 
 	// CPUOIDS overrides hrProcessorLoad for CPU collection.
 	CPUOIDs *OIDSet

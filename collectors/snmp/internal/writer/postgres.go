@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -71,6 +72,54 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 		}
 	}
 
+	if len(result.RouteEntries) > 0 {
+		if err := w.upsertRouteEntries(ctx, result.DeviceID, result.RouteEntries); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert route entries failed")
+		}
+	}
+
+	if len(result.OSPFNeighbours) > 0 {
+		if err := w.upsertOSPFNeighbours(ctx, result.DeviceID, result.OSPFNeighbours); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert ospf neighbours failed")
+		}
+	}
+
+	if len(result.ARPEntries) > 0 {
+		if err := w.upsertARPEntries(ctx, result.DeviceID, result.ARPEntries); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert arp entries failed")
+		}
+	}
+
+	if len(result.MACEntries) > 0 {
+		if err := w.upsertMACEntries(ctx, result.DeviceID, result.MACEntries); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert mac entries failed")
+		}
+	}
+
+	if len(result.VLANs) > 0 || result.VLANs != nil {
+		if err := w.upsertVLANs(ctx, result.DeviceID, result.VLANs, result.InterfaceVLANs); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert vlans failed")
+		}
+	}
+
+	if len(result.STPPorts) > 0 {
+		if err := w.upsertSTPPorts(ctx, result.DeviceID, result.STPPorts); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert stp ports failed")
+		}
+	}
+
+	if len(result.LLDPNeighbors) > 0 {
+		if err := w.upsertLLDPNeighbors(ctx, result.DeviceID, result.LLDPNeighbors); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert lldp neighbors failed")
+		}
+	}
+
+	if len(result.CDPNeighbors) > 0 {
+		if err := w.upsertCDPNeighbors(ctx, result.DeviceID, result.CDPNeighbors); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert cdp neighbors failed")
+		}
+	}
+
 	return nil
 }
 
@@ -80,16 +129,25 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 // Only updates fields that the SNMP poller is authoritative for.
 func (w *PostgresWriter) upsertDevice(ctx context.Context, info *model.DeviceInfo) error {
 	_, err := w.pool.Exec(ctx, `
-		UPDATE devices
-		SET
+		UPDATE devices SET
 			sys_description = $1,
 			sys_object_id   = $2,
 			vendor          = $3::vendor_type,
+			device_type     = CASE WHEN $7 <> '' THEN $7::device_type ELSE device_type END,
+			fqdn            = NULLIF($4, ''),
+			os_version      = CASE WHEN $8 <> '' THEN $8 ELSE os_version END,
+			platform        = CASE WHEN $9 <> '' THEN $9 ELSE platform END,
+			sys_location    = CASE WHEN $10 <> '' THEN $10 ELSE sys_location END,
+			sys_contact     = CASE WHEN $11 <> '' THEN $11 ELSE sys_contact END,
 			status          = 'up'::device_status,
-			last_polled     = $4,
-			last_seen       = $4
-		WHERE id = $5
-	`, info.SysDescr, info.SysObjectID, info.DBVendorType, info.PollTime, info.DeviceID)
+			last_polled     = $5,
+			last_seen       = $5
+		WHERE id = $6`,
+		info.SysDescr, info.SysObjectID, info.DBVendorType, info.SysName,
+		info.PollTime, info.DeviceID,
+		info.DBDeviceType, info.OSVersion, info.Platform,
+		info.SysLocationStr, info.SysContactStr,
+	)
 	return err
 }
 
@@ -114,18 +172,21 @@ func (w *PostgresWriter) upsertInterfaces(ctx context.Context, deviceID uuid.UUI
 			lastChange = &t
 		}
 
+		// Serialize IP addresses as JSONB.
+		ipJSON := marshalIPs(iface.IPAddresses)
+
 		// Upsert the interface row.
 		batch.Queue(`
 			INSERT INTO interfaces (
 				device_id, if_index, name, description, if_type,
 				speed_bps, mtu, mac_address,
 				admin_status, oper_status, last_change,
-				updated_at
+				ip_addresses, updated_at
 			) VALUES (
 				$1, $2, $3, $4, $5,
 				$6, $7, $8,
 				$9::if_status, $10::if_status, $11,
-				$12
+				$12, $13
 			)
 			ON CONFLICT (device_id, if_index) DO UPDATE SET
 				name         = EXCLUDED.name,
@@ -137,12 +198,17 @@ func (w *PostgresWriter) upsertInterfaces(ctx context.Context, deviceID uuid.UUI
 				admin_status = EXCLUDED.admin_status,
 				oper_status  = EXCLUDED.oper_status,
 				last_change  = EXCLUDED.last_change,
+				ip_addresses = CASE
+					WHEN EXCLUDED.ip_addresses != '[]'::jsonb
+					THEN EXCLUDED.ip_addresses
+					ELSE interfaces.ip_addresses
+				END,
 				updated_at   = EXCLUDED.updated_at
 		`,
 			deviceID, iface.IfIndex, ifName(iface), nullStr(iface.IfAlias), nullStr(iface.IfType),
 			nullUint64(iface.SpeedBPS), nullInt(iface.MTU), nullStr(iface.MACAddress),
 			iface.AdminStatus, iface.OperStatus, lastChange,
-			iface.PollTime,
+			ipJSON, iface.PollTime,
 		)
 
 		// Log a status-change event if oper_status changed.
@@ -168,6 +234,17 @@ func (w *PostgresWriter) upsertInterfaces(ctx context.Context, deviceID uuid.UUI
 	for i := 0; i < batch.Len(); i++ {
 		if _, err := br.Exec(); err != nil {
 			w.log.Error().Err(err).Msg("batch exec error")
+		}
+	}
+
+	// Touch last_polled/last_seen so the device doesn't appear stale between sysinfo polls.
+	if len(ifaces) > 0 {
+		t := ifaces[0].PollTime
+		if _, err := w.pool.Exec(ctx,
+			`UPDATE devices SET last_polled = $1, last_seen = $1, status = 'up'::device_status WHERE id = $2`,
+			t, deviceID,
+		); err != nil {
+			w.log.Error().Err(err).Msg("touch last_polled failed")
 		}
 	}
 	return nil
@@ -226,6 +303,293 @@ func (w *PostgresWriter) upsertHealth(ctx context.Context, h *model.HealthResult
 	return err
 }
 
+// ── Routes ────────────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertRouteEntries(ctx context.Context, deviceID uuid.UUID, routes []*model.RouteEntry) error {
+	batch := &pgx.Batch{}
+	for _, r := range routes {
+		batch.Queue(`
+			INSERT INTO route_entries (device_id, destination, next_hop, protocol, metric, interface_name)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (device_id, destination, next_hop) DO UPDATE SET
+				protocol       = EXCLUDED.protocol,
+				metric         = EXCLUDED.metric,
+				interface_name = EXCLUDED.interface_name,
+				updated_at     = NOW()
+		`, deviceID, r.Destination, r.NextHop, r.Protocol, nullInt(r.Metric), nullStr(r.InterfaceName))
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("route entry batch exec error")
+		}
+	}
+	return nil
+}
+
+// ── OSPF ──────────────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertOSPFNeighbours(ctx context.Context, deviceID uuid.UUID, neighbours []*model.OSPFNeighbour) error {
+	batch := &pgx.Batch{}
+	for _, n := range neighbours {
+		batch.Queue(`
+			INSERT INTO ospf_neighbors (
+				device_id, neighbor_router_id, neighbor_ip,
+				interface_name, area, state, priority, updated_at
+			) VALUES (
+				$1, $2::inet, $3::inet,
+				$4, $5, $6::ospf_neighbor_state, $7, NOW()
+			)
+			ON CONFLICT (device_id, vrf, neighbor_router_id, interface_name) DO UPDATE SET
+				neighbor_ip    = EXCLUDED.neighbor_ip,
+				area           = EXCLUDED.area,
+				state          = EXCLUDED.state,
+				priority       = EXCLUDED.priority,
+				last_state_change = CASE
+					WHEN ospf_neighbors.state != EXCLUDED.state THEN NOW()
+					ELSE ospf_neighbors.last_state_change
+				END,
+				updated_at     = NOW()
+		`,
+			deviceID,
+			nullStr(n.RouterID), nullStr(n.NeighbourIP),
+			&n.InterfaceName, nullStr(n.Area),  // InterfaceName: always store string (even "") so unique constraint fires
+			n.State, n.Priority,
+		)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("ospf neighbour batch exec error")
+		}
+	}
+	return nil
+}
+
+// ── Address tables ────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertARPEntries(ctx context.Context, deviceID uuid.UUID, entries []*model.ARPEntry) error {
+	batch := &pgx.Batch{}
+	for _, e := range entries {
+		batch.Queue(`
+			INSERT INTO arp_entries (device_id, ip_address, mac_address, interface_name, entry_type)
+			VALUES ($1, $2::inet, $3::macaddr, $4, $5)
+			ON CONFLICT (device_id, ip_address) DO UPDATE SET
+				mac_address    = EXCLUDED.mac_address,
+				interface_name = EXCLUDED.interface_name,
+				entry_type     = EXCLUDED.entry_type,
+				updated_at     = NOW()
+		`, deviceID, e.IPAddress, e.MACAddress, nullStr(e.InterfaceName), e.EntryType)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("arp entry batch exec error")
+		}
+	}
+	return nil
+}
+
+func (w *PostgresWriter) upsertMACEntries(ctx context.Context, deviceID uuid.UUID, entries []*model.MACEntry) error {
+	batch := &pgx.Batch{}
+	for _, e := range entries {
+		batch.Queue(`
+			INSERT INTO mac_entries (device_id, mac_address, port_name, entry_type)
+			VALUES ($1, $2::macaddr, $3, $4)
+			ON CONFLICT (device_id, mac_address) DO UPDATE SET
+				port_name  = EXCLUDED.port_name,
+				entry_type = EXCLUDED.entry_type,
+				updated_at = NOW()
+		`, deviceID, e.MACAddress, nullStr(e.PortName), e.EntryType)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("mac entry batch exec error")
+		}
+	}
+	return nil
+}
+
+// ── Neighbours ────────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertLLDPNeighbors(ctx context.Context, deviceID uuid.UUID, neighbors []*model.LLDPNeighbor) error {
+	batch := &pgx.Batch{}
+	for _, n := range neighbors {
+		capsJSON, _ := json.Marshal(n.Capabilities)
+		var mgmtIP *string
+		if n.MgmtIP != "" {
+			mgmtIP = &n.MgmtIP
+		}
+		batch.Queue(`
+			INSERT INTO lldp_neighbors (
+				device_id, local_port_name,
+				remote_chassis_id_subtype, remote_chassis_id,
+				remote_port_id_subtype, remote_port_id, remote_port_desc,
+				remote_system_name, remote_mgmt_ip, remote_system_capabilities
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT (device_id, local_port_name, remote_chassis_id) DO UPDATE SET
+				remote_chassis_id_subtype    = EXCLUDED.remote_chassis_id_subtype,
+				remote_port_id_subtype       = EXCLUDED.remote_port_id_subtype,
+				remote_port_id               = EXCLUDED.remote_port_id,
+				remote_port_desc             = EXCLUDED.remote_port_desc,
+				remote_system_name           = EXCLUDED.remote_system_name,
+				remote_mgmt_ip               = EXCLUDED.remote_mgmt_ip,
+				remote_system_capabilities   = EXCLUDED.remote_system_capabilities,
+				updated_at                   = NOW()
+		`,
+			deviceID, n.LocalPort,
+			safeStr(n.ChassisIDSubtype), safeStr(n.ChassisID),
+			safeStr(n.PortIDSubtype), safeStr(n.PortID), safeStr(n.PortDesc),
+			safeStr(n.SystemName), mgmtIP, capsJSON,
+		)
+	}
+
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("lldp neighbor batch exec error")
+		}
+	}
+	return nil
+}
+
+func (w *PostgresWriter) upsertCDPNeighbors(ctx context.Context, deviceID uuid.UUID, neighbors []*model.CDPNeighbor) error {
+	batch := &pgx.Batch{}
+	for _, n := range neighbors {
+		capsJSON, _ := json.Marshal(n.Capabilities)
+		var mgmtIP *string
+		if n.MgmtIP != "" {
+			mgmtIP = &n.MgmtIP
+		}
+		var nativeVLAN *int
+		if n.NativeVLAN > 0 {
+			nativeVLAN = &n.NativeVLAN
+		}
+		batch.Queue(`
+			INSERT INTO cdp_neighbors (
+				device_id, local_port_name,
+				remote_device_id, remote_port_id, remote_mgmt_ip,
+				remote_platform, remote_capabilities, native_vlan, duplex
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (device_id, local_port_name, remote_device_id) DO UPDATE SET
+				remote_port_id       = EXCLUDED.remote_port_id,
+				remote_mgmt_ip       = EXCLUDED.remote_mgmt_ip,
+				remote_platform      = EXCLUDED.remote_platform,
+				remote_capabilities  = EXCLUDED.remote_capabilities,
+				native_vlan          = EXCLUDED.native_vlan,
+				duplex               = EXCLUDED.duplex,
+				updated_at           = NOW()
+		`,
+			deviceID, n.LocalPort,
+			safeStr(n.RemoteDevice), safeStr(n.RemotePort), mgmtIP,
+			safeStr(n.Platform), capsJSON, nativeVLAN, safeStr(n.Duplex),
+		)
+	}
+
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("cdp neighbor batch exec error")
+		}
+	}
+	return nil
+}
+
+// ── VLANs ─────────────────────────────────────────────────────────────────────
+
+// upsertVLANs upserts per-device VLAN records and their interface memberships.
+// Interface memberships are replaced in full: old rows for this device are
+// deleted, then the current set is inserted.
+func (w *PostgresWriter) upsertVLANs(ctx context.Context, deviceID uuid.UUID, vlans []*model.VLANResult, ifvlans []*model.InterfaceVLANResult) error {
+	// Upsert each VLAN name record.
+	if len(vlans) > 0 {
+		batch := &pgx.Batch{}
+		for _, v := range vlans {
+			batch.Queue(`
+				INSERT INTO vlans (device_id, vlan_id, name, updated_at)
+				VALUES ($1, $2, $3, NOW())
+				ON CONFLICT (device_id, vlan_id) DO UPDATE SET
+					name       = EXCLUDED.name,
+					updated_at = EXCLUDED.updated_at
+			`, deviceID, v.VlanID, v.Name)
+		}
+		br := w.pool.SendBatch(ctx, batch)
+		defer br.Close()
+		for i := 0; i < batch.Len(); i++ {
+			if _, err := br.Exec(); err != nil {
+				w.log.Error().Err(err).Msg("vlan batch exec error")
+			}
+		}
+	}
+
+	// Replace interface_vlans for this device atomically.
+	// 1) Delete all current rows for this device's interfaces.
+	if _, err := w.pool.Exec(ctx, `
+		DELETE FROM interface_vlans
+		WHERE interface_id IN (
+			SELECT id FROM interfaces WHERE device_id = $1
+		)
+	`, deviceID); err != nil {
+		return fmt.Errorf("delete interface_vlans: %w", err)
+	}
+
+	// 2) Insert the fresh set, resolving ifIndex → interface_id inline.
+	if len(ifvlans) > 0 {
+		batch := &pgx.Batch{}
+		for _, iv := range ifvlans {
+			batch.Queue(`
+				INSERT INTO interface_vlans (interface_id, vlan_id, tagged)
+				SELECT id, $2, $3 FROM interfaces WHERE device_id = $1 AND if_index = $4
+				ON CONFLICT (interface_id, vlan_id) DO UPDATE SET
+					tagged = EXCLUDED.tagged
+			`, deviceID, iv.VlanID, iv.Tagged, iv.IfIndex)
+		}
+		br2 := w.pool.SendBatch(ctx, batch)
+		defer br2.Close()
+		for i := 0; i < batch.Len(); i++ {
+			if _, err := br2.Exec(); err != nil {
+				w.log.Error().Err(err).Msg("interface_vlan batch exec error")
+			}
+		}
+	}
+
+	return nil
+}
+
+// ── STP ───────────────────────────────────────────────────────────────────────
+
+// upsertSTPPorts upserts per-interface STP state rows, resolving ifIndex to
+// interface_id via the interfaces table.
+func (w *PostgresWriter) upsertSTPPorts(ctx context.Context, deviceID uuid.UUID, ports []*model.STPPortResult) error {
+	batch := &pgx.Batch{}
+	now := time.Now()
+	for _, p := range ports {
+		batch.Queue(`
+			INSERT INTO interface_stp (interface_id, stp_state, stp_role, updated_at)
+			SELECT id, $2, $3, $4 FROM interfaces WHERE device_id = $1 AND if_index = $5
+			ON CONFLICT (interface_id) DO UPDATE SET
+				stp_state  = EXCLUDED.stp_state,
+				stp_role   = EXCLUDED.stp_role,
+				updated_at = EXCLUDED.updated_at
+		`, deviceID, p.State, p.Role, now, p.IfIndex)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("interface_stp batch exec error")
+		}
+	}
+	return nil
+}
+
 // ── DeviceSource implementation ───────────────────────────────────────────────
 
 // LoadDevices reads all active SNMP-capable devices and their first-priority
@@ -234,7 +598,7 @@ func (w *PostgresWriter) LoadDevices(ctx context.Context) ([]model.DeviceRow, er
 	rows, err := w.pool.Query(ctx, `
 		SELECT
 			d.id,
-			d.mgmt_ip::text,
+			host(d.mgmt_ip),
 			d.snmp_version::text,
 			d.snmp_port,
 			d.polling_interval_s,
@@ -331,6 +695,16 @@ func nullStr(s string) *string {
 	return &s
 }
 
+// safeStr strips null bytes and invalid UTF-8 before DB insert.
+// Some SNMP OctetString fields (CDP platform/port) contain raw binary data.
+func safeStr(s string) *string {
+	safe := strings.ToValidUTF8(strings.ReplaceAll(s, "\x00", ""), "")
+	if safe == "" {
+		return nil
+	}
+	return &safe
+}
+
 func nullUint64(v uint64) *uint64 {
 	if v == 0 {
 		return nil
@@ -343,5 +717,19 @@ func nullInt(v int) *int {
 		return nil
 	}
 	return &v
+}
+
+func marshalIPs(ips []model.InterfaceIP) []byte {
+	type entry struct {
+		Address   string `json:"address"`
+		PrefixLen int    `json:"prefix_len"`
+		Version   int    `json:"version"`
+	}
+	entries := make([]entry, 0, len(ips))
+	for _, ip := range ips {
+		entries = append(entries, entry{ip.Address, ip.PrefixLen, ip.Version})
+	}
+	b, _ := json.Marshal(entries)
+	return b
 }
 

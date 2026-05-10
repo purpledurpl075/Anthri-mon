@@ -4,8 +4,8 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, ForeignKey, String, Text, func
-from sqlalchemy.dialects.postgresql import CITEXT, JSONB, UUID
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy.dialects.postgresql import CITEXT, ENUM, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from ..database import Base
@@ -39,10 +39,12 @@ class User(Base):
     email: Mapped[str] = mapped_column(CITEXT, nullable=False)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     full_name: Mapped[Optional[str]] = mapped_column(Text)
-    # Maps to the PostgreSQL user_role enum; stored as VARCHAR here.
-    role: Mapped[str] = mapped_column(String(20), nullable=False, default="readonly")
+    role: Mapped[str] = mapped_column(
+        ENUM('superadmin', 'admin', 'operator', 'readonly', name='user_role', create_type=False),
+        nullable=False, default="readonly",
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    last_login: Mapped[Optional[datetime]] = mapped_column()
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 

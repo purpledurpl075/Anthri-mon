@@ -27,10 +27,15 @@ go.work.sum
 # env file
 .env
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Editor/IDE
 # .idea/
 # .vscode/
 brain/
 CLAUDE.md
+collectors/snmp/snmp-collector
 ./claude
 .claude/

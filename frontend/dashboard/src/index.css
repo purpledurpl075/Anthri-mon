@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+/* Enable class-based dark mode for Tailwind dark: utilities */
+@variant dark (&:where(.dark, .dark *));
+
+* { box-sizing: border-box; }
+
+/* ── Base ──────────────────────────────────────────────────────────────────── */
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: #f8fafc;
+  color: #1e293b;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.dark body {
+  background: #0f172a;
+  color: #f1f5f9;
+}
+
+/* ── Dark mode — global surface overrides ──────────────────────────────────── */
+
+.dark .bg-white         { background-color: #1e293b !important; }
+.dark .bg-slate-50      { background-color: #0f172a !important; }
+.dark .bg-slate-100     { background-color: #1e293b !important; }
+.dark .bg-slate-200     { background-color: #334155 !important; }
+
+.dark .border-slate-50  { border-color: #1e293b !important; }
+.dark .border-slate-100 { border-color: #1e293b !important; }
+.dark .border-slate-200 { border-color: #334155 !important; }
+.dark .border-slate-300 { border-color: #475569 !important; }
+
+.dark .text-slate-900   { color: #f8fafc !important; }
+.dark .text-slate-800   { color: #f1f5f9 !important; }
+.dark .text-slate-700   { color: #e2e8f0 !important; }
+.dark .text-slate-600   { color: #cbd5e1 !important; }
+
+.dark .divide-slate-50 > * + *   { border-color: #1e293b !important; }
+.dark .divide-slate-100 > * + *  { border-color: #1e293b !important; }
+.dark .divide-y > * + *          { border-color: #334155 !important; }
+
+.dark .hover\:bg-slate-50:hover  { background-color: #334155 !important; }
+.dark .hover\:bg-blue-50\/40:hover { background-color: rgba(37,99,235,0.15) !important; }
+
+/* Forms */
+.dark input:not([type="checkbox"]):not([type="radio"]),
+.dark select,
+.dark textarea {
+  background-color: #0f172a !important;
+  border-color: #334155 !important;
+  color: #f1f5f9 !important;
+}
+.dark input::placeholder,
+.dark textarea::placeholder { color: #475569 !important; }
+.dark select option          { background: #1e293b; color: #f1f5f9; }
+
+/* Tables */
+.dark tbody tr:hover td { background-color: rgba(51,65,85,0.4) !important; }
+.dark thead tr           { background-color: #1e293b !important; }
+
+/* Scrollbars in dark mode */
+.dark ::-webkit-scrollbar-track { background: #1e293b; }
+.dark ::-webkit-scrollbar-thumb { background: #475569; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+/* ── Smooth transitions ────────────────────────────────────────────────────── */
+
+button, a, input, select, textarea,
+[class*="hover:bg-"], [class*="hover:text-"], [class*="hover:border-"] {
+  transition-property: color, background-color, border-color, box-shadow, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Custom scrollbars ─────────────────────────────────────────────────────── */
+
+::-webkit-scrollbar             { width: 5px; height: 5px; }
+::-webkit-scrollbar-track       { background: transparent; }
+::-webkit-scrollbar-thumb       { background: #cbd5e1; border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* ── Focus rings ───────────────────────────────────────────────────────────── */
+
+*:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ── Text selection ────────────────────────────────────────────────────────── */
+
+::selection { background: rgba(59,130,246,0.2); color: inherit; }
+
+/* ── Animations ────────────────────────────────────────────────────────────── */
+
+@keyframes dash {
+  to { stroke-dashoffset: -18; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Smooth page content entry */
+main > * { animation: fadeIn 0.15s ease-out; }
+
+/* Email template preview — always light */
+iframe { color-scheme: light; }

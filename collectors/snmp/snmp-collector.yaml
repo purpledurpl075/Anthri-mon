@@ -1,0 +1,22 @@
+log:
+  level: debug
+
+database:
+  dsn: "postgres://anthrimon:changeme@127.0.0.1/anthrimon?sslmode=disable"
+  max_conns: 5
+  min_conns: 1
+
+snmp:
+  timeout_seconds: 10
+  retries: 3
+
+polling:
+  default_interval_s: 15
+  health_multiplier: 1
+  device_refresh_s: 30
+  max_concurrent_devices: 500
+
+metrics:
+  victoriametrics_url: "http://localhost:8428"
+  flush_interval: 10s
+  batch_size: 500

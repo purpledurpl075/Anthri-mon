@@ -159,11 +159,14 @@ func PDUString(pdu gosnmp.SnmpPDU) string {
 
 // PDUUint64 returns the unsigned 64-bit integer value of a PDU.
 // Works for Counter32, Counter64, Gauge32, TimeTicks, Integer.
+// gosnmp decodes TimeTicks/Uinteger32 as uint32 and Counter32/Gauge32 as uint.
 func PDUUint64(pdu gosnmp.SnmpPDU) uint64 {
 	switch v := pdu.Value.(type) {
 	case uint64:
 		return v
 	case uint:
+		return uint64(v)
+	case uint32:
 		return uint64(v)
 	case int:
 		if v < 0 {
@@ -180,6 +183,8 @@ func PDUInt(pdu gosnmp.SnmpPDU) int {
 	case int:
 		return v
 	case uint:
+		return int(v)
+	case uint32:
 		return int(v)
 	case uint64:
 		return int(v)

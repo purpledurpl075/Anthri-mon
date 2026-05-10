@@ -9,6 +9,7 @@ func init() {
 	Register(&Profile{
 		Name:         "Cisco IOS/IOS-XE",
 		DBVendorType: "cisco_ios",
+		DBDeviceType: "router",
 		SysObjectIDPrefixes: []string{
 			"1.3.6.1.4.1.9.1.",  // Cisco enterprise routers/switches
 			"1.3.6.1.4.1.9.6.",  // Cisco Catalyst WS-C range

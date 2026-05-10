@@ -187,7 +187,79 @@ func PollInterfaces(s *client.Session, deviceID uuid.UUID, sysUpTimeTicks uint32
 		results = append(results, res)
 	}
 
+	// Populate IP addresses from ipAddrTable (ifIndex → IPs).
+	ipMap, _ := pollIPAddrTable(s)
+	for _, res := range results {
+		if ips, ok := ipMap[res.IfIndex]; ok {
+			res.IPAddresses = ips
+		}
+	}
+
 	return results, nil
+}
+
+// pollIPAddrTable walks ipAddrTable and returns a map of ifIndex → []InterfaceIP.
+func pollIPAddrTable(s *client.Session) (map[int][]model.InterfaceIP, error) {
+	pdus, err := s.BulkWalkAll(oid.IPAddrTable)
+	if err != nil || len(pdus) == 0 {
+		return nil, err
+	}
+
+	type row struct {
+		ifIndex int
+		mask    string
+	}
+	// keyed by IP address string
+	rows := make(map[string]*row)
+	ensureRow := func(ip string) *row {
+		if r, ok := rows[ip]; ok { return r }
+		r := &row{}; rows[ip] = r; return r
+	}
+
+	for _, pdu := range pdus {
+		full := strings.TrimPrefix(pdu.Name, ".")
+		base := strings.TrimPrefix(oid.IPAddrTable, ".")
+		if !strings.HasPrefix(full, base+".") { continue }
+		rest := full[len(base)+1:]
+		parts := strings.SplitN(rest, ".", 2)
+		if len(parts) < 2 { continue }
+		col, _ := strconv.Atoi(parts[0])
+		ipStr := parts[1]
+		r := ensureRow(ipStr)
+		switch col {
+		case 2: r.ifIndex = client.PDUInt(pdu)
+		case 3: r.mask = client.PDUString(pdu)
+		}
+	}
+
+	result := make(map[int][]model.InterfaceIP)
+	for ip, r := range rows {
+		if r.ifIndex == 0 { continue }
+		pl := maskToPrefixLen(r.mask)
+		result[r.ifIndex] = append(result[r.ifIndex], model.InterfaceIP{
+			Address:   ip,
+			PrefixLen: pl,
+			Version:   4,
+		})
+	}
+	return result, nil
+}
+
+// maskToPrefixLen converts a dotted-decimal subnet mask to CIDR prefix length.
+func maskToPrefixLen(mask string) int {
+	parts := strings.Split(mask, ".")
+	if len(parts) != 4 { return 0 }
+	bits := 0
+	for _, p := range parts {
+		v, err := strconv.Atoi(p)
+		if err != nil { break }
+		b := uint8(v)
+		for b != 0 {
+			bits += int(b & 1)
+			b >>= 1
+		}
+	}
+	return bits
 }
 
 // splitTableOID extracts the column number and row index from a PDU OID.
