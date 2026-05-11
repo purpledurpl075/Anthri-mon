@@ -35,7 +35,20 @@ __pycache__/
 # .idea/
 # .vscode/
 brain/
+docs/
 CLAUDE.md
 collectors/snmp/snmp-collector
 ./claude
 .claude/
+
+# ClickHouse runtime-generated files
+access/
+metadata/
+preprocessed_configs/
+
+# Old processing engines (superseded by api/backend/alerting)
+processing/
+
+# Runtime state
+status
+uuid

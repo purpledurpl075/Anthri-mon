@@ -17,6 +17,7 @@ from .routers import (admin_router, alerts_router, auth_router, channels_router,
                       credentials_router, devices_router, discovery_router,
                       interfaces_router, maintenance_router, overview_router,
                       policies_router, topology_router, users_router)
+from .routers.topology import start_topology_refresh_loop
 
 configure_logging()
 logger = structlog.get_logger(__name__)
@@ -26,11 +27,17 @@ _settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("anthrimon_api_starting", version="0.1.0")
-    engine_task = await start_alert_engine()
+    engine_task   = await start_alert_engine()
+    topology_task = await start_topology_refresh_loop(interval_seconds=300)
     yield
     engine_task.cancel()
+    topology_task.cancel()
     try:
         await engine_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await topology_task
     except asyncio.CancelledError:
         pass
     await engine.dispose()

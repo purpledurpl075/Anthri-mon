@@ -173,7 +173,7 @@ export default function AlertDetailPage() {
 
           {/* Value / threshold */}
           {value !== undefined && (
-            <div className="flex gap-4 mt-3">
+            <div className="flex flex-wrap gap-3 mt-3">
               <div className="bg-slate-50 rounded-xl px-5 py-3 border border-slate-100">
                 <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Value</p>
                 <p className="text-2xl font-bold" style={{ color: sevColor }}>
@@ -193,13 +193,13 @@ export default function AlertDetailPage() {
         </div>
 
         {/* Timeline strip */}
-        <div className="flex border-t border-slate-100">
+        <div className="flex flex-col sm:flex-row border-t border-slate-100">
           {[
             { label: 'Triggered',     ts: alert.triggered_at,   color: '#dc2626' },
             { label: 'Acknowledged',  ts: alert.acknowledged_at, color: '#d97706' },
             { label: 'Resolved',      ts: alert.resolved_at,     color: '#16a34a' },
           ].filter(e => e.ts).map(({ label, ts, color }, i, arr) => (
-            <div key={label} className={`px-5 py-3 flex-1 ${i < arr.length - 1 ? 'border-r border-slate-100' : ''}`}>
+            <div key={label} className={`px-4 py-2.5 flex-1 ${i < arr.length - 1 ? 'border-b sm:border-b-0 sm:border-r border-slate-100' : ''}`}>
               <div className="flex items-center gap-1.5 mb-0.5">
                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
                 <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">{label}</span>
@@ -211,7 +211,7 @@ export default function AlertDetailPage() {
       </div>
 
       {/* Detail cards */}
-      <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-5xl">
+      <div className="p-3 md:p-6 grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-4">
 
         {/* Device */}
         {device && (

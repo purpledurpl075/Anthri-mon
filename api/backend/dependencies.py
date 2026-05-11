@@ -5,7 +5,7 @@ import uuid
 from typing import AsyncGenerator, Optional
 
 import structlog
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Query, Request, status
 import jwt as _jwt
 from jwt.exceptions import InvalidTokenError as JWTError
 from sqlalchemy import select
@@ -108,6 +108,35 @@ async def get_current_user(
     if user is None:
         raise credentials_exc
 
+    return user
+
+
+async def get_current_user_sse(
+    request: Request,
+    token_param: Optional[str] = Query(default=None, alias="token"),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Like get_current_user but also accepts ?token= for SSE / EventSource clients
+    that cannot set the Authorization header."""
+    credentials_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing authentication credentials",
+    )
+    raw_token: Optional[str] = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        raw_token = auth_header.removeprefix("Bearer ").strip()
+    elif token_param:
+        raw_token = token_param.strip()
+
+    if not raw_token:
+        raise credentials_exc
+
+    user = await _user_from_jwt(raw_token, db)
+    if user is None:
+        user = await _user_from_api_token(raw_token, db)
+    if user is None:
+        raise credentials_exc
     return user
 
 

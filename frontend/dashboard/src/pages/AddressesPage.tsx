@@ -122,7 +122,16 @@ export default function AddressesPage() {
                         <Link to={`/devices/${e.device_id}`}
                           className="text-blue-600 hover:underline">{e.device_name}</Link>
                       </td>
-                      <td className="px-4 py-2.5 text-slate-600 text-xs">{e.port ?? <span className="text-slate-300">—</span>}</td>
+                      <td className="px-4 py-2.5 text-slate-600 text-xs">
+                        {e.port
+                          ? e.port_iface_id
+                            ? <Link to={`/devices/${e.device_id}/interfaces/${e.port_iface_id}`} className="font-mono text-blue-600 hover:underline">{e.port}</Link>
+                            : <span className="font-mono">{e.port}</span>
+                          : <span className="text-slate-300">—</span>}
+                        {e.vlan_interface && (
+                          <span className="ml-1.5 text-[10px] text-slate-400 font-mono">({e.vlan_interface})</span>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5 text-slate-500 text-xs">{e.vlan ?? <span className="text-slate-300">—</span>}</td>
                       <td className="px-4 py-2.5 text-slate-400 text-xs">{e.entry_type}</td>
                       <td className="px-4 py-2.5 text-slate-400 text-xs">{new Date(e.updated_at).toLocaleTimeString()}</td>

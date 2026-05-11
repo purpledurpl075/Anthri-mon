@@ -896,7 +896,7 @@ function EmailTemplateTab() {
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="px-6 py-3 border-b border-slate-100 flex items-center gap-3 bg-white shrink-0">
+      <div className="px-3 md:px-6 py-3 border-b border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 bg-white shrink-0">
         <div className="flex-1 flex items-center gap-2 min-w-0">
           <span className="text-xs font-medium text-slate-500 shrink-0">Subject</span>
           <input
@@ -924,10 +924,10 @@ function EmailTemplateTab() {
         </button>
       </div>
 
-      {/* Split pane */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      {/* Split pane — stacks on mobile, side-by-side on md+ */}
+      <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
         {/* Editor */}
-        <div className="w-1/2 flex flex-col border-r border-slate-200 min-h-0">
+        <div className="w-full md:w-1/2 flex flex-col border-b md:border-b-0 md:border-r border-slate-200 min-h-0" style={{ minHeight: 300 }}>
           <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">HTML</span>
             <span className="text-[10px] text-slate-400">{html.length} chars</span>
@@ -961,7 +961,7 @@ function EmailTemplateTab() {
         </div>
 
         {/* Preview */}
-        <div className="w-1/2 flex flex-col min-h-0">
+        <div className="w-full md:w-1/2 flex flex-col min-h-0" style={{ minHeight: 280 }}>
           <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Preview</span>
             <span className="text-[10px] text-slate-400">Sample data</span>

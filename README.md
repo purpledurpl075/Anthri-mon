@@ -100,8 +100,10 @@ sudo systemctl restart snmp-collector
 
 ## API
 
-- API base: `http://<server-ip>:8000/api/v1`
-- Swagger docs: `http://<server-ip>:8000/api/docs`
+- API base: `http://<server-ip>:8001/api/v1`
+- Swagger docs: `http://<server-ip>:8001/api/docs`
+
+The API runs on port **8001** (port 8000 is reserved to avoid conflicts with other services that commonly bind there).
 
 The API uses a Python virtualenv at `api/.venv`. To work with it directly:
 
@@ -114,6 +116,8 @@ source api/.venv/bin/activate
 | Service | URL |
 |---------|-----|
 | Dashboard | `http://<server-ip>:5173` (dev) |
-| API | `http://<server-ip>:8000` |
-| API docs | `http://<server-ip>:8000/api/docs` |
+| API | `http://<server-ip>:8001` |
+| API docs | `http://<server-ip>:8001/api/docs` |
 | VictoriaMetrics | `http://<server-ip>:8428` |
+
+> **Port note:** If port 8001 conflicts with something on your host, change `--port 8001` in `/etc/systemd/system/anthrimon-api.service`, update the `proxy` target in `frontend/dashboard/vite.config.ts` to match, then `sudo systemctl daemon-reload && sudo systemctl restart anthrimon-api`.

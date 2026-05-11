@@ -110,3 +110,24 @@ main > * { animation: fadeIn 0.15s ease-out; }
 
 /* Email template preview — always light */
 iframe { color-scheme: light; }
+
+/* ── Mobile ────────────────────────────────────────────────────────────────── */
+
+/* Safe area bottom padding for home indicator (iPhone) */
+.pb-safe  { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.safe-area-inset-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+
+/* Smooth horizontal scroll on touch devices */
+.overflow-x-auto { -webkit-overflow-scrolling: touch; }
+
+/* Hide scrollbar on tab bars while keeping scroll */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+@media (max-width: 767px) {
+  /* Prevent font size inflation on iOS */
+  html { -webkit-text-size-adjust: 100%; }
+
+  /* Modals full-width on mobile */
+  .fixed.inset-0 > div[class*="max-w-"] { max-width: calc(100vw - 1rem); margin: 0.5rem; }
+}

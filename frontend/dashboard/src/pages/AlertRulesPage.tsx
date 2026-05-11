@@ -167,7 +167,8 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
           </div>
         </div>
 
-        <div className="p-6 overflow-y-auto space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto p-6">
+        <div className="space-y-4">
           {/* Name */}
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Rule name <span className="text-red-500">*</span></label>
@@ -372,6 +373,7 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
           </>}
 
           {error && <p className="text-xs text-red-600">{error}</p>}
+        </div>
         </div>
 
         <div className="px-6 py-4 border-t border-slate-100 flex justify-end gap-3">
