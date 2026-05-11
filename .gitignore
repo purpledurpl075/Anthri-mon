@@ -52,3 +52,6 @@ processing/
 # Runtime state
 status
 uuid
+#brain
+brain
+brain.md
