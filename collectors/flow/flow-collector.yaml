@@ -1,0 +1,22 @@
+log:
+  level: info
+
+database:
+  dsn: "postgres://anthrimon:changeme@127.0.0.1/anthrimon?sslmode=disable"
+  max_conns: 3
+
+clickhouse:
+  dsn: "clickhouse://localhost:9000/default"
+  max_conns: 5
+
+listener:
+  netflow_addr: ":2055"
+  sflow_addr: ":6343"
+  buffer_size: 65535
+
+writer:
+  batch_size: 2000
+  flush_interval_s: 5
+
+lookup:
+  device_refresh_s: 300

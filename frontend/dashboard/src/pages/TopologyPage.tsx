@@ -1,18 +1,38 @@
+<<<<<<< HEAD
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import {
+  ReactFlow, ReactFlowProvider, Controls, Background, MiniMap, Panel, useReactFlow,
+=======
 import React, { useState, useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   ReactFlow, Controls, Background, MiniMap, Panel, useReactFlow,
+>>>>>>> origin/main
   EdgeLabelRenderer, getSmoothStepPath, applyNodeChanges,
   Handle, Position,
   type NodeProps, type Node, type Edge, type EdgeProps,
   type NodeMouseHandler, type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+<<<<<<< HEAD
+import {
+  fetchTopology, fetchLinkUtil, fetchLinkUtilBatch,
+  type TopologyNode, type TopologyEdge as ApiEdge,
+  type LinkUtilisation,
+} from '../api/topology'
+import { DeviceTypeIcon, DEVICE_TYPE_COLOR as TYPE_COLOR, DEVICE_TYPE_LABEL as TYPE_LABEL } from '../components/DeviceTypeIcon'
+import api from '../api/client'
+
+// ── Palettes ───────────────────────────────────────────────────────────────
+=======
 import { fetchTopology, fetchLinkUtil, type TopologyNode, type TopologyEdge as ApiEdge, type LinkUtilisation } from '../api/topology'
 import { DeviceTypeIcon, DEVICE_TYPE_COLOR as TYPE_COLOR, DEVICE_TYPE_LABEL as TYPE_LABEL } from '../components/DeviceTypeIcon'
 
 // ── Palette ────────────────────────────────────────────────────────────────
+>>>>>>> origin/main
 
 const STATUS_COLOR: Record<string, string> = {
   up:          '#16a34a',
@@ -23,6 +43,23 @@ const STATUS_COLOR: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   up: 'Up', down: 'Down', unreachable: 'Unreachable', unknown: 'Unknown',
 }
+<<<<<<< HEAD
+const SEVERITY_COLOR: Record<string, string> = {
+  critical: '#dc2626',
+  major:    '#ea580c',
+  minor:    '#d97706',
+  warning:  '#ca8a04',
+  info:     '#2563eb',
+}
+const SEVERITY_ORDER = ['critical', 'major', 'minor', 'warning', 'info']
+
+// ── Layout constants ───────────────────────────────────────────────────────
+
+const NODE_W  = 160
+const H_STEP  = 240
+const V_STEP  = 190
+
+=======
 
 // ── Layout constants ───────────────────────────────────────────────────────
 
@@ -31,12 +68,17 @@ const H_STEP  = 240   // center-to-center horizontal spacing in a layer
 const V_STEP  = 190   // center-to-center vertical spacing between layers
 
 // Root-election priority per device type (higher = preferred as hierarchy root)
+>>>>>>> origin/main
 const ROOT_PRIO: Record<string, number> = {
   router: 5, firewall: 5, load_balancer: 4,
   switch: 3, wireless_controller: 2, access_point: 0, unknown: 1,
 }
 
+<<<<<<< HEAD
+// ── Helpers ────────────────────────────────────────────────────────────────
+=======
 // ── Formatters ────────────────────────────────────────────────────────────
+>>>>>>> origin/main
 
 function fmtSpeed(bps: number): string {
   if (bps >= 1e9) return `${bps / 1e9} Gbps`
@@ -52,6 +94,28 @@ function fmtBps(bps: number): string {
   return `${bps.toFixed(0)} bps`
 }
 
+<<<<<<< HEAD
+// Colour an edge based on utilisation percentage
+function utilEdgeColor(pct: number | null, protocol: string): string {
+  if (pct === null) return protocol === 'lldp' ? '#0891b2' : '#7c3aed'
+  if (pct < 30)   return '#16a34a'  // green
+  if (pct < 60)   return protocol === 'lldp' ? '#0891b2' : '#7c3aed'  // normal
+  if (pct < 80)   return '#d97706'  // amber
+  if (pct < 95)   return '#ea580c'  // orange
+  return '#dc2626'                  // red
+}
+
+// Stroke width scaled to link capacity
+function edgeStrokeWidth(speedBps: number | null): number {
+  if (!speedBps) return 1.5
+  if (speedBps >= 40e9) return 5
+  if (speedBps >= 10e9) return 3.5
+  if (speedBps >= 1e9)  return 2.5
+  return 1.5
+}
+
+=======
+>>>>>>> origin/main
 // ── Hierarchical layout ────────────────────────────────────────────────────
 
 function hierLayout(
@@ -76,7 +140,10 @@ function hierLayout(
   const score = (id: string) =>
     (ROOT_PRIO[nodeMap[id]?.device_type ?? 'unknown'] ?? 1) * 20 + deg[id]
 
+<<<<<<< HEAD
+=======
   // BFS from highest-scoring unvisited node → one component per iteration
+>>>>>>> origin/main
   const visited = new Set<string>()
   const layer: Record<string, number> = {}
   const comps: string[][] = []
@@ -111,7 +178,10 @@ function hierLayout(
     const byLayer: Record<number, string[]> = {}
     comp.forEach(id => { (byLayer[layer[id] ?? 0] ??= []).push(id) })
 
+<<<<<<< HEAD
+=======
     // Minimise crossings: sort each layer by average parent index
+>>>>>>> origin/main
     const layerNums = Object.keys(byLayer).map(Number).sort((a, b) => a - b)
     for (let li = 1; li < layerNums.length; li++) {
       const l = layerNums[li]
@@ -142,7 +212,11 @@ function hierLayout(
   return pos
 }
 
+<<<<<<< HEAD
+// ── Handle routing ────────────────────────────────────────────────────────
+=======
 // ── Determine which handles an edge should use ─────────────────────────────
+>>>>>>> origin/main
 
 type HandleSide = 'top' | 'bottom' | 'left' | 'right'
 
@@ -153,7 +227,10 @@ function edgeHandles(
   if (!src || !tgt) return { sh: 'bottom', th: 'top', sp: Position.Bottom, tp: Position.Top }
   const dx = tgt.x - src.x
   const dy = tgt.y - src.y
+<<<<<<< HEAD
+=======
   // Prefer vertical routing (network hierarchies read top→bottom)
+>>>>>>> origin/main
   if (Math.abs(dy) >= Math.abs(dx) * 0.6) {
     return dy >= 0
       ? { sh: 'bottom', th: 'top',    sp: Position.Bottom, tp: Position.Top    }
@@ -170,6 +247,22 @@ const H: React.CSSProperties = {
   opacity: 0, width: 2, height: 2, minWidth: 2, minHeight: 2, border: 'none',
 }
 
+<<<<<<< HEAD
+type NodeData = TopologyNode & {
+  alerts:    { count: number; severity: string } | null
+  dimmed:    boolean
+  searchHit: boolean
+}
+
+function DeviceNode({ data, selected }: NodeProps) {
+  const d      = data as unknown as NodeData
+  const color  = TYPE_COLOR[d.device_type] ?? '#475569'
+  const sc     = STATUS_COLOR[d.status] ?? '#94a3b8'
+  const hasCrit = d.alerts?.severity === 'critical'
+
+  return (
+    <div style={{ width: NODE_W, opacity: d.dimmed ? 0.15 : 1, transition: 'opacity 0.2s' }}>
+=======
 function DeviceNode({ data, selected }: NodeProps) {
   const d = data as unknown as TopologyNode
   const color  = TYPE_COLOR[d.device_type] ?? '#475569'
@@ -177,6 +270,7 @@ function DeviceNode({ data, selected }: NodeProps) {
 
   return (
     <div style={{ width: NODE_W }}>
+>>>>>>> origin/main
       <Handle id="top"    type="source" position={Position.Top}    style={H} />
       <Handle id="top"    type="target" position={Position.Top}    style={H} />
       <Handle id="bottom" type="source" position={Position.Bottom} style={H} />
@@ -186,6 +280,63 @@ function DeviceNode({ data, selected }: NodeProps) {
       <Handle id="right"  type="source" position={Position.Right}  style={H} />
       <Handle id="right"  type="target" position={Position.Right}  style={H} />
 
+<<<<<<< HEAD
+      <div className="relative">
+        {/* Alert badge */}
+        {d.alerts && d.alerts.count > 0 && (
+          <div
+            className="absolute -top-2 -right-2 z-10 min-w-[20px] h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white px-1.5"
+            style={{
+              backgroundColor: SEVERITY_COLOR[d.alerts.severity] ?? '#dc2626',
+              boxShadow: `0 0 0 2px white`,
+              animation: hasCrit ? 'alertPulse 1.8s ease-in-out infinite' : undefined,
+            }}
+          >
+            {d.alerts.count > 99 ? '99+' : d.alerts.count}
+          </div>
+        )}
+
+        {/* Search highlight ring */}
+        {d.searchHit && (
+          <div
+            className="absolute -inset-1.5 rounded-[14px] pointer-events-none"
+            style={{ boxShadow: '0 0 0 2.5px #3b82f6, 0 0 12px #3b82f640' }}
+          />
+        )}
+
+        <div
+          className="rounded-xl bg-white transition-shadow"
+          style={{
+            border:     `1.5px solid ${selected ? color : '#e2e8f0'}`,
+            boxShadow:  selected
+              ? `0 0 0 3px ${color}22, 0 6px 20px rgba(0,0,0,0.10)`
+              : '0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04)',
+          }}
+        >
+          <div style={{ height: 3, backgroundColor: color, borderRadius: '8px 8px 0 0' }} />
+          <div className="px-3 pt-2.5 pb-2">
+            <div className="flex items-start justify-between mb-1.5">
+              <span style={{ color }}><DeviceTypeIcon type={d.device_type} size={22} /></span>
+              <span
+                className="w-2 h-2 rounded-full mt-0.5 shrink-0"
+                style={{ backgroundColor: sc }}
+                title={STATUS_LABEL[d.status] ?? d.status}
+              />
+            </div>
+            <div className="text-[11px] font-semibold text-slate-800 truncate leading-tight">
+              {d.hostname}
+            </div>
+            <div className="text-[10px] font-mono text-slate-400 mt-0.5 truncate">
+              {d.mgmt_ip || '—'}
+            </div>
+          </div>
+          <div
+            className="px-3 py-1 border-t text-[9px] text-slate-400 capitalize rounded-b-xl"
+            style={{ borderColor: `${color}20`, backgroundColor: `${color}07` }}
+          >
+            {TYPE_LABEL[d.device_type] ?? 'Unknown'}
+          </div>
+=======
       <div
         className="rounded-xl bg-white transition-shadow"
         style={{
@@ -222,6 +373,7 @@ function DeviceNode({ data, selected }: NodeProps) {
           style={{ borderColor: `${color}20`, backgroundColor: `${color}07` }}
         >
           {TYPE_LABEL[d.device_type] ?? 'Unknown'}
+>>>>>>> origin/main
         </div>
       </div>
     </div>
@@ -243,6 +395,12 @@ type EdgeData = {
   source_hostname?: string
   target_hostname?: string
   source_iface_id?: string | null
+<<<<<<< HEAD
+  util_pct?: number | null
+  util_in_pct?: number | null
+  util_out_pct?: number | null
+=======
+>>>>>>> origin/main
 }
 
 function TopologyEdge({
@@ -251,11 +409,25 @@ function TopologyEdge({
   data, selected,
 }: EdgeProps) {
   const [hovered, setHovered] = useState(false)
+<<<<<<< HEAD
+  const d       = data as EdgeData
+  const utilPct = d.util_pct ?? null
+  const color   = utilEdgeColor(utilPct, d.protocol ?? 'lldp')
+  const sw      = edgeStrokeWidth(d.speed_bps ?? null)
+  const dimmed  = !!d.dimmed
+  const hilit   = !!d.highlighted || selected
+
+  // Continuous flow animation when utilisation > 8%, speed proportional to load
+  const flowDur = (!hilit && utilPct !== null && utilPct > 8)
+    ? Math.max(0.5, 3 - utilPct * 0.025)
+    : null
+=======
   const d      = data as EdgeData
   const isLLDP = d.protocol === 'lldp'
   const color  = isLLDP ? '#0891b2' : '#7c3aed'
   const dimmed = !!d.dimmed
   const hilit  = !!d.highlighted || selected
+>>>>>>> origin/main
 
   const [path, labelX, labelY] = getSmoothStepPath({
     sourceX, sourceY, sourcePosition,
@@ -266,6 +438,37 @@ function TopologyEdge({
 
   return (
     <>
+<<<<<<< HEAD
+      {/* Glow halo when selected */}
+      {hilit && (
+        <path d={path} fill="none" stroke={color} strokeWidth={(sw + 6)} strokeOpacity={0.12} strokeLinecap="round" />
+      )}
+      {/* White backing (creates gap effect) */}
+      <path
+        d={path} fill="none" stroke="white"
+        strokeWidth={hilit ? sw + 3 : sw + 2}
+        strokeOpacity={dimmed ? 0 : 0.65}
+        strokeLinecap="round"
+      />
+      {/* Main edge line */}
+      <path
+        id={id} d={path} fill="none"
+        stroke={color}
+        strokeWidth={hilit ? sw + 1 : sw}
+        strokeOpacity={dimmed ? 0.07 : 1}
+        strokeLinecap="round"
+        strokeDasharray={hilit ? '7 4' : (flowDur ? '6 5' : undefined)}
+        style={{
+          animation: hilit
+            ? 'topoEdgeDash 0.9s linear infinite'
+            : flowDur
+              ? `topoEdgeDash ${flowDur}s linear infinite`
+              : undefined,
+          transition: 'stroke 0.4s, stroke-opacity 0.15s, stroke-width 0.15s',
+        }}
+      />
+      {/* Wide invisible hit area */}
+=======
       {hilit && (
         <path d={path} fill="none" stroke={color} strokeWidth={12} strokeOpacity={0.12} strokeLinecap="round" />
       )}
@@ -288,6 +491,7 @@ function TopologyEdge({
         }}
       />
       {/* Wide invisible hit area for hover/click */}
+>>>>>>> origin/main
       <path
         d={path} fill="none" stroke="transparent" strokeWidth={20}
         style={{ cursor: 'pointer' }}
@@ -321,6 +525,32 @@ function TopologyEdge({
                       <span className="text-cyan-300">{fmtSpeed(d.speed_bps)}</span>
                     </div>
                   )}
+<<<<<<< HEAD
+                  {utilPct !== null && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400 w-12 shrink-0">Util</span>
+                      <span style={{ color }}>{utilPct.toFixed(1)}%</span>
+                      {d.util_in_pct != null && d.util_out_pct != null && (
+                        <span className="text-slate-400">↑{d.util_out_pct.toFixed(0)}% ↓{d.util_in_pct.toFixed(0)}%</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              utilPct !== null && utilPct >= 60 ? (
+                <span
+                  className="text-[9px] font-bold rounded px-1.5 py-0.5 shadow-sm leading-none whitespace-nowrap text-white"
+                  style={{ backgroundColor: color }}
+                >
+                  {utilPct.toFixed(0)}%
+                </span>
+              ) : d.label ? (
+                <span className="text-[9px] font-mono text-slate-500 bg-white border border-slate-200 rounded px-1.5 py-0.5 shadow-sm leading-none whitespace-nowrap">
+                  {d.label}
+                </span>
+              ) : null
+=======
                 </div>
               </div>
             ) : (
@@ -329,6 +559,7 @@ function TopologyEdge({
                   {d.label}
                 </span>
               )
+>>>>>>> origin/main
             )}
           </div>
         </EdgeLabelRenderer>
@@ -339,7 +570,11 @@ function TopologyEdge({
 
 const EDGE_TYPES = { topology: TopologyEdge }
 
+<<<<<<< HEAD
+// ── Device panel ───────────────────────────────────────────────────────────
+=======
 // ── Detail panel ───────────────────────────────────────────────────────────
+>>>>>>> origin/main
 
 function DevicePanel({
   node, edges, nodesById, onClose, onNavigate,
@@ -350,17 +585,30 @@ function DevicePanel({
   onClose: () => void
   onNavigate: (id: string) => void
 }) {
+<<<<<<< HEAD
+  const color = TYPE_COLOR[node.device_type] ?? '#475569'
+  const sc    = STATUS_COLOR[node.status]    ?? '#94a3b8'
+=======
   const color  = TYPE_COLOR[node.device_type] ?? '#475569'
   const sc     = STATUS_COLOR[node.status]    ?? '#94a3b8'
+>>>>>>> origin/main
 
   const links = edges
     .filter(e => e.source === node.id || e.target === node.id)
     .map(e => {
+<<<<<<< HEAD
+      const isSrc  = e.source === node.id
+      const peerId = isSrc ? e.target : e.source
+      const peer   = nodesById[peerId]
+      const lp     = isSrc ? e.source_port : e.target_port
+      const rp     = isSrc ? e.target_port : e.source_port
+=======
       const isSrc   = e.source === node.id
       const peerId  = isSrc ? e.target : e.source
       const peer    = nodesById[peerId]
       const lp      = isSrc ? e.source_port : e.target_port
       const rp      = isSrc ? e.target_port : e.source_port
+>>>>>>> origin/main
       return { peer, lp, rp, protocol: e.protocol }
     })
 
@@ -369,7 +617,10 @@ function DevicePanel({
       className="absolute top-4 right-4 w-72 bg-white rounded-2xl shadow-xl border border-slate-200 z-10 flex flex-col overflow-hidden"
       style={{ maxHeight: 'calc(100% - 2rem)' }}
     >
+<<<<<<< HEAD
+=======
       {/* Header */}
+>>>>>>> origin/main
       <div className="px-4 py-3 flex items-start justify-between" style={{ borderBottom: `3px solid ${color}` }}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
@@ -378,6 +629,13 @@ function DevicePanel({
           </div>
           <h3 className="text-sm font-bold text-slate-800 truncate">{node.hostname}</h3>
         </div>
+<<<<<<< HEAD
+        <button onClick={onClose} className="ml-2 p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors shrink-0">
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+=======
         <button
           onClick={onClose}
           className="ml-2 p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors shrink-0"
@@ -389,6 +647,7 @@ function DevicePanel({
       </div>
 
       {/* Details */}
+>>>>>>> origin/main
       <div className="px-4 py-3 space-y-2 overflow-y-auto flex-1 text-xs">
         <div className="flex items-center justify-between">
           <span className="text-slate-400">Status</span>
@@ -407,7 +666,10 @@ function DevicePanel({
             <span className="text-slate-700 capitalize">{node.vendor.replace('_', ' ')}</span>
           </div>
         )}
+<<<<<<< HEAD
+=======
 
+>>>>>>> origin/main
         {links.length > 0 && (
           <div className="pt-2 border-t border-slate-100">
             <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">
@@ -437,16 +699,23 @@ function DevicePanel({
         )}
       </div>
 
+<<<<<<< HEAD
+=======
       {/* Footer */}
+>>>>>>> origin/main
       <div className="px-4 py-3 border-t border-slate-100">
         <button
           onClick={() => onNavigate(node.id)}
           className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors"
         >
           Open device
+<<<<<<< HEAD
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+=======
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
             <path d="M5 12h14M12 5l7 7-7 7" />
           </svg>
+>>>>>>> origin/main
         </button>
       </div>
     </div>
@@ -528,11 +797,18 @@ function LinkPanel({
   const inPct   = speed && inLast  != null ? inLast  / speed * 100 : null
   const outPct  = speed && outLast != null ? outLast / speed * 100 : null
 
+<<<<<<< HEAD
+  const W = 284
+  const left    = Math.min(Math.max(clickPos.x - W / 2, 8), window.innerWidth - W - 8)
+  const below   = clickPos.y + 12
+  const above   = clickPos.y - 12
+=======
   // Position near click, clamped to viewport
   const W = 284
   const left = Math.min(Math.max(clickPos.x - W / 2, 8), window.innerWidth - W - 8)
   const below = clickPos.y + 12
   const above = clickPos.y - 12  // panel will grow upward via bottom anchor
+>>>>>>> origin/main
   const fitsBelow = below + 420 < window.innerHeight
 
   return (
@@ -547,7 +823,10 @@ function LinkPanel({
       }}
       className="bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
     >
+<<<<<<< HEAD
+=======
       {/* Header */}
+>>>>>>> origin/main
       <div className="px-3 py-2.5 flex items-center justify-between bg-slate-800 rounded-t-2xl">
         <div className="flex items-center gap-2 min-w-0">
           <svg className="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -562,6 +841,13 @@ function LinkPanel({
           </span>
         </div>
         <button onClick={onClose} className="ml-2 p-1 text-slate-400 hover:text-white rounded transition-colors shrink-0">
+<<<<<<< HEAD
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
+
+      <div className="overflow-y-auto flex-1">
+=======
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>
@@ -571,6 +857,7 @@ function LinkPanel({
       {/* Body */}
       <div className="overflow-y-auto flex-1">
         {/* Port row */}
+>>>>>>> origin/main
         <div className="grid grid-cols-2 divide-x divide-slate-100 border-b border-slate-100">
           {[
             { device: src, port: edge.source_port, side: 'Local' },
@@ -589,7 +876,10 @@ function LinkPanel({
           ))}
         </div>
 
+<<<<<<< HEAD
+=======
         {/* Speed */}
+>>>>>>> origin/main
         {speed != null && (
           <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
             <span className="text-[11px] text-slate-500">Port speed</span>
@@ -597,7 +887,10 @@ function LinkPanel({
           </div>
         )}
 
+<<<<<<< HEAD
+=======
         {/* Graph + stats */}
+>>>>>>> origin/main
         {edge.source_iface_id ? (
           <div className="px-3 pt-2.5 pb-3">
             <div className="flex items-center justify-between mb-1.5">
@@ -616,8 +909,12 @@ function LinkPanel({
                   <Sparkline
                     inSeries={util.in_bps as [number, number][]}
                     outSeries={util.out_bps as [number, number][]}
+<<<<<<< HEAD
+                    w={248} h={64}
+=======
                     w={248}
                     h={64}
+>>>>>>> origin/main
                   />
                 </div>
 
@@ -670,10 +967,62 @@ function FitBtn() {
   )
 }
 
+<<<<<<< HEAD
+// ── Utilisation legend ────────────────────────────────────────────────────
+
+function UtilLegend() {
+  const steps = [
+    { label: '0–30%',  color: '#16a34a' },
+    { label: '30–60%', color: '#0891b2' },
+    { label: '60–80%', color: '#d97706' },
+    { label: '80–95%', color: '#ea580c' },
+    { label: '>95%',   color: '#dc2626' },
+    { label: 'No data', color: '#94a3b8' },
+  ]
+  return (
+    <div className="flex items-center gap-3 px-2.5 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">
+      <span className="text-[9px] font-semibold text-slate-400 uppercase tracking-wide shrink-0">Link util</span>
+      <div className="flex items-center gap-2 flex-wrap">
+        {steps.map(s => (
+          <span key={s.label} className="flex items-center gap-1 text-[9px] text-slate-500">
+            <span className="w-5 h-0.5 rounded-full inline-block" style={{ backgroundColor: s.color }} />
+            {s.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Layout persistence ────────────────────────────────────────────────────
+
+const LAYOUT_KEY = 'topology_layout_v1'
+
+function loadSavedLayout(): Record<string, { x: number; y: number }> {
+  try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? '{}') }
+  catch { return {} }
+}
+
+// ── Page ───────────────────────────────────────────────────────────────────
+
+export default function TopologyPage() {
+  return (
+    <ReactFlowProvider>
+      <TopologyPageInner />
+    </ReactFlowProvider>
+  )
+}
+
+function TopologyPageInner() {
+  const navigate = useNavigate()
+  const { fitView } = useReactFlow()
+
+=======
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export default function TopologyPage() {
   const navigate = useNavigate()
+>>>>>>> origin/main
   const [selectedId,     setSelectedId]    = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [edgePanelPos,   setEdgePanelPos]  = useState<{ x: number; y: number } | null>(null)
@@ -682,10 +1031,87 @@ export default function TopologyPage() {
   const [protocolFilter, setProtocol]      = useState<'all' | 'lldp' | 'cdp'>('all')
   const [hiddenTypes,    setHiddenTypes]   = useState<Set<string>>(new Set())
   const [typeMenuOpen,   setTypeMenuOpen]  = useState(false)
+<<<<<<< HEAD
+  const [search,         setSearch]        = useState('')
+  const [showUtilLegend, setShowUtilLegend] = useState(false)
+=======
+>>>>>>> origin/main
 
   const [rfNodes, setRfNodes] = useState<Node[]>([])
   const [rfEdges, setRfEdges] = useState<Edge[]>([])
 
+<<<<<<< HEAD
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const savedLayout = useMemo(() => loadSavedLayout(), [])
+
+  // ── Main topology query ────────────────────────────────────────────────
+  const { data, isLoading, refetch, isFetching } = useQuery({
+    queryKey:  ['topology'],
+    queryFn:   fetchTopology,
+    staleTime: 30_000,
+  })
+
+  // ── Alert summary query ────────────────────────────────────────────────
+  const { data: alertsData } = useQuery({
+    queryKey:        ['topo-alerts'],
+    queryFn:         () => api.get('/alerts', { params: { status: 'open', limit: 1000 } }).then(r => r.data),
+    staleTime:       30_000,
+    refetchInterval: 60_000,
+  })
+
+  const alertsByDevice = useMemo(() => {
+    const map: Record<string, { count: number; severity: string }> = {}
+    for (const alert of (alertsData as any)?.items ?? []) {
+      const did: string = alert.device_id
+      if (!did) continue
+      if (!map[did]) map[did] = { count: 0, severity: 'info' }
+      map[did].count++
+      if (SEVERITY_ORDER.indexOf(alert.severity) < SEVERITY_ORDER.indexOf(map[did].severity)) {
+        map[did].severity = alert.severity
+      }
+    }
+    return map
+  }, [alertsData])
+
+  // ── Batch util query (all topology edges) ─────────────────────────────
+  const ifaceIds = useMemo(
+    () => [...new Set((data?.edges ?? []).map(e => e.source_iface_id).filter(Boolean) as string[])],
+    [data?.edges],
+  )
+
+  const { data: utilBatch } = useQuery({
+    queryKey:        ['topo-util', ifaceIds.slice().sort().join(',')],
+    queryFn:         () => fetchLinkUtilBatch(ifaceIds),
+    enabled:         ifaceIds.length > 0,
+    staleTime:       25_000,
+    refetchInterval: 30_000,
+  })
+
+  // ── Search matches ────────────────────────────────────────────────────
+  const searchMatchIds = useMemo(() => {
+    if (!search.trim()) return null
+    const q = search.toLowerCase()
+    return new Set(
+      (data?.nodes ?? [])
+        .filter(n => (n.hostname ?? '').toLowerCase().includes(q) || n.mgmt_ip.includes(q))
+        .map(n => n.id)
+    )
+  }, [search, data?.nodes])
+
+  // ── Fit view to search results ────────────────────────────────────────
+  useEffect(() => {
+    if (!searchMatchIds || searchMatchIds.size === 0) return
+    const timer = setTimeout(() => {
+      fitView({ nodes: rfNodes.filter(n => searchMatchIds.has(n.id)), padding: 0.3, duration: 400 })
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [searchMatchIds])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Build ReactFlow nodes + edges ─────────────────────────────────────
+  const nodesById = Object.fromEntries((data?.nodes ?? []).map(n => [n.id, n]))
+  const deviceTypes = [...new Set((data?.nodes ?? []).map(n => n.device_type))].filter(Boolean)
+
+=======
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['topology'],
     queryFn:  fetchTopology,
@@ -697,6 +1123,7 @@ export default function TopologyPage() {
 
   // Recompute layout whenever topology data or filter changes.
   // Preserves user-dragged positions for nodes that already exist.
+>>>>>>> origin/main
   useEffect(() => {
     if (!data) return
 
@@ -708,6 +1135,25 @@ export default function TopologyPage() {
 
     setRfNodes(prev => {
       const prevById = Object.fromEntries(prev.map(n => [n.id, n]))
+<<<<<<< HEAD
+      return visible.map(n => {
+        const isSearchDimmed = searchMatchIds !== null && !searchMatchIds.has(n.id)
+        const isSearchHit    = searchMatchIds !== null && searchMatchIds.has(n.id)
+        return {
+          id:       n.id,
+          type:     'device',
+          position: prevById[n.id]?.position ?? savedLayout[n.id] ?? pos[n.id] ?? { x: 0, y: 0 },
+          selected: n.id === selectedId,
+          data: {
+            ...n,
+            alerts:    alertsByDevice[n.id] ?? null,
+            dimmed:    isSearchDimmed,
+            searchHit: isSearchHit,
+          } as unknown as Record<string, unknown>,
+          draggable: true,
+        }
+      })
+=======
       return visible.map(n => ({
         id:       n.id,
         type:     'device',
@@ -716,6 +1162,7 @@ export default function TopologyPage() {
         data:     n as unknown as Record<string, unknown>,
         draggable: true,
       }))
+>>>>>>> origin/main
     })
 
     setRfEdges(
@@ -732,6 +1179,26 @@ export default function TopologyPage() {
                 ? `${e.source_port} → ${e.target_port}`
                 : e.source_port ?? e.target_port ?? '')
             : ''
+<<<<<<< HEAD
+
+          // Compute utilisation percentage from batch snapshot
+          let utilPct: number | null = null
+          let utilInPct: number | null = null
+          let utilOutPct: number | null = null
+          if (e.source_iface_id && utilBatch?.[e.source_iface_id]) {
+            const snap = utilBatch[e.source_iface_id]
+            if (snap.speed_bps && snap.speed_bps > 0) {
+              utilInPct  = (snap.in_bps  / snap.speed_bps) * 100
+              utilOutPct = (snap.out_bps / snap.speed_bps) * 100
+              utilPct    = Math.max(utilInPct, utilOutPct)
+            }
+          }
+
+          const edgeDimmed = (!!selectedId && !isAdj) ||
+            (searchMatchIds !== null && !searchMatchIds.has(e.source) && !searchMatchIds.has(e.target))
+
+=======
+>>>>>>> origin/main
           return {
             id: e.id, source: e.source, target: e.target,
             sourceHandle: sh, targetHandle: th,
@@ -740,21 +1207,49 @@ export default function TopologyPage() {
               label,
               protocol:        e.protocol,
               highlighted:     !!selectedId && isAdj,
+<<<<<<< HEAD
+              dimmed:          edgeDimmed,
+=======
               dimmed:          !!selectedId && !isAdj,
+>>>>>>> origin/main
               source_port:     e.source_port,
               target_port:     e.target_port,
               speed_bps:       e.source_speed_bps,
               source_hostname: nodesById[e.source]?.hostname,
               target_hostname: nodesById[e.target]?.hostname,
               source_iface_id: e.source_iface_id,
+<<<<<<< HEAD
+              util_pct:        utilPct,
+              util_in_pct:     utilInPct,
+              util_out_pct:    utilOutPct,
+=======
+>>>>>>> origin/main
             },
           }
         })
     )
+<<<<<<< HEAD
+  }, [data, showIsolated, hiddenTypes, selectedId, protocolFilter, showLabels,
+      alertsByDevice, utilBatch, searchMatchIds, savedLayout])
+
+  // ── Drag with localStorage persistence ───────────────────────────────
+  const onNodesChange = useCallback((changes: NodeChange[]) => {
+    setRfNodes(prev => {
+      const next = applyNodeChanges(changes, prev)
+      clearTimeout(saveTimer.current)
+      saveTimer.current = setTimeout(() => {
+        const layout: Record<string, { x: number; y: number }> = {}
+        next.forEach(n => { layout[n.id] = n.position })
+        try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)) } catch { /* ignore */ }
+      }, 800)
+      return next
+    })
+=======
   }, [data, showIsolated, hiddenTypes, selectedId, protocolFilter, showLabels])
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setRfNodes(prev => applyNodeChanges(changes, prev))
+>>>>>>> origin/main
   }, [])
 
   const onNodeClick: NodeMouseHandler = (_, node) => {
@@ -762,6 +1257,13 @@ export default function TopologyPage() {
     setSelectedId(id => id === node.id ? null : node.id)
   }
 
+<<<<<<< HEAD
+  const onNodeDoubleClick: NodeMouseHandler = (_, node) => {
+    navigate(`/devices/${node.id}`)
+  }
+
+=======
+>>>>>>> origin/main
   const onEdgeClick = useCallback((e: React.MouseEvent, edge: Edge) => {
     setSelectedId(null)
     setSelectedEdgeId(prev => {
@@ -790,6 +1292,68 @@ export default function TopologyPage() {
     </button>
   )
 
+<<<<<<< HEAD
+  const hasUtilData = Object.keys(utilBatch ?? {}).length > 0
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-50">
+      <style>{`
+        @keyframes topoEdgeDash { to { stroke-dashoffset: -22; } }
+        @keyframes alertPulse {
+          0%, 100% { box-shadow: 0 0 0 2px white, 0 0 0 4px transparent; }
+          50%       { box-shadow: 0 0 0 2px white, 0 0 0 5px #dc262660; }
+        }
+      `}</style>
+
+      {/* Toolbar */}
+      <div className="px-3 py-2 border-b border-slate-200 bg-white shrink-0 z-10">
+        {/* Mobile row: title + refresh */}
+        <div className="flex items-center justify-between mb-1.5 md:hidden">
+          <div>
+            <span className="text-sm font-semibold text-slate-800">Topology</span>
+            <span className="ml-2 text-xs text-slate-400">{rfNodes.length}n · {rfEdges.length}l</span>
+          </div>
+          <button onClick={() => refetch()} disabled={isFetching} className="p-1.5 text-blue-600 disabled:opacity-50">
+            <svg className={`w-4 h-4 ${isFetching ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.66 0 3-4.03 3-9s-1.34-9-3-9m0 18c-1.66 0-3-4.03-3-9s1.34-9 3-9" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Controls row */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-semibold text-slate-800 mr-1 hidden md:inline">Topology</span>
+          <span className="text-xs text-slate-400 hidden md:inline">
+            {rfNodes.length} node{rfNodes.length !== 1 ? 's' : ''} · {rfEdges.length} link{rfEdges.length !== 1 ? 's' : ''}
+          </span>
+          <div className="hidden md:block h-4 w-px bg-slate-200" />
+
+          {/* Search */}
+          <div className="relative">
+            <svg className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400 pointer-events-none" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+            </svg>
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search…"
+              className={`pl-6 pr-2 py-1 rounded-lg text-xs border transition-colors w-28 focus:w-40 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                search ? 'border-blue-300 bg-blue-50' : 'border-slate-200 bg-white'
+              }`}
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </button>
+            )}
+          </div>
+
+          {/* Protocol filter */}
+          <div className="flex rounded-lg overflow-hidden border border-slate-200">
+            {(['all', 'lldp', 'cdp'] as const).map(p => (
+              <button key={p} onClick={() => setProtocol(p)}
+                className={`px-2 py-1 text-xs font-medium transition-colors ${
+=======
   return (
     <div className="flex flex-col h-screen bg-slate-50">
       {/* Dash animation keyframe */}
@@ -813,6 +1377,7 @@ export default function TopologyPage() {
             {(['all', 'lldp', 'cdp'] as const).map(p => (
               <button key={p} onClick={() => setProtocol(p)}
                 className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+>>>>>>> origin/main
                   protocolFilter === p
                     ? p === 'lldp' ? 'bg-cyan-600 text-white'
                       : p === 'cdp' ? 'bg-violet-600 text-white'
@@ -824,6 +1389,101 @@ export default function TopologyPage() {
               </button>
             ))}
           </div>
+<<<<<<< HEAD
+
+          {/* Device type filter */}
+          <div className="relative">
+            <button onClick={() => setTypeMenuOpen(o => !o)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border transition-colors ${
+                hiddenTypes.size > 0 ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+              }`}>
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M4 6h16M8 12h8M11 18h2"/></svg>
+              <span className="hidden sm:inline">Types</span>
+              {hiddenTypes.size > 0 && <span className="bg-blue-600 text-white rounded-full px-1 text-[10px]">{hiddenTypes.size}</span>}
+            </button>
+            {typeMenuOpen && (
+              <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-50 py-2 min-w-[160px]"
+                onMouseLeave={() => setTypeMenuOpen(false)}>
+                {deviceTypes.map(t => (
+                  <label key={t} className="flex items-center gap-2.5 px-3 py-2 hover:bg-slate-50 cursor-pointer">
+                    <input type="checkbox" checked={!hiddenTypes.has(t)} onChange={() => toggleType(t)} className="rounded border-slate-300 text-blue-600"/>
+                    <span style={{ color: TYPE_COLOR[t] ?? '#475569', opacity: hiddenTypes.has(t) ? 0.3 : 1 }}><DeviceTypeIcon type={t} size={13}/></span>
+                    <span className="text-xs text-slate-600 capitalize">{(t ?? 'unknown').replace('_', ' ')}</span>
+                  </label>
+                ))}
+                {hiddenTypes.size > 0 && (
+                  <button onClick={() => setHiddenTypes(new Set())} className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-slate-50 border-t border-slate-100 mt-1">Show all</button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <Pill active={showLabels} onClick={() => setShowLabels(v => !v)}>
+            <span className="hidden sm:inline">{showLabels ? 'Labels on' : 'Labels off'}</span>
+            <span className="sm:hidden">Lbl</span>
+          </Pill>
+          <Pill active={showIsolated} onClick={() => setShowIsolated(v => !v)}>
+            <span className="hidden sm:inline">{showIsolated ? 'All devices' : 'Connected only'}</span>
+            <span className="sm:hidden">All</span>
+          </Pill>
+
+          {/* Util legend toggle */}
+          {hasUtilData && (
+            <Pill active={showUtilLegend} onClick={() => setShowUtilLegend(v => !v)}>
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full inline-block" style={{ background: 'linear-gradient(90deg,#16a34a,#d97706,#dc2626)' }} />
+                <span className="hidden sm:inline">Util</span>
+              </span>
+            </Pill>
+          )}
+
+          {/* Reset layout */}
+          <button
+            onClick={() => {
+              try { localStorage.removeItem(LAYOUT_KEY) } catch { /* ignore */ }
+              if (data) {
+                const visible = data.nodes.filter(n => !hiddenTypes.has(n.device_type) && (showIsolated || n.connected))
+                const pos = hierLayout(visible, data.edges)
+                setRfNodes(prev => prev.map(n => ({ ...n, position: pos[n.id] ?? n.position })))
+              }
+            }}
+            title="Reset layout to auto-computed positions"
+            className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-medium border border-slate-200 bg-white text-slate-500 hover:border-slate-400 transition-colors"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+            </svg>
+            <span className="hidden sm:inline">Reset</span>
+          </button>
+
+          <div className="flex-1 hidden md:block"/>
+          <button onClick={() => refetch()} disabled={isFetching}
+            className="hidden md:flex items-center gap-1.5 text-xs text-blue-600 hover:underline disabled:opacity-50">
+            <svg className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+              <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.66 0 3-4.03 3-9s-1.34-9-3-9m0 18c-1.66 0-3-4.03-3-9s1.34-9 3-9"/>
+            </svg>
+            {isFetching ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
+
+        {/* Util legend row */}
+        {showUtilLegend && (
+          <div className="mt-2">
+            <UtilLegend />
+          </div>
+        )}
+
+        {/* Search result count */}
+        {searchMatchIds !== null && (
+          <div className="mt-1.5 text-xs text-slate-500">
+            {searchMatchIds.size === 0
+              ? <span className="text-red-500">No devices match "{search}"</span>
+              : <span>{searchMatchIds.size} device{searchMatchIds.size !== 1 ? 's' : ''} matched</span>
+            }
+          </div>
+        )}
+=======
         </div>
 
         <div className="h-4 w-px bg-slate-200" />
@@ -888,6 +1548,7 @@ export default function TopologyPage() {
           </svg>
           {isFetching ? 'Refreshing…' : 'Refresh'}
         </button>
+>>>>>>> origin/main
       </div>
 
       {/* Canvas */}
@@ -908,8 +1569,19 @@ export default function TopologyPage() {
               edgeTypes={EDGE_TYPES}
               onNodesChange={onNodesChange}
               onNodeClick={onNodeClick}
+<<<<<<< HEAD
+              onNodeDoubleClick={onNodeDoubleClick}
+              onEdgeClick={onEdgeClick}
+              onPaneClick={() => {
+                setSelectedId(null)
+                setSelectedEdgeId(null)
+                setEdgePanelPos(null)
+                setTypeMenuOpen(false)
+              }}
+=======
               onEdgeClick={onEdgeClick}
               onPaneClick={() => { setSelectedId(null); setSelectedEdgeId(null); setEdgePanelPos(null); setTypeMenuOpen(false) }}
+>>>>>>> origin/main
               fitView
               fitViewOptions={{ padding: 0.22 }}
               minZoom={0.1}
@@ -950,6 +1622,14 @@ export default function TopologyPage() {
                 />
               ) : null
             })()}
+<<<<<<< HEAD
+
+            {/* Hint */}
+            <div className="absolute bottom-14 left-1/2 -translate-x-1/2 text-[10px] text-slate-400 pointer-events-none">
+              Click node to inspect · Double-click to open · Click link for bandwidth
+            </div>
+=======
+>>>>>>> origin/main
           </>
         )}
       </div>

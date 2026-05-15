@@ -130,6 +130,8 @@ export interface AddressEntry {
   ip: string | null
   mac: string
   port: string | null
+  port_iface_id: string | null
+  vlan_interface: string | null
   vlan: number | null
   entry_type: string
   updated_at: string

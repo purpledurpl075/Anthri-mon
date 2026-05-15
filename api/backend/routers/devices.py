@@ -64,6 +64,29 @@ async def get_all_addresses(
     hostname = {str(r.id): r.fqdn or r.hostname for r in device_rows}
     allowed_ids = set(hostname.keys())
 
+    # Build MAC→(physical_port, vlan_id) lookup so ARP entries can show the
+    # physical port rather than the L3 SVI (e.g. "Vlan2").
+    mac_q = select(MACEntry).where(cast(MACEntry.device_id, String).in_(allowed_ids))
+    if device_id:
+        mac_q = mac_q.where(MACEntry.device_id == device_id)
+    mac_rows_all = (await db.execute(mac_q)).scalars().all()
+    # (device_id, normalised_mac) → (port_name, vlan_id)
+    mac_lookup: dict[tuple[str, str], tuple[str | None, int | None]] = {
+        (str(m.device_id), m.mac_address.lower()): (m.port_name, m.vlan_id)
+        for m in mac_rows_all
+    }
+
+    # Build (device_id, iface_name) → iface_id so port names become clickable links.
+    iface_q = select(Interface.id, Interface.device_id, Interface.name).where(
+        cast(Interface.device_id, String).in_(allowed_ids)
+    )
+    if device_id:
+        iface_q = iface_q.where(Interface.device_id == device_id)
+    iface_rows = (await db.execute(iface_q)).all()
+    iface_lookup: dict[tuple[str, str], str] = {
+        (str(r.device_id), r.name): str(r.id) for r in iface_rows
+    }
+
     if not type or type == "arp":
         q = select(ARPEntry).where(cast(ARPEntry.device_id, String).in_(allowed_ids))
         if device_id:
@@ -75,11 +98,19 @@ async def get_all_addresses(
             ))
         rows = (await db.execute(q.order_by(ARPEntry.ip_address))).scalars().all()
         for r in rows:
+            did      = str(r.device_id)
+            mac_info = mac_lookup.get((did, str(r.mac_address).lower()))
+            phys_port = mac_info[0] if mac_info else None
+            vlan_id   = mac_info[1] if mac_info else None
+            port_name = phys_port or r.interface_name
             items.append({
-                "type": "arp", "device_id": str(r.device_id),
-                "device_name": hostname.get(str(r.device_id), ""),
+                "type": "arp", "device_id": did,
+                "device_name": hostname.get(did, ""),
                 "ip": str(r.ip_address), "mac": str(r.mac_address),
-                "port": r.interface_name, "vlan": None,
+                "port":           port_name,
+                "port_iface_id":  iface_lookup.get((did, port_name)) if port_name else None,
+                "vlan_interface": r.interface_name if phys_port else None,
+                "vlan":           vlan_id,
                 "entry_type": r.entry_type, "updated_at": r.updated_at.isoformat(),
             })
 
@@ -91,11 +122,14 @@ async def get_all_addresses(
             q = q.where(cast(MACEntry.mac_address, String).ilike(f"%{search}%"))
         rows = (await db.execute(q.order_by(MACEntry.mac_address))).scalars().all()
         for r in rows:
+            did = str(r.device_id)
             items.append({
-                "type": "mac", "device_id": str(r.device_id),
-                "device_name": hostname.get(str(r.device_id), ""),
+                "type": "mac", "device_id": did,
+                "device_name": hostname.get(did, ""),
                 "ip": None, "mac": str(r.mac_address),
-                "port": r.port_name, "vlan": r.vlan_id,
+                "port":          r.port_name,
+                "port_iface_id": iface_lookup.get((did, r.port_name)) if r.port_name else None,
+                "vlan_interface": None, "vlan": r.vlan_id,
                 "entry_type": r.entry_type, "updated_at": r.updated_at.isoformat(),
             })
 
@@ -507,6 +541,20 @@ async def get_addresses(
 
     items: list[dict] = []
 
+    # MAC→(physical_port, vlan_id) so ARP rows can show the physical port
+    mac_rows_all = (await db.execute(
+        select(MACEntry).where(MACEntry.device_id == device_id)
+    )).scalars().all()
+    mac_lookup: dict[str, tuple[str | None, int | None]] = {
+        m.mac_address.lower(): (m.port_name, m.vlan_id) for m in mac_rows_all
+    }
+
+    # iface_name → iface_id so port names become clickable links
+    iface_rows = (await db.execute(
+        select(Interface.id, Interface.name).where(Interface.device_id == device_id)
+    )).all()
+    iface_lookup: dict[str, str] = {r.name: str(r.id) for r in iface_rows}
+
     if not type or type == "arp":
         q = select(ARPEntry).where(ARPEntry.device_id == device_id)
         if search:
@@ -516,14 +564,20 @@ async def get_addresses(
             ))
         rows = (await db.execute(q.order_by(ARPEntry.ip_address))).scalars().all()
         for r in rows:
+            mac_info  = mac_lookup.get(str(r.mac_address).lower())
+            phys_port = mac_info[0] if mac_info else None
+            vlan_id   = mac_info[1] if mac_info else None
+            port_name = phys_port or r.interface_name
             items.append({
-                "type": "arp",
-                "ip": str(r.ip_address),
-                "mac": str(r.mac_address),
-                "port": r.interface_name,
-                "vlan": None,
-                "entry_type": r.entry_type,
-                "updated_at": r.updated_at.isoformat(),
+                "type":           "arp",
+                "ip":             str(r.ip_address),
+                "mac":            str(r.mac_address),
+                "port":           port_name,
+                "port_iface_id":  iface_lookup.get(port_name) if port_name else None,
+                "vlan_interface": r.interface_name if phys_port else None,
+                "vlan":           vlan_id,
+                "entry_type":     r.entry_type,
+                "updated_at":     r.updated_at.isoformat(),
             })
 
     if not type or type == "mac":
@@ -533,13 +587,15 @@ async def get_addresses(
         rows = (await db.execute(q.order_by(MACEntry.mac_address))).scalars().all()
         for r in rows:
             items.append({
-                "type": "mac",
-                "ip": None,
-                "mac": str(r.mac_address),
-                "port": r.port_name,
-                "vlan": r.vlan_id,
-                "entry_type": r.entry_type,
-                "updated_at": r.updated_at.isoformat(),
+                "type":           "mac",
+                "ip":             None,
+                "mac":            str(r.mac_address),
+                "port":           r.port_name,
+                "port_iface_id":  iface_lookup.get(r.port_name) if r.port_name else None,
+                "vlan_interface": None,
+                "vlan":           r.vlan_id,
+                "entry_type":     r.entry_type,
+                "updated_at":     r.updated_at.isoformat(),
             })
 
     total = len(items)

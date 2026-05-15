@@ -339,6 +339,239 @@ async def reset_email_template(
         await db.commit()
 
 
+# ── Per-metric email templates ─────────────────────────────────────────────────
+
+ALERT_METRICS = [
+    "device_down", "interface_down", "interface_flap", "uptime",
+    "temperature", "cpu_util_pct", "mem_util_pct",
+    "interface_errors", "interface_util_pct",
+    "ospf_state", "route_missing", "custom_oid",
+]
+
+# Subjects tailored per metric — richer than the generic "[{{tag}}] {{title}}"
+METRIC_DEFAULT_SUBJECTS: dict[str, str] = {
+    "device_down":        "[{{tag}}] {{device_name}} is unreachable",
+    "interface_down":     "[{{tag}}] {{interface_name}} down on {{device_name}}",
+    "interface_flap":     "[{{tag}}] {{interface_name}} flapping on {{device_name}}",
+    "uptime":             "[{{tag}}] {{device_name}} rebooted (uptime {{value}}s)",
+    "temperature":        "[{{tag}}] Temperature alert on {{device_name}} — {{value}}°C",
+    "cpu_util_pct":       "[{{tag}}] CPU high on {{device_name}} — {{value}}%",
+    "mem_util_pct":       "[{{tag}}] Memory high on {{device_name}} — {{value}}%",
+    "interface_errors":   "[{{tag}}] Interface errors on {{device_name}}/{{interface_name}}",
+    "interface_util_pct": "[{{tag}}] High bandwidth on {{device_name}}/{{interface_name}} — {{value}}%",
+    "ospf_state":         "[{{tag}}] OSPF neighbour {{neighbour}} issue on {{device_name}}",
+    "route_missing":      "[{{tag}}] Route {{prefix}} missing on {{device_name}}",
+    "custom_oid":         "[{{tag}}] {{title}}",
+}
+
+# State metrics: no meaningful value/threshold — use a simplified layout
+_STATE_METRICS = {"device_down", "interface_down", "interface_flap", "ospf_state", "route_missing", "uptime"}
+
+DEFAULT_HTML_STATE = dedent("""\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="padding:32px 16px;">
+<tr><td align="center">
+<table width="560" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+
+  <!-- Header -->
+  <tr>
+    <td style="background:{{severity_color}};padding:28px 32px;">
+      <p style="margin:0 0 6px;color:rgba(255,255,255,0.75);font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;">{{tag}} &middot; Anthrimon</p>
+      <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:700;line-height:1.35;">{{title}}</h1>
+    </td>
+  </tr>
+
+  <!-- Body -->
+  <tr>
+    <td style="padding:28px 32px;">
+
+      <!-- Details table -->
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:24px;">
+        <tr>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;width:120px;vertical-align:top;">Rule</td>
+          <td style="font-size:13px;color:#1e293b;font-weight:500;padding:5px 0;">{{rule_name}}</td>
+        </tr>
+        <tr>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;">Device</td>
+          <td style="font-size:13px;color:#1e293b;font-weight:500;padding:5px 0;">{{device_name}}</td>
+        </tr>
+        <tr>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;">Severity</td>
+          <td style="font-size:13px;font-weight:600;padding:5px 0;color:{{severity_color}};">{{severity}}</td>
+        </tr>
+        <tr>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;">Interface</td>
+          <td style="font-size:13px;color:#1e293b;font-weight:500;padding:5px 0;font-family:monospace;">{{interface_name}}</td>
+        </tr>
+        <tr>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;">Prefix</td>
+          <td style="font-size:13px;color:#1e293b;font-weight:500;padding:5px 0;font-family:monospace;">{{prefix}}</td>
+        </tr>
+        <tr>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;">Neighbour</td>
+          <td style="font-size:13px;color:#1e293b;font-weight:500;padding:5px 0;font-family:monospace;">{{neighbour}}</td>
+        </tr>
+        <tr>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;">Triggered</td>
+          <td style="font-size:13px;color:#1e293b;padding:5px 0;">{{triggered_at}}</td>
+        </tr>
+        <tr>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;">Resolved</td>
+          <td style="font-size:13px;color:#1e293b;padding:5px 0;">{{resolved_at}}</td>
+        </tr>
+      </table>
+
+      <!-- CTA button -->
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr>
+          <td align="center">
+            <a href="{{alert_url}}" style="display:inline-block;background:#1e293b;color:#ffffff;text-decoration:none;font-size:13px;font-weight:600;padding:12px 32px;border-radius:8px;letter-spacing:0.2px;">View alert &rarr;</a>
+          </td>
+        </tr>
+      </table>
+
+    </td>
+  </tr>
+
+  <!-- Footer -->
+  <tr>
+    <td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 32px;text-align:center;">
+      <p style="margin:0;font-size:11px;color:#94a3b8;">{{platform_name}} Network Monitor &middot; <a href="{{alert_url}}" style="color:#94a3b8;text-decoration:underline;">Manage alert</a></p>
+    </td>
+  </tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>
+""")
+
+
+def _metric_defaults(metric: str) -> tuple[str, str]:
+    """Return (default_subject, default_html) for a given metric."""
+    subject = METRIC_DEFAULT_SUBJECTS.get(metric, DEFAULT_SUBJECT)
+    html = DEFAULT_HTML_STATE if metric in _STATE_METRICS else DEFAULT_HTML
+    return subject, html
+
+
+class EmailTemplateStatus(BaseModel):
+    metric: str
+    label:  str
+    is_custom: bool
+    subject: str
+    html: str
+
+
+@router.get("/settings/email-templates", response_model=list[EmailTemplateStatus],
+            summary="List all email templates (default + per-metric)")
+async def list_email_templates(
+    _: User = Depends(require_role("admin", "superadmin")),
+    db: AsyncSession = Depends(get_db),
+) -> list[EmailTemplateStatus]:
+    _METRIC_LABELS = {
+        "device_down": "Device unreachable", "interface_down": "Interface down",
+        "interface_flap": "Interface flapping", "uptime": "Device rebooted",
+        "temperature": "Temperature high", "cpu_util_pct": "CPU utilisation",
+        "mem_util_pct": "Memory utilisation", "interface_errors": "Interface errors",
+        "interface_util_pct": "Interface utilisation", "ospf_state": "OSPF neighbour issue",
+        "route_missing": "Route missing", "custom_oid": "Custom OID",
+    }
+    # Load all template rows in one query
+    rows = (await db.execute(
+        select(SystemSetting).where(
+            SystemSetting.key.in_(
+                [_TEMPLATE_KEY] + [f"{_TEMPLATE_KEY}_{m}" for m in ALERT_METRICS]
+            )
+        )
+    )).scalars().all()
+    stored = {r.key: r.value for r in rows}
+
+    result = []
+    for metric in ALERT_METRICS:
+        key = f"{_TEMPLATE_KEY}_{metric}"
+        def_subj, def_html = _metric_defaults(metric)
+        if key in stored and stored[key].get("html"):
+            result.append(EmailTemplateStatus(
+                metric=metric, label=_METRIC_LABELS.get(metric, metric),
+                is_custom=True,
+                subject=stored[key].get("subject", def_subj),
+                html=stored[key]["html"],
+            ))
+        else:
+            result.append(EmailTemplateStatus(
+                metric=metric, label=_METRIC_LABELS.get(metric, metric),
+                is_custom=False, subject=def_subj, html=def_html,
+            ))
+    return result
+
+
+@router.get("/settings/email-templates/{metric}", response_model=EmailTemplateRead,
+            summary="Get email template for a specific alert metric")
+async def get_metric_template(
+    metric: str,
+    _: User = Depends(require_role("admin", "superadmin")),
+    db: AsyncSession = Depends(get_db),
+) -> EmailTemplateRead:
+    if metric not in ALERT_METRICS:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Unknown metric")
+    key = f"{_TEMPLATE_KEY}_{metric}"
+    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == key))).scalar_one_or_none()
+    def_subj, def_html = _metric_defaults(metric)
+    if row and row.value.get("html"):
+        return EmailTemplateRead(
+            subject=row.value.get("subject", def_subj),
+            html=row.value["html"],
+        )
+    return EmailTemplateRead(subject=def_subj, html=def_html)
+
+
+@router.put("/settings/email-templates/{metric}", response_model=EmailTemplateRead,
+            summary="Save email template for a specific alert metric")
+async def save_metric_template(
+    metric: str,
+    body: EmailTemplateWrite,
+    _: User = Depends(require_role("admin", "superadmin")),
+    db: AsyncSession = Depends(get_db),
+) -> EmailTemplateRead:
+    if metric not in ALERT_METRICS:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Unknown metric")
+    key = f"{_TEMPLATE_KEY}_{metric}"
+    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == key))).scalar_one_or_none()
+    value = {"subject": body.subject, "html": body.html}
+    if row:
+        row.value = value
+    else:
+        db.add(SystemSetting(key=key, value=value))
+    await db.commit()
+    return EmailTemplateRead(**value)
+
+
+@router.delete("/settings/email-templates/{metric}", status_code=204, response_model=None,
+               summary="Reset a metric email template to default")
+async def reset_metric_template(
+    metric: str,
+    _: User = Depends(require_role("admin", "superadmin")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    if metric not in ALERT_METRICS:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Unknown metric")
+    key = f"{_TEMPLATE_KEY}_{metric}"
+    row = (await db.execute(select(SystemSetting).where(SystemSetting.key == key))).scalar_one_or_none()
+    if row:
+        await db.delete(row)
+        await db.commit()
+
+
 # ── Platform settings ──────────────────────────────────────────────────────────
 
 async def load_platform_settings(db: AsyncSession) -> dict:

@@ -34,8 +34,19 @@ export interface LinkUtilisation {
   out_bps: [number, number][]
 }
 
+export interface IfaceUtilSnap {
+  in_bps: number
+  out_bps: number
+  speed_bps: number | null
+}
+
 export const fetchTopology = () =>
   api.get<TopologyResponse>('/topology').then(r => r.data)
 
 export const fetchLinkUtil = (ifaceId: string) =>
   api.get<LinkUtilisation>(`/interfaces/${ifaceId}/utilisation`).then(r => r.data)
+
+export const fetchLinkUtilBatch = (ifaceIds: string[]) =>
+  api.get<Record<string, IfaceUtilSnap>>('/topology/link-utilisation', {
+    params: { iface_ids: ifaceIds.join(',') },
+  }).then(r => r.data)

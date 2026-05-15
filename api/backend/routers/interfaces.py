@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 
 import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_current_user, get_db, require_role
+from ..dependencies import get_current_user, get_current_user_sse, get_db, require_role
 from ..models.interface import Interface
 from ..models.tenant import User
 from ..schemas.interface import InterfaceRead, InterfaceUpdate
@@ -64,16 +66,24 @@ async def get_interface_utilisation(
     start = now - int(hours * 3600)
 
     if hours <= 1:
-        step = 60
+        step     = 15
+        lookback = 60   # irate only uses last 2 samples — longer window just guards missed polls
+        rate_fn  = "irate"
     elif hours <= 6:
-        step = 300
+        step     = 60
+        lookback = 120  # 2× step so spikes can't straddle a boundary
+        rate_fn  = "rate"
     elif hours <= 24:
-        step = 900
+        step     = 300
+        lookback = 600
+        rate_fn  = "rate"
     else:
-        step = 3600
+        step     = 3600
+        lookback = 7200
+        rate_fn  = "rate"
 
     def q(metric: str, multiplier: str = "") -> str:
-        base = f'rate({metric}{{device_id="{device_id}",if_index="{if_index}"}}[{step}s])'
+        base = f'{rate_fn}({metric}{{device_id="{device_id}",if_index="{if_index}"}}[{lookback}s])'
         return base + multiplier
 
     queries = {
@@ -116,6 +126,207 @@ async def get_interface_utilisation(
         "speed_bps": iface.speed_bps,
         **result,
     }
+
+
+_LIVE_OIDS = {
+    "in_octets":    "1.3.6.1.2.1.31.1.1.1.6",   # ifHCInOctets  (64-bit)
+    "out_octets":   "1.3.6.1.2.1.31.1.1.1.10",  # ifHCOutOctets (64-bit)
+    "in_errors":    "1.3.6.1.2.1.2.2.1.14",     # ifInErrors
+    "out_errors":   "1.3.6.1.2.1.2.2.1.20",     # ifOutErrors
+    "in_pkts":      "1.3.6.1.2.1.31.1.1.1.7",   # ifHCInUcastPkts  (64-bit)
+    "out_pkts":     "1.3.6.1.2.1.31.1.1.1.11",  # ifHCOutUcastPkts (64-bit)
+    "in_discards":  "1.3.6.1.2.1.2.2.1.13",     # ifInDiscards
+    "out_discards": "1.3.6.1.2.1.2.2.1.19",     # ifOutDiscards
+}
+
+
+def _escape_label(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+_AUTH_PROTO = {
+    "md5":    "usmHMACMD5AuthProtocol",
+    "sha":    "usmHMACSHAAuthProtocol",
+    "sha256": "usmHMAC192SHA256AuthProtocol",
+    "sha512": "usmHMAC384SHA512AuthProtocol",
+}
+_PRIV_PROTO = {
+    "des":    "usmDESPrivProtocol",
+    "aes":    "usmAesCfb128Protocol",
+    "aes192": "usmAesCfb192Protocol",
+    "aes256": "usmAesCfb256Protocol",
+}
+
+
+@router.get("/{interface_id}/live", summary="Live SNMP counter stream (Server-Sent Events)")
+async def interface_live_stream(
+    interface_id: uuid.UUID,
+    current_user: User = Depends(get_current_user_sse),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    from ..models.device import Device
+    from ..models.credential import Credential, DeviceCredential
+    import pysnmp.hlapi.v3arch.asyncio as hlapi
+    from pysnmp.hlapi.v3arch.asyncio import (
+        CommunityData, ContextData, ObjectIdentity, ObjectType,
+        SnmpEngine, UdpTransportTarget, UsmUserData, get_cmd,
+    )
+
+    iface = await _get_interface_for_tenant(interface_id, current_user.tenant_id, db)
+
+    device = (await db.execute(
+        select(Device).where(Device.id == iface.device_id)
+    )).scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    cred_row = (await db.execute(
+        select(DeviceCredential, Credential)
+        .join(Credential, Credential.id == DeviceCredential.credential_id)
+        .where(
+            DeviceCredential.device_id == device.id,
+            Credential.type.in_(["snmp_v2c", "snmp_v3"]),
+        )
+        .order_by(DeviceCredential.priority)
+    )).first()
+    if cred_row is None:
+        raise HTTPException(status_code=400, detail="No SNMP credential assigned to this device")
+
+    _, cred = cred_row
+    cred_data = cred.data if isinstance(cred.data, dict) else json.loads(cred.data)
+
+    host       = str(device.mgmt_ip).split("/")[0]
+    port       = device.snmp_port or 161
+    if_index   = iface.if_index
+    speed_bps  = iface.speed_bps
+    if_name    = iface.name
+    vendor_str = device.vendor or ""
+    vm_labels  = (
+        f'device_id="{device.id}",'
+        f'if_index="{if_index}",'
+        f'if_name="{_escape_label(if_name)}",'
+        f'vendor="{_escape_label(vendor_str)}"'
+    )
+
+    if cred.type == "snmp_v2c":
+        auth = CommunityData(cred_data.get("community", "public"), mpModel=1)
+    else:
+        auth = UsmUserData(
+            cred_data["username"],
+            authKey=cred_data.get("auth_key", ""),
+            privKey=cred_data.get("priv_key", ""),
+            authProtocol=getattr(hlapi, _AUTH_PROTO.get(cred_data.get("auth_protocol", "sha256").lower(), "usmHMAC192SHA256AuthProtocol")),
+            privProtocol=getattr(hlapi, _PRIV_PROTO.get(cred_data.get("priv_protocol", "aes").lower(), "usmAesCfb128Protocol")),
+        )
+
+    async def _stream():
+        engine    = SnmpEngine()
+        vm_client = httpx.AsyncClient(timeout=5)
+        prev: dict | None = None
+        try:
+            transport = await UdpTransportTarget.create((host, port), timeout=3, retries=0)
+            oid_objs  = [ObjectType(ObjectIdentity(f"{base}.{if_index}")) for base in _LIVE_OIDS.values()]
+
+            for _ in range(100):  # 100 × 3 s = 5 min max
+                ts = time.time()
+                try:
+                    err_ind, err_status, _, vbs = await get_cmd(
+                        engine, auth, transport, ContextData(), *oid_objs
+                    )
+                    if err_ind or err_status:
+                        msg = str(err_ind) if err_ind else err_status.prettyPrint()
+                        yield f"data: {json.dumps({'error': msg})}\n\n"
+                        return
+
+                    counters: dict[str, int] = {}
+                    for key, vb in zip(_LIVE_OIDS.keys(), vbs):
+                        try:
+                            counters[key] = int(vb[1])
+                        except Exception:
+                            counters[key] = 0
+
+                    # Write raw counter values to VictoriaMetrics so the historical
+                    # chart benefits from live mode's 3 s resolution.
+                    ts_ms = int(ts * 1000)
+                    vm_lines = "\n".join([
+                        f'anthrimon_if_in_octets_total{{{vm_labels}}} {counters["in_octets"]} {ts_ms}',
+                        f'anthrimon_if_out_octets_total{{{vm_labels}}} {counters["out_octets"]} {ts_ms}',
+                        f'anthrimon_if_in_errors_total{{{vm_labels}}} {counters["in_errors"]} {ts_ms}',
+                        f'anthrimon_if_out_errors_total{{{vm_labels}}} {counters["out_errors"]} {ts_ms}',
+                        f'anthrimon_if_in_discards_total{{{vm_labels}}} {counters["in_discards"]} {ts_ms}',
+                        f'anthrimon_if_out_discards_total{{{vm_labels}}} {counters["out_discards"]} {ts_ms}',
+                    ]) + "\n"
+                    try:
+                        await vm_client.post(
+                            f"{_VM_URL}/api/v1/import/prometheus",
+                            content=vm_lines,
+                            headers={"Content-Type": "text/plain"},
+                        )
+                    except Exception:
+                        pass  # non-fatal — SSE stream continues
+
+                    if prev is not None:
+                        dt = ts - prev["ts"]
+                        if dt > 0:
+                            in_bps    = max(0.0, (counters["in_octets"]  - prev["in_octets"])  * 8 / dt)
+                            out_bps   = max(0.0, (counters["out_octets"] - prev["out_octets"]) * 8 / dt)
+                            in_pps    = max(0.0, (counters["in_pkts"]    - prev["in_pkts"])    / dt)
+                            out_pps   = max(0.0, (counters["out_pkts"]   - prev["out_pkts"])   / dt)
+                            in_err_s  = max(0.0, (counters["in_errors"]  - prev["in_errors"])  / dt)
+                            out_err_s = max(0.0, (counters["out_errors"] - prev["out_errors"]) / dt)
+                            event = {
+                                "ts":           ts,
+                                "in_bps":       in_bps,
+                                "out_bps":      out_bps,
+                                "in_pps":       in_pps,
+                                "out_pps":      out_pps,
+                                "in_errors_ps": in_err_s,
+                                "out_errors_ps":out_err_s,
+                                "util_in_pct":  round(in_bps  / speed_bps * 100, 2) if speed_bps else None,
+                                "util_out_pct": round(out_bps / speed_bps * 100, 2) if speed_bps else None,
+                            }
+                        else:
+                            event = {"ts": ts}
+                    else:
+                        # First sample: counters received but no rate yet
+                        event = {
+                            "ts":           ts,
+                            "in_bps":       None, "out_bps":       None,
+                            "in_pps":       None, "out_pps":       None,
+                            "in_errors_ps": None, "out_errors_ps": None,
+                            "util_in_pct":  None, "util_out_pct":  None,
+                        }
+
+                    prev = {"ts": ts, **counters}
+                    yield f"data: {json.dumps(event)}\n\n"
+
+                except asyncio.CancelledError:
+                    return
+                except Exception as exc:
+                    yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+                    return
+
+                try:
+                    await asyncio.sleep(3)
+                except asyncio.CancelledError:
+                    return
+
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+        finally:
+            await vm_client.aclose()
+            yield 'data: {"done":true}\n\n'
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control":    "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection":        "keep-alive",
+        },
+    )
 
 
 async def _get_interface_for_tenant(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional  # noqa: F401 — used in _next_fire return type
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -20,9 +20,20 @@ router = APIRouter(prefix="/maintenance-windows", tags=["maintenance"])
 
 
 def _to_read(w: MaintenanceWindow) -> MaintenanceWindowRead:
+    now = datetime.now(timezone.utc)
     r = MaintenanceWindowRead.model_validate(w)
-    r.is_active = is_window_active(w, datetime.now(timezone.utc))
+    r.is_active = is_window_active(w, now)
+    if w.is_recurring and w.recurrence_cron:
+        r.next_fire_at = _next_fire(w.recurrence_cron, now)
     return r
+
+
+def _next_fire(cron_expr: str, now: datetime) -> Optional[datetime]:
+    try:
+        from croniter import croniter
+        return croniter(cron_expr, now).get_next(datetime).replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
 
 
 @router.get("", response_model=list[MaintenanceWindowRead])

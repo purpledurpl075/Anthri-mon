@@ -16,6 +16,9 @@ import TopologyPage from './pages/TopologyPage'
 import AlertDetailPage from './pages/AlertDetailPage'
 import InterfaceDetailPage from './pages/InterfaceDetailPage'
 import MaintenancePage from './pages/MaintenancePage'
+import FlowPage from './pages/FlowPage'
+import SyslogPage from './pages/SyslogPage'
+import ConfigPage from './pages/ConfigPage'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 
@@ -45,6 +48,9 @@ export default function App() {
             <Route path="/topology"     element={<TopologyPage />} />
             <Route path="/alerts/:id"    element={<AlertDetailPage />} />
             <Route path="/maintenance"   element={<MaintenancePage />} />
+            <Route path="/flow"          element={<FlowPage />} />
+            <Route path="/syslog"        element={<SyslogPage />} />
+            <Route path="/config"        element={<ConfigPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

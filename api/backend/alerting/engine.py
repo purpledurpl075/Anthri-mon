@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -20,7 +21,8 @@ from .evaluators import (
     eval_cpu, eval_mem, eval_device_down,
     eval_interface_down, eval_interface_flap,
     eval_uptime, eval_temperature, eval_interface_errors, eval_interface_util,
-    eval_custom_oid, eval_ospf_state, eval_route_missing,
+    eval_custom_oid, eval_ospf_state, eval_route_missing, eval_flow_bandwidth,
+    eval_syslog_match, fetch_syslog_context,
     resolve_devices,
 )
 
@@ -90,11 +92,13 @@ def _build_title(rule: AlertRule, breach: Breach) -> str:
         "interface_down":  "interface down",
         "interface_flap":  f"interface flapping ({int(min(breach.value or 0, 1e9))} changes)",
         "temperature":     f"temperature {breach.value:.1f}°C" if breach.value is not None else "temperature high",
-        "interface_errors":   f"interface errors ({int(breach.value or 0)})",
+        "interface_errors":   f"interface errors ({int(breach.value) if breach.value and math.isfinite(breach.value) else 0})",
         "interface_util_pct": f"bandwidth {breach.value:.1f}%" if breach.value is not None else "bandwidth high",
         "ospf_state":      f"OSPF neighbour {breach.extra.get('neighbour','')} {breach.extra.get('ospf_state','')}",
         "uptime":          f"rebooted (uptime {int(breach.value or 0)}s)",
-        "route_missing":   f"route {breach.extra.get('prefix', rule.custom_oid or '?')} missing",
+        "route_missing":    f"route {breach.extra.get('prefix', rule.custom_oid or '?')} missing",
+        "flow_bandwidth":  f"flow bandwidth {breach.value / 1e6:.1f} Mbps ({breach.extra.get('flow_filter','')}) high" if breach.value is not None else "flow bandwidth high",
+        "syslog_match":    f"syslog match ({int(breach.value or 0)}×): {breach.extra.get('syslog_message', breach.extra.get('syslog_pattern','')[:60])}",
     }
     return f"{base}: {metric_labels.get(rule.metric, rule.metric)}"
 
@@ -298,6 +302,16 @@ class AlertEngine:
                 if b: breaches.append(b)
             elif rule.metric == "route_missing" and rule.custom_oid:
                 breaches.extend(await eval_route_missing(db, device, rule.custom_oid))
+            elif rule.metric == "flow_bandwidth" and rule.threshold is not None:
+                b = await eval_flow_bandwidth(device, rule.custom_oid or "", rule.threshold)
+                if b: breaches.append(b)
+            elif rule.metric == "syslog_match" and rule.custom_oid:
+                b = await eval_syslog_match(
+                    device, rule.custom_oid,
+                    rule.threshold or 1,
+                    rule.duration_seconds or 300,
+                )
+                if b: breaches.append(b)
 
             # Extra conditions — ALL must also be true (AND logic)
             if len(breaches) > pre_breach_count and rule.extra_conditions:
@@ -419,11 +433,15 @@ class AlertEngine:
                     title=_build_title(rule, breach),
                     message=rule.description,
                     context={
-                        "metric": rule.metric,
-                        "value": breach.value,
-                        "threshold": rule.threshold,
-                        "condition": rule.condition,
+                        "metric":      rule.metric,
+                        "device_name": breach.device_name,
+                        "value":       breach.value,
+                        "threshold":   rule.threshold,
+                        "condition":   rule.condition,
                         **breach.extra,
+                        # Annotate with recent syslog from this device (best-effort)
+                        "syslog_context": await fetch_syslog_context(breach.device_id, count=5)
+                                          if breach.device_id else [],
                     },
                     triggered_at=now,
                     fingerprint=fp,
