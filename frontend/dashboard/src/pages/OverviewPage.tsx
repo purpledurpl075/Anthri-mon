@@ -359,47 +359,6 @@ function TopBandwidthSection() {
             ))}
           </div>
         </div>
-<<<<<<< HEAD
-        <div className="flex items-center gap-2">
-          {data && !isEditing && (
-            <div className="hidden sm:flex items-center gap-1.5 text-xs text-slate-400 mr-2">
-              <span className={`w-1.5 h-1.5 rounded-full ${(pollPct ?? 0) >= 90 ? 'bg-green-500' : (pollPct ?? 0) >= 60 ? 'bg-amber-500' : 'bg-red-500'}`} />
-              {data.poll_health.polled_recently}/{data.poll_health.total_active} polled
-            </div>
-          )}
-          {isEditing && (
-            <button
-              onClick={reset}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors"
-              title="Reset to default layout"
-            >
-              <Icons.Reset />
-              Reset
-            </button>
-          )}
-          <button
-            onClick={() => setIsEditing(e => !e)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-              isEditing
-                ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
-                : 'text-slate-600 border-slate-200 hover:bg-slate-50'
-            }`}
-          >
-            {isEditing ? (
-              <>
-                <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5"><path fillRule="evenodd" d="M12.78 5.22a.75.75 0 0 1 0 1.06l-7.25 7.25a.75.75 0 0 1-1.06-1.06l7.25-7.25a.75.75 0 0 1 1.06 0z"/><path fillRule="evenodd" d="M3.47 5.22a.75.75 0 0 0 0 1.06l7.25 7.25a.75.75 0 1 0 1.06-1.06L4.53 5.22a.75.75 0 0 0-1.06 0z"/></svg>
-                Done
-              </>
-            ) : (
-              <>
-                <Icons.Settings />
-                Customize
-              </>
-            )}
-          </button>
-        </div>
-=======
->>>>>>> origin/main
       </div>
       {isLoading ? (
         <div className="px-5 py-8 text-center text-xs text-slate-400">Loading…</div>
@@ -496,8 +455,6 @@ function TopAlertingDevices({ devices, maxCount }: {
     </div>
   )
 }
-<<<<<<< HEAD
-=======
 
 // ── Recently resolved ─────────────────────────────────────────────────────────
 

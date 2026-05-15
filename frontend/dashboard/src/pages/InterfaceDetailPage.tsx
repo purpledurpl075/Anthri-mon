@@ -774,7 +774,6 @@ export default function InterfaceDetailPage() {
         )}
 
       </div>
->>>>>>> origin/main
     </div>
   )
 }

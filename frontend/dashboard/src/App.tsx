@@ -32,7 +32,9 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
-          <Route path="/login" element={<Login />} />
+          <Route path="/login" element={
+            localStorage.getItem('token') ? <Navigate to="/" replace /> : <Login />
+          } />
           <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route path="/"            element={<OverviewPage />} />
             <Route path="/devices"     element={<DeviceList />} />
