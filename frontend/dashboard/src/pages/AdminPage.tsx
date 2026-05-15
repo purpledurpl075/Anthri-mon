@@ -830,51 +830,95 @@ function PlatformTab() {
 // ── Email template tab ─────────────────────────────────────────────────────────
 
 interface EmailTemplate { subject: string; html: string }
+interface EmailTemplateStatus { metric: string; label: string; is_custom: boolean; subject: string; html: string }
 
 const TEMPLATE_VARS = [
   { name: 'title',          desc: 'Full alert title' },
   { name: 'tag',            desc: 'CRITICAL / RESOLVED' },
   { name: 'severity',       desc: 'critical / major / minor…' },
   { name: 'severity_color', desc: 'Hex colour for severity' },
+  { name: 'metric',         desc: 'Alert metric type' },
   { name: 'rule_name',      desc: 'Alert rule name' },
+  { name: 'description',    desc: 'Rule description' },
   { name: 'device_name',    desc: 'Device hostname' },
   { name: 'value',          desc: 'Current metric value' },
   { name: 'threshold',      desc: 'Rule threshold' },
+  { name: 'interface_name', desc: 'Interface name (interface alerts)' },
+  { name: 'prefix',         desc: 'Route prefix (route_missing)' },
+  { name: 'neighbour',      desc: 'OSPF neighbour (ospf_state)' },
   { name: 'triggered_at',   desc: 'Time alert fired' },
   { name: 'resolved_at',    desc: 'Time alert resolved' },
   { name: 'alert_url',      desc: 'Deep-link to alert detail' },
-  { name: 'platform_name', desc: 'Platform name from settings' },
+  { name: 'platform_name',  desc: 'Platform name from settings' },
 ]
 
-// Sample context for live preview
-const PREVIEW_CTX: Record<string, string> = {
-  title:          'coresw: CPU 94.2%',
-  tag:            'CRITICAL',
-  severity:       'critical',
-  severity_color: '#dc2626',
-  rule_name:      'CPU High — Lab',
-  device_name:    'coresw.lab.local',
-  value:          '94.2%',
-  threshold:      '90%',
-  triggered_at:   '2026-05-10 02:45 UTC',
-  resolved_at:    '—',
-  alert_url:      '#',
-  alert_id:       '00000000-0000-0000-0000-000000000000',
+const PREVIEW_CTX_BASE: Record<string, string> = {
+  tag: 'CRITICAL', severity: 'critical', severity_color: '#dc2626',
+  rule_name: 'Lab test rule', description: 'Lab alert rule for testing',
+  device_name: 'coresw.lab.local',
+  triggered_at: '2026-05-10 02:45 UTC', resolved_at: '—',
+  alert_url: '#', alert_id: '00000000-0000-0000-0000-000000000000',
+  platform_name: 'Anthrimon',
 }
 
-function renderPreview(template: string): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, k) => PREVIEW_CTX[k] ?? `{{${k}}}`)
+const PREVIEW_CTX_BY_METRIC: Record<string, Record<string, string>> = {
+  default:          { ...PREVIEW_CTX_BASE, metric: '', title: 'coresw: CPU 94.2%', value: '94.2', threshold: '90' },
+  cpu_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'cpu_util_pct', title: 'coresw: CPU 94.2%', value: '94.2', threshold: '90', interface_name: '', prefix: '', neighbour: '' },
+  mem_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'mem_util_pct', title: 'coresw: Memory 88%', value: '88', threshold: '85', interface_name: '', prefix: '', neighbour: '' },
+  device_down:      { ...PREVIEW_CTX_BASE, metric: 'device_down', title: 'coresw.lab.local: device unreachable', value: '—', threshold: '—', interface_name: '', prefix: '', neighbour: '' },
+  interface_down:   { ...PREVIEW_CTX_BASE, metric: 'interface_down', title: 'coresw: Gi0/1 down', value: '—', threshold: '—', interface_name: 'GigabitEthernet0/1', prefix: '', neighbour: '' },
+  interface_flap:   { ...PREVIEW_CTX_BASE, metric: 'interface_flap', title: 'coresw: Gi0/1 flapping', value: '5', threshold: '3', interface_name: 'GigabitEthernet0/1', prefix: '', neighbour: '' },
+  route_missing:    { ...PREVIEW_CTX_BASE, metric: 'route_missing', title: 'route 10.0.0.0/8 missing', value: '—', threshold: '—', interface_name: '', prefix: '10.0.0.0/8', neighbour: '' },
+  ospf_state:       { ...PREVIEW_CTX_BASE, metric: 'ospf_state', title: 'OSPF neighbour 192.168.1.2 not full', value: '—', threshold: '—', interface_name: '', prefix: '', neighbour: '192.168.1.2' },
+  temperature:      { ...PREVIEW_CTX_BASE, metric: 'temperature', title: 'coresw: temperature 78°C', value: '78', threshold: '70', interface_name: '', prefix: '', neighbour: '' },
+  interface_errors: { ...PREVIEW_CTX_BASE, metric: 'interface_errors', title: 'coresw: interface errors (342)', value: '342', threshold: '100', interface_name: 'GigabitEthernet0/2', prefix: '', neighbour: '' },
+  interface_util_pct: { ...PREVIEW_CTX_BASE, metric: 'interface_util_pct', title: 'coresw: bandwidth 92%', value: '92', threshold: '80', interface_name: 'GigabitEthernet0/0', prefix: '', neighbour: '' },
+  uptime:           { ...PREVIEW_CTX_BASE, metric: 'uptime', title: 'coresw rebooted (uptime 45s)', value: '45', threshold: '300', interface_name: '', prefix: '', neighbour: '' },
+  custom_oid:       { ...PREVIEW_CTX_BASE, metric: 'custom_oid', title: 'Custom OID alert', value: '42', threshold: '10', interface_name: '', prefix: '', neighbour: '' },
+}
+
+function renderPreview(template: string, metric: string): string {
+  const ctx = PREVIEW_CTX_BY_METRIC[metric] ?? PREVIEW_CTX_BY_METRIC['default']
+  return template.replace(/\{\{(\w+)\}\}/g, (_, k) => ctx[k] ?? `{{${k}}}`)
+}
+
+const METRIC_LABELS: Record<string, string> = {
+  default:          'Default (all types)',
+  device_down:      'Device unreachable',
+  interface_down:   'Interface down',
+  interface_flap:   'Interface flapping',
+  uptime:           'Device rebooted',
+  temperature:      'Temperature high',
+  cpu_util_pct:     'CPU utilisation',
+  mem_util_pct:     'Memory utilisation',
+  interface_errors: 'Interface errors',
+  interface_util_pct: 'Interface utilisation',
+  ospf_state:       'OSPF neighbour issue',
+  route_missing:    'Route missing',
+  custom_oid:       'Custom OID',
 }
 
 function EmailTemplateTab() {
   const qc = useQueryClient()
+  const [selectedMetric, setSelectedMetric] = useState('default')
   const [subject, setSubject] = useState('')
   const [html,    setHtml]    = useState('')
   const [saved,   setSaved]   = useState(false)
 
+  // Load all templates for sidebar status
+  const { data: allTemplates = [] } = useQuery<EmailTemplateStatus[]>({
+    queryKey: ['email-templates-all'],
+    queryFn:  () => api.get<EmailTemplateStatus[]>('/admin/settings/email-templates').then(r => r.data),
+  })
+
+  // Load the selected template
+  const url = selectedMetric === 'default'
+    ? '/admin/settings/email-template'
+    : `/admin/settings/email-templates/${selectedMetric}`
+
   const { data, isLoading } = useQuery<EmailTemplate>({
-    queryKey: ['email-template'],
-    queryFn:  () => api.get<EmailTemplate>('/admin/settings/email-template').then(r => r.data),
+    queryKey: ['email-template', selectedMetric],
+    queryFn:  () => api.get<EmailTemplate>(url).then(r => r.data),
   })
 
   useEffect(() => {
@@ -882,96 +926,152 @@ function EmailTemplateTab() {
   }, [data])
 
   const saveMut = useMutation({
-    mutationFn: () => api.put('/admin/settings/email-template', { subject, html }),
-    onSuccess:  () => { qc.invalidateQueries({ queryKey: ['email-template'] }); setSaved(true); setTimeout(() => setSaved(false), 2000) },
+    mutationFn: () => api.put(url, { subject, html }),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: ['email-template', selectedMetric] })
+      qc.invalidateQueries({ queryKey: ['email-templates-all'] })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    },
   })
 
   const resetMut = useMutation({
-    mutationFn: () => api.delete('/admin/settings/email-template'),
-    onSuccess:  () => qc.invalidateQueries({ queryKey: ['email-template'] }),
+    mutationFn: () => selectedMetric === 'default'
+      ? api.delete('/admin/settings/email-template')
+      : api.delete(`/admin/settings/email-templates/${selectedMetric}`),
+    onSuccess:  () => {
+      qc.invalidateQueries({ queryKey: ['email-template', selectedMetric] })
+      qc.invalidateQueries({ queryKey: ['email-templates-all'] })
+    },
   })
+
+  const statusByMetric = Object.fromEntries(allTemplates.map(t => [t.metric, t]))
+  const allMetrics = ['default', ...Object.keys(METRIC_LABELS).filter(k => k !== 'default')]
 
   if (isLoading) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="px-3 md:px-6 py-3 border-b border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 bg-white shrink-0">
-        <div className="flex-1 flex items-center gap-2 min-w-0">
-          <span className="text-xs font-medium text-slate-500 shrink-0">Subject</span>
-          <input
-            value={subject}
-            onChange={e => setSubject(e.target.value)}
-            className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-0"
-            placeholder="[{{tag}}] {{title}}"
-          />
+    <div className="flex h-full min-h-0">
+      {/* Sidebar — metric selector */}
+      <div className="w-48 shrink-0 border-r border-slate-200 bg-slate-50 overflow-y-auto flex flex-col">
+        <div className="px-3 py-2.5 border-b border-slate-200">
+          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Alert type</p>
         </div>
-        <button
-          onClick={() => { if (confirm('Reset to default template?')) resetMut.mutate() }}
-          disabled={resetMut.isPending}
-          className="px-3 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50 shrink-0"
-        >
-          Reset to default
-        </button>
-        <button
-          onClick={() => saveMut.mutate()}
-          disabled={saveMut.isPending}
-          className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-colors shrink-0 ${
-            saved ? 'bg-green-600 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'
-          } disabled:opacity-50`}
-        >
-          {saved ? 'Saved!' : saveMut.isPending ? 'Saving…' : 'Save'}
-        </button>
+        <div className="flex-1 overflow-y-auto py-1">
+          {allMetrics.map(metric => {
+            const status = metric === 'default' ? null : statusByMetric[metric]
+            const isCustom = metric === 'default'
+              ? false  // default is always "the default"
+              : status?.is_custom ?? false
+            return (
+              <button
+                key={metric}
+                onClick={() => setSelectedMetric(metric)}
+                className={`w-full text-left px-3 py-2 flex items-center justify-between gap-1 transition-colors ${
+                  selectedMetric === metric
+                    ? 'bg-white text-slate-800 border-r-2 border-blue-500'
+                    : 'text-slate-600 hover:bg-white hover:text-slate-800'
+                }`}
+              >
+                <span className="text-xs truncate">{METRIC_LABELS[metric] ?? metric}</span>
+                {isCustom && (
+                  <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-blue-100 text-blue-600 shrink-0">custom</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
-      {/* Split pane — stacks on mobile, side-by-side on md+ */}
-      <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
-        {/* Editor */}
-        <div className="w-full md:w-1/2 flex flex-col border-b md:border-b-0 md:border-r border-slate-200 min-h-0" style={{ minHeight: 300 }}>
-          <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">HTML</span>
-            <span className="text-[10px] text-slate-400">{html.length} chars</span>
+      {/* Editor pane */}
+      <div className="flex-1 flex flex-col min-w-0 min-h-0">
+        {/* Toolbar */}
+        <div className="px-4 py-3 border-b border-slate-100 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 bg-white shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="text-xs font-medium text-slate-500 shrink-0">Subject</span>
+            <input
+              value={subject}
+              onChange={e => setSubject(e.target.value)}
+              className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-0"
+              placeholder="[{{tag}}] {{title}}"
+            />
           </div>
-          <textarea
-            value={html}
-            onChange={e => setHtml(e.target.value)}
-            spellCheck={false}
-            className="flex-1 w-full p-4 font-mono text-xs text-slate-700 bg-slate-950 text-green-400 resize-none focus:outline-none leading-relaxed"
-            style={{ tabSize: 2 }}
-          />
-          {/* Variable reference */}
-          <div className="border-t border-slate-200 bg-slate-50 px-4 py-2.5 shrink-0">
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Available variables</p>
-            <div className="flex flex-wrap gap-1.5">
-              {TEMPLATE_VARS.map(v => (
-                <button
-                  key={v.name}
-                  title={v.desc}
-                  onClick={() => {
-                    const tag = `{{${v.name}}}`
-                    setHtml(h => h + tag)
-                  }}
-                  className="text-[10px] font-mono px-1.5 py-0.5 bg-slate-200 text-slate-600 rounded hover:bg-blue-100 hover:text-blue-700 transition-colors"
-                >
-                  {`{{${v.name}}}`}
-                </button>
-              ))}
-            </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {selectedMetric !== 'default' && statusByMetric[selectedMetric]?.is_custom && (
+              <button
+                onClick={() => { if (confirm('Reset to default for this alert type?')) resetMut.mutate() }}
+                disabled={resetMut.isPending}
+                className="px-3 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50"
+              >
+                Reset
+              </button>
+            )}
+            {selectedMetric === 'default' && (
+              <button
+                onClick={() => { if (confirm('Reset default template?')) resetMut.mutate() }}
+                disabled={resetMut.isPending}
+                className="px-3 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50"
+              >
+                Reset
+              </button>
+            )}
+            <button
+              onClick={() => saveMut.mutate()}
+              disabled={saveMut.isPending}
+              className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-colors ${
+                saved ? 'bg-green-600 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'
+              } disabled:opacity-50`}
+            >
+              {saved ? 'Saved!' : saveMut.isPending ? 'Saving…' : 'Save'}
+            </button>
           </div>
         </div>
 
-        {/* Preview */}
-        <div className="w-full md:w-1/2 flex flex-col min-h-0" style={{ minHeight: 280 }}>
-          <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Preview</span>
-            <span className="text-[10px] text-slate-400">Sample data</span>
+        {/* Split pane */}
+        <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
+          {/* Editor */}
+          <div className="w-full md:w-1/2 flex flex-col border-b md:border-b-0 md:border-r border-slate-200 min-h-0" style={{ minHeight: 300 }}>
+            <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">HTML</span>
+              <span className="text-[10px] text-slate-400">{html.length} chars</span>
+            </div>
+            <textarea
+              value={html}
+              onChange={e => setHtml(e.target.value)}
+              spellCheck={false}
+              className="flex-1 w-full p-4 font-mono text-xs bg-slate-950 text-green-400 resize-none focus:outline-none leading-relaxed"
+              style={{ tabSize: 2 }}
+            />
+            <div className="border-t border-slate-200 bg-slate-50 px-4 py-2.5 shrink-0">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Variables</p>
+              <div className="flex flex-wrap gap-1.5">
+                {TEMPLATE_VARS.map(v => (
+                  <button
+                    key={v.name}
+                    title={v.desc}
+                    onClick={() => setHtml(h => h + `{{${v.name}}}`)}
+                    className="text-[10px] font-mono px-1.5 py-0.5 bg-slate-200 text-slate-600 rounded hover:bg-blue-100 hover:text-blue-700 transition-colors"
+                  >
+                    {`{{${v.name}}}`}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          <iframe
-            srcDoc={renderPreview(html)}
-            sandbox="allow-same-origin"
-            className="flex-1 w-full border-none bg-white"
-            title="Email preview"
-          />
+
+          {/* Preview */}
+          <div className="w-full md:w-1/2 flex flex-col min-h-0" style={{ minHeight: 280 }}>
+            <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Preview</span>
+              <span className="text-[10px] text-slate-400">{METRIC_LABELS[selectedMetric] ?? selectedMetric}</span>
+            </div>
+            <iframe
+              srcDoc={renderPreview(html, selectedMetric)}
+              sandbox="allow-same-origin"
+              className="flex-1 w-full border-none bg-white"
+              title="Email preview"
+            />
+          </div>
         </div>
       </div>
     </div>

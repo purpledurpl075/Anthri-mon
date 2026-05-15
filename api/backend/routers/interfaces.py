@@ -201,7 +201,7 @@ async def interface_live_stream(
     if_name    = iface.name
     vendor_str = device.vendor or ""
     vm_labels  = (
-        f'device_id="{device_id}",'
+        f'device_id="{device.id}",'
         f'if_index="{if_index}",'
         f'if_name="{_escape_label(if_name)}",'
         f'vendor="{_escape_label(vendor_str)}"'

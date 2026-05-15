@@ -50,4 +50,5 @@ class MaintenanceWindowRead(BaseModel):
     created_by: Optional[uuid.UUID] = None
     created_at: datetime
     updated_at: datetime
-    is_active: bool = False  # populated by the API, not stored
+    is_active: bool = False      # populated by the API, not stored
+    next_fire_at: Optional[datetime] = None  # next scheduled start for recurring windows

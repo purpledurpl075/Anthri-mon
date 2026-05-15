@@ -11,7 +11,11 @@ from .interfaces import router as interfaces_router
 from .alerts import router as alerts_router
 from .overview import router as overview_router
 from .policies import router as policies_router
+from .flow import router as flow_router
+from .syslog import router as syslog_router
+from .config_mgmt import router as config_router
 
-__all__ = ["admin_router", "auth_router", "topology_router", "channels_router", "credentials_router", "maintenance_router",
+__all__ = ["admin_router", "auth_router", "config_router", "flow_router", "syslog_router",
+           "topology_router", "channels_router", "credentials_router", "maintenance_router",
            "devices_router", "discovery_router", "interfaces_router", "alerts_router",
            "overview_router", "policies_router", "users_router"]

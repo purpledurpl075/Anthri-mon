@@ -111,6 +111,9 @@ export default function AlertDetailPage() {
   const threshold = ctx.threshold as number | undefined
   const condition = ctx.condition as string | undefined
   const isPct = metric === 'cpu_util_pct' || metric === 'mem_util_pct'
+  const syslogContext = (ctx.syslog_context ?? []) as Array<{
+    ts_ms: number; severity: number; program: string; message: string
+  }>
 
   const sevColor   = alert.status === 'resolved'
     ? SEVERITY_COLOR.resolved
@@ -282,20 +285,51 @@ export default function AlertDetailPage() {
         )}
 
         {/* Extra context */}
-        {Object.keys(ctx).some(k => !['metric','value','threshold','condition'].includes(k)) && (
+        {Object.keys(ctx).some(k => !['metric','value','threshold','condition','syslog_context'].includes(k)) && (
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
             <div className="px-5 py-3.5 border-b border-slate-100">
               <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Context</h2>
             </div>
             <div className="px-5 py-1">
               {Object.entries(ctx)
-                .filter(([k]) => !['metric','value','threshold','condition'].includes(k))
+                .filter(([k]) => !['metric','value','threshold','condition','syslog_context'].includes(k))
                 .map(([k, v]) => (
                   <Row key={k} label={k}>
                     <span className="font-mono text-[10px] text-slate-600">{String(v)}</span>
                   </Row>
                 ))}
               <Row label="Alert ID"><span className="font-mono text-[10px] text-slate-400">{alert.id}</span></Row>
+            </div>
+          </div>
+        )}
+
+        {/* Correlated syslog */}
+        {syslogContext.length > 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden lg:col-span-2">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Related syslog events</h2>
+                <p className="text-[11px] text-slate-400 mt-0.5">Messages from this device in the 10 minutes surrounding the alert</p>
+              </div>
+            </div>
+            <div className="divide-y divide-slate-50">
+              {syslogContext.map((e, i) => {
+                const SEV_COLORS: Record<number, string> = { 0:'#dc2626',1:'#dc2626',2:'#dc2626',3:'#ea580c',4:'#d97706',5:'#2563eb',6:'#64748b',7:'#94a3b8' }
+                const SEV_NAMES: Record<number, string> = { 0:'emerg',1:'alert',2:'crit',3:'error',4:'warn',5:'notice',6:'info',7:'debug' }
+                return (
+                  <div key={i} className="flex items-start gap-3 px-5 py-2.5">
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded mt-0.5 shrink-0 min-w-[3.5rem] text-center"
+                      style={{ backgroundColor: `${SEV_COLORS[e.severity]}18`, color: SEV_COLORS[e.severity] }}>
+                      {SEV_NAMES[e.severity] ?? e.severity}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-400 mt-0.5 shrink-0 w-36 hidden sm:block">
+                      {new Date(e.ts_ms).toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit', second:'2-digit' })}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500 mt-0.5 w-20 shrink-0 truncate hidden md:block">{e.program}</span>
+                    <span className="text-xs text-slate-700 flex-1">{e.message}</span>
+                  </div>
+                )
+              })}
             </div>
           </div>
         )}

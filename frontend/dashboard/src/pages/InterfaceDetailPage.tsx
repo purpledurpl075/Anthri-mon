@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useParams, useNavigate } from 'react-router-dom'
+import { useParams, useNavigate, Link } from 'react-router-dom'
 import api from '../api/client'
 import { fetchDevice } from '../api/devices'
+import { fetchInterfaceFlowTimeseries, fetchInterfaceTopTalkers } from '../api/flow'
 import StatusBadge from '../components/StatusBadge'
 import type { Interface } from '../api/types'
 
@@ -378,8 +379,8 @@ export default function InterfaceDetailPage() {
 
   const speed     = metrics?.speed_bps ?? iface.speed_bps
   const hostname  = device?.fqdn ?? device?.hostname ?? deviceId
-  const ipAddresses: string[] = Array.isArray(iface.ip_addresses)
-    ? iface.ip_addresses.map((a: any) => (typeof a === 'string' ? a : a?.address ?? String(a)))
+  const ipAddresses: string[] = Array.isArray((iface as any).ip_addresses)
+    ? (iface as any).ip_addresses.map((a: any) => (typeof a === 'string' ? a : a?.address ?? String(a)))
     : []
 
   // Historical stats (non-live)
@@ -681,7 +682,7 @@ export default function InterfaceDetailPage() {
               {[
                 { label: 'In',  pct: liveInPct,  color: '#0891b2' },
                 { label: 'Out', pct: liveOutPct, color: '#f59e0b' },
-              ].filter(x => x.pct != null).map(({ label, pct, color }) => (
+              ].filter(x => x.pct != null).map(({ label, pct, color: _c2 }) => (
                 <div key={label} className="flex items-center gap-2">
                   <span className="text-[10px] text-slate-400 w-6 shrink-0">{label}</span>
                   <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
@@ -754,9 +755,9 @@ export default function InterfaceDetailPage() {
                   { label: 'Out errors',   val: outErrLast,  color: '#f97316' },
                   { label: 'In discards',  val: inDiscLast,  color: '#7c3aed' },
                   { label: 'Out discards', val: outDiscLast, color: '#0891b2' },
-                ].map(({ label, val, color }) => (
+                ].map(({ label, val, color: errorColor }) => (
                   <div key={label} className="px-3 py-2.5">
-                    <div className="text-[9px] font-semibold uppercase tracking-wide mb-1" style={{ color }}>{label}</div>
+                    <div className="text-[9px] font-semibold uppercase tracking-wide mb-1" style={{ color: errorColor }}>{label}</div>
                     <div className={`text-sm font-bold ${val ? 'text-slate-800' : 'text-slate-300'}`}>
                       {val != null ? (val === 0 ? '0' : fmtRateShort(val)) : '—'}
                     </div>
@@ -767,7 +768,128 @@ export default function InterfaceDetailPage() {
           )}
         </div>
 
+        {/* ── Flow section ─────────────────────────────────────────────── */}
+        {deviceId && iface?.if_index != null && (
+          <InterfaceFlowSection deviceId={deviceId} ifIndex={iface.if_index} />
+        )}
+
       </div>
+    </div>
+  )
+}
+
+// ── Interface flow section ────────────────────────────────────────────────────
+
+const FLOW_PROTO_COLOR: Record<string, string> = {
+  TCP: '#3b82f6', UDP: '#f59e0b', ICMP: '#10b981', OSPF: '#8b5cf6', GRE: '#ec4899',
+}
+function flowProtoColor(name: string) { return FLOW_PROTO_COLOR[name] ?? '#94a3b8' }
+
+function fmtFlowBytes(b: number): string {
+  if (b >= 1e9) return `${(b / 1e9).toFixed(2)} GB`
+  if (b >= 1e6) return `${(b / 1e6).toFixed(1)} MB`
+  if (b >= 1e3) return `${(b / 1e3).toFixed(0)} KB`
+  return `${b} B`
+}
+
+function InterfaceFlowSection({ deviceId, ifIndex }: { deviceId: string; ifIndex: number }) {
+  const [flowHours, setFlowHours] = useState(1)
+  const minutes = flowHours * 60
+
+  const { data: tsData = [], isLoading: tsLoading } = useQuery({
+    queryKey:        ['iface-flow-ts', deviceId, ifIndex, minutes],
+    queryFn:         () => fetchInterfaceFlowTimeseries(deviceId, ifIndex, minutes),
+    refetchInterval: 60_000,
+  })
+
+  const { data: talkers = [], isLoading: talkersLoading } = useQuery({
+    queryKey:        ['iface-flow-talkers', deviceId, ifIndex, minutes],
+    queryFn:         () => fetchInterfaceTopTalkers(deviceId, ifIndex, minutes, 10),
+    refetchInterval: 60_000,
+  })
+
+  const hasData = tsData.length > 0 || talkers.length > 0
+
+  const inSeries:  [number, number][] = tsData.map(p => [p.ts_ms, p.bytes_in  / 60])
+  const outSeries: [number, number][] = tsData.map(p => [p.ts_ms, p.bytes_out / 60])
+  const maxTalkerBytes = Math.max(...talkers.map(t => t.bytes_total), 1)
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+      <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-800">Flow data</h3>
+          <p className="text-[11px] text-slate-400 mt-0.5">From NetFlow / sFlow exports</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {/* Time range pills */}
+          <div className="flex rounded-lg overflow-hidden border border-slate-200">
+            {([1, 6, 24] as const).map(h => (
+              <button key={h} onClick={() => setFlowHours(h)}
+                className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                  flowHours === h ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
+                } ${h !== 1 ? 'border-l border-slate-200' : ''}`}>
+                {h === 1 ? '1h' : h === 6 ? '6h' : '24h'}
+              </button>
+            ))}
+          </div>
+          <Link to="/flow" className="text-xs text-blue-600 hover:underline">Flow explorer →</Link>
+        </div>
+      </div>
+
+      {tsLoading && talkersLoading ? (
+        <div className="px-5 py-8 text-center text-xs text-slate-400">Loading flow data…</div>
+      ) : !hasData ? (
+        <div className="px-5 py-8 text-center">
+          <p className="text-sm text-slate-400">No flow data for this interface</p>
+          <p className="text-xs text-slate-300 mt-1">Configure NetFlow/sFlow export on this device targeting port 2055</p>
+        </div>
+      ) : (
+        <div>
+          {/* Traffic chart */}
+          {inSeries.length >= 2 && (
+            <div className="px-5 py-4 border-b border-slate-100">
+              <div className="flex items-center gap-4 mb-2 text-xs text-slate-500">
+                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded bg-indigo-500 inline-block"/>In (flow)</span>
+                <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded bg-amber-400 inline-block"/>Out (flow)</span>
+              </div>
+              <TimeSeriesChart
+                height={120}
+                yFmt={(v: number) => fmtFlowBytes(v) + '/s'}
+                series={[
+                  { name: 'In',  color: '#6366f1', data: inSeries  },
+                  { name: 'Out', color: '#f59e0b', data: outSeries },
+                ]}
+              />
+            </div>
+          )}
+
+          {/* Top talkers */}
+          {talkers.length > 0 && (
+            <div className="px-5 py-4">
+              <p className="text-xs font-semibold text-slate-500 mb-3">Top talkers through this interface</p>
+              <div className="space-y-2">
+                {talkers.map((t, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] text-slate-600 w-28 shrink-0 truncate">{t.src_ip}</span>
+                    <svg className="w-3 h-3 text-slate-300 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M5 12h14m-4-4 4 4-4 4"/></svg>
+                    <span className="font-mono text-[11px] text-slate-600 w-28 shrink-0 truncate">{t.dst_ip}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
+                      style={{ backgroundColor: `${flowProtoColor(t.protocol_name)}18`, color: flowProtoColor(t.protocol_name) }}>
+                      {t.protocol_name}
+                    </span>
+                    <div className="flex-1 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                      <div className="h-full rounded-full transition-all"
+                        style={{ width: `${(t.bytes_total / maxTalkerBytes) * 100}%`, backgroundColor: flowProtoColor(t.protocol_name) }} />
+                    </div>
+                    <span className="text-xs font-bold text-slate-600 tabular-nums w-16 text-right shrink-0">{fmtFlowBytes(t.bytes_total)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

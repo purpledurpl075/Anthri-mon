@@ -129,11 +129,12 @@ Anthrimon is a modern, open-source network monitoring and orchestration platform
 - [ ] BGP session alerts (session down, prefix count change)
 
 ### Platform improvements
-- [ ] User invite flow — email invite instead of admin-creates-password
+- [ ] User invite flow — email invite instead of admin-creates-password *(deferred)*
 - [x] Topology endpoint reads from `topology_links` DB table instead of computing on the fly
-- [ ] Overview page — severity breakdown chart alongside top-8 alert panel
-- [ ] Route monitoring — UI affordance in alert rules form to pre-fill common prefixes
-- [ ] Maintenance windows — show "next fire" time for recurring windows
+- [x] Overview page — severity breakdown chart, alert trend sparkline, time range toggle on bandwidth, recently resolved strip, dark mode, fully customisable widget grid (show/hide, drag-to-reorder, resize, add back hidden widgets) via `@dnd-kit`
+- [x] Route monitoring — prefix quick-pick chips + live route browser (pick from actual device routing table) in alert rules form
+- [x] Maintenance windows — show "next fire" time for recurring windows (computed via `croniter` in `_to_read`)
+- [x] Email templates — per-metric templates (12 alert types + global default); two HTML bases (threshold vs state); new context vars (`device_name` fix, `interface_name`, `prefix`, `neighbour`, `description`); admin UI has metric sidebar with custom/default badges and metric-aware preview
 - [x] arista-test — SNMP credentials fixed, device polling successfully
 
 ---
@@ -142,14 +143,14 @@ Anthrimon is a modern, open-source network monitoring and orchestration platform
 
 Ingest and analyse NetFlow v5/v9, IPFIX, and sFlow from routers and switches.
 
-- [ ] Flow collector daemon (UDP listener, Go)
-- [ ] Flow parser — NetFlow v5, NetFlow v9/IPFIX templates, sFlow
-- [ ] Flow storage — ClickHouse (already deployed) with per-flow schema
-- [ ] Top talkers — src/dst IP, protocol, port; time windowed
-- [ ] Interface-level flow breakdown — match flows to ifIndex
-- [ ] Flow alerts — bandwidth threshold per src/dst pair or protocol
-- [ ] Frontend — flow explorer page, top talkers table, sankey/treemap visualisation
-- [ ] Flow rate charts overlaid on interface bandwidth charts
+- [x] Flow collector daemon (UDP listener, Go) — `collectors/flow/`, listens :2055 NetFlow + :6343 sFlow, systemd unit included
+- [x] Flow parser — NetFlow v5 (full), NetFlow v9 + IPFIX (template cache, 25 field types), sFlow v5 (flow samples + extended router/gateway)
+- [x] Flow storage — ClickHouse schema live: `flow_records` + 4 materialized aggregate views (1min IP pairs, 5min ASN, 5min protocol, 1hr interface)
+- [x] Top talkers — src/dst IP, protocol, port; time windowed; clickable filter chips; IP detail panel; conversation expand
+- [x] Interface-level flow breakdown — match flows to ifIndex; timeseries + top talkers on interface detail page
+- [x] Flow alerts — `flow_bandwidth` metric in alert engine; 5-min avg from ClickHouse; optional src/dst IP + protocol filter stored as JSON in custom_oid; form UI with FlowBandwidthFilter component
+- [x] Frontend — flow explorer page: summary cards, traffic time series, top talkers, protocol breakdown, top ports, top devices, raw flow search with filters
+- [x] Flow rate charts overlaid on interface bandwidth charts
 
 ---
 
@@ -157,16 +158,16 @@ Ingest and analyse NetFlow v5/v9, IPFIX, and sFlow from routers and switches.
 
 Passive event collection from network devices.
 
-- [ ] Syslog UDP/TCP listener (Go, RFC 3164 + RFC 5424)
-- [ ] Parser — severity, facility, device fingerprint by source IP
-- [ ] ClickHouse storage — indexed by device, severity, timestamp
-- [ ] Frontend — log explorer with full-text search, device filter, severity filter
-- [ ] Alert correlation — suppress or annotate alerts when a matching syslog event exists
-- [ ] Alert trigger from syslog — regex match on message → create alert
+- [x] Syslog UDP/TCP listener (Go, RFC 3164 + RFC 5424) — `collectors/syslog/`, UDP+TCP on :514, octet-count framing
+- [x] Parser — severity, facility, device fingerprint by source IP; best-effort, never drops
+- [x] ClickHouse storage — `syslog_messages` (90-day TTL) + `syslog_agg_1hr` with materialized view
+- [x] Frontend — `/syslog` log explorer: summary cards, stacked rate chart, severity breakdown, top programs, top devices, paginated message table with expand-to-raw
+- [x] Alert correlation — recent syslog messages (10-min window) annotated onto every new alert as `syslog_context`; displayed as "Related syslog events" panel in alert detail
+- [x] Alert trigger from syslog — `syslog_match` metric: RE2 regex against message field, optional program/severity filter, configurable min-occurrences threshold and lookback window; quick-pick patterns in form UI
 
 ---
 
-## Phase 8 — Vendor API Orchestration
+## Phase 8 — Vendor API Orchestration *(deferred)*
 
 Enrich data beyond what SNMP exposes using vendor REST APIs.
 
@@ -183,15 +184,15 @@ Enrich data beyond what SNMP exposes using vendor REST APIs.
 
 Network device configuration backup, diff, and compliance.
 
-- [ ] Config retrieval — SSH (Netmiko), RESTCONF, vendor APIs per device type
-- [ ] Scheduled backups — configurable interval per device
-- [ ] Config versioning — store diffs in PostgreSQL, full snapshots in object store
-- [ ] Diff viewer — side-by-side HTML diff between any two versions
-- [ ] Compliance rules — regex/template-based checks (e.g. "NTP must be configured")
-- [ ] Compliance report — per-device pass/fail with remediation hints
+- [x] Config retrieval — SSH via Netmiko; vendor-mapped device_type + show command per vendor
+- [x] Scheduled backups — hourly background task; skips if hash unchanged; 2s stagger between devices
+- [x] Config versioning — full text + SHA-256 hash in PostgreSQL; unified diff generated on change
+- [x] Diff viewer — inline unified diff with syntax highlighting (green/red/blue) in device Config tab
+- [x] Compliance rules — regex_present, regex_absent, contains, not_contains; quick-pick examples
+- [x] Compliance report — per-device pass/fail with per-rule findings; /config compliance dashboard
 - [ ] Config deploy — push a config snippet or full config via SSH/RESTCONF
 - [ ] Change alerts — notify when a running config changes unexpectedly
-- [ ] Frontend — config history timeline, diff viewer, compliance dashboard
+- [x] Frontend — /config page (compliance dashboard + policy management); Config tab on device detail (snapshots, diff viewer, compliance results)
 
 ---
 

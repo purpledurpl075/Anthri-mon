@@ -4,6 +4,7 @@ import { fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } fr
 import { useRole, hasRole } from '../hooks/useCurrentUser'
 import { fetchChannels } from '../api/channels'
 import { fetchMaintenanceWindows } from '../api/maintenance'
+import { fetchDevices, fetchDeviceRoutes } from '../api/devices'
 import type { AlertRule } from '../api/types'
 
 const METRICS = [
@@ -18,6 +19,8 @@ const METRICS = [
   { value: 'interface_util_pct', label: 'Interface utilisation',    hasThreshold: true,  conditions: ['gt'],        unit: '%',    thresholdLabel: 'Utilisation % (5 min)', simple: true },
   { value: 'ospf_state',        label: 'OSPF neighbour not full',    hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
   { value: 'route_missing',     label: 'Route prefix missing',       hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
+  { value: 'flow_bandwidth',   label: 'Flow bandwidth',              hasThreshold: true,  conditions: ['gt'],           unit: 'B/s', thresholdLabel: 'Threshold (bytes/s)', simple: true },
+  { value: 'syslog_match',     label: 'Syslog pattern match',        hasThreshold: true,  conditions: ['gt'],           unit: 'matches', thresholdLabel: 'Min occurrences', simple: true },
   { value: 'custom_oid',        label: 'Custom OID',                 hasThreshold: true,  conditions: ['gt','lt','eq'], unit: '', thresholdLabel: 'Threshold value',   simple: false },
 ]
 
@@ -29,6 +32,264 @@ const SEVERITY_STYLE: Record<string, string> = {
   minor:    'bg-yellow-100 text-yellow-700',
   warning:  'bg-yellow-50 text-yellow-600',
   info:     'bg-blue-50 text-blue-600',
+}
+
+// ── Route prefix input ────────────────────────────────────────────────────────
+
+const COMMON_PREFIXES = [
+  { label: 'Default', value: '0.0.0.0/0' },
+  { label: 'IPv6 default', value: '::/0' },
+  { label: '10.0.0.0/8', value: '10.0.0.0/8' },
+  { label: '172.16.0.0/12', value: '172.16.0.0/12' },
+  { label: '192.168.0.0/16', value: '192.168.0.0/16' },
+]
+
+function RoutePrefixInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [showBrowser, setShowBrowser] = useState(false)
+  const [browseDevice, setBrowseDevice] = useState('')
+
+  const { data: devicesResp } = useQuery({
+    queryKey: ['devices-list'],
+    queryFn:  () => fetchDevices({ limit: 500 }),
+    enabled:  showBrowser,
+  })
+  const devices: any[] = (devicesResp as any)?.items ?? devicesResp ?? []
+
+  const { data: routes = [], isFetching } = useQuery({
+    queryKey: ['device-routes-browse', browseDevice],
+    queryFn:  () => fetchDeviceRoutes(browseDevice),
+    enabled:  showBrowser && !!browseDevice,
+  })
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-xs font-medium text-slate-600">
+        Prefix to monitor <span className="text-slate-400 font-normal">— exact match on destination</span>
+      </label>
+
+      <input
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        placeholder="0.0.0.0/0"
+        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+
+      {/* Quick-pick chips */}
+      <div className="flex flex-wrap gap-1.5">
+        {COMMON_PREFIXES.map(p => (
+          <button
+            key={p.value}
+            type="button"
+            onClick={() => onChange(p.value)}
+            className={`px-2 py-0.5 rounded-md text-[11px] font-mono border transition-colors ${
+              value === p.value
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-blue-400 hover:text-blue-600'
+            }`}
+          >
+            {p.value}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setShowBrowser(b => !b)}
+          className={`px-2 py-0.5 rounded-md text-[11px] border transition-colors flex items-center gap-1 ${
+            showBrowser
+              ? 'bg-slate-800 text-white border-slate-800'
+              : 'bg-slate-50 text-slate-500 border-slate-200 hover:border-slate-400'
+          }`}
+        >
+          <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 1 1-14 0 7 7 0 0 1 14 0z"/></svg>
+          Browse routes
+        </button>
+      </div>
+
+      {/* Route browser */}
+      {showBrowser && (
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="px-3 py-2 bg-slate-50 border-b border-slate-200">
+            <select
+              value={browseDevice}
+              onChange={e => setBrowseDevice(e.target.value)}
+              className="w-full text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">Select a device to browse its routes…</option>
+              {devices.map((d: any) => (
+                <option key={d.id} value={d.id}>{d.fqdn ?? d.hostname}</option>
+              ))}
+            </select>
+          </div>
+
+          {browseDevice && (
+            isFetching ? (
+              <div className="px-3 py-4 text-xs text-slate-400 text-center">Loading routes…</div>
+            ) : routes.length === 0 ? (
+              <div className="px-3 py-4 text-xs text-slate-400 text-center">No routes found</div>
+            ) : (
+              <div className="max-h-48 overflow-y-auto divide-y divide-slate-50">
+                {routes.map((r, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => { onChange(r.destination); setShowBrowser(false) }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-blue-50 transition-colors group ${
+                      value === r.destination ? 'bg-blue-50' : ''
+                    }`}
+                  >
+                    <span className="font-mono text-xs font-medium text-slate-700 group-hover:text-blue-600 w-36 shrink-0">
+                      {r.destination}
+                    </span>
+                    {r.next_hop && (
+                      <span className="text-[11px] text-slate-400 font-mono truncate">via {r.next_hop}</span>
+                    )}
+                    <span className={`ml-auto shrink-0 text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                      r.protocol === 'ospf'      ? 'bg-orange-100 text-orange-600' :
+                      r.protocol === 'static'    ? 'bg-blue-100 text-blue-600' :
+                      r.protocol === 'connected' ? 'bg-green-100 text-green-600' :
+                      'bg-slate-100 text-slate-500'
+                    }`}>
+                      {r.protocol}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Flow bandwidth filter ─────────────────────────────────────────────────────
+
+function FlowBandwidthFilter({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  // value is JSON: {"src_ip":"...","dst_ip":"...","protocol":6}
+  let parsed: Record<string, string | number> = {}
+  try { if (value) parsed = JSON.parse(value) } catch {}
+
+  const update = (key: string, val: string) => {
+    const next: Record<string, string | number> = { ...parsed }
+    if (val) {
+      next[key] = key === 'protocol' ? Number(val) : val
+    } else {
+      delete next[key]
+    }
+    onChange(Object.keys(next).length ? JSON.stringify(next) : '')
+  }
+
+  const inputCls = "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-xs font-medium text-slate-600">
+        Flow filter <span className="text-slate-400 font-normal">— all optional, leave blank to alert on total device traffic</span>
+      </label>
+      <div className="grid grid-cols-3 gap-2">
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-1">Src IP</label>
+          <input value={String(parsed.src_ip ?? '')} onChange={e => update('src_ip', e.target.value)}
+            placeholder="10.0.0.1" className={inputCls} />
+        </div>
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-1">Dst IP</label>
+          <input value={String(parsed.dst_ip ?? '')} onChange={e => update('dst_ip', e.target.value)}
+            placeholder="0.0.0.0" className={inputCls} />
+        </div>
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-1">Protocol</label>
+          <select value={String(parsed.protocol ?? '')} onChange={e => update('protocol', e.target.value)} className={inputCls}>
+            <option value="">Any</option>
+            <option value="6">TCP (6)</option>
+            <option value="17">UDP (17)</option>
+            <option value="1">ICMP (1)</option>
+            <option value="89">OSPF (89)</option>
+          </select>
+        </div>
+      </div>
+      <p className="text-[10px] text-slate-400">
+        Threshold is in bytes/s — e.g. 10 Mbps = 1,250,000 B/s. Evaluated against 5-minute average from flow data.
+      </p>
+    </div>
+  )
+}
+
+// ── Syslog match filter ────────────────────────────────────────────────────────
+
+const SYSLOG_EXAMPLES = [
+  { label: 'Interface down',  pattern: 'Interface.*down|link.*down' },
+  { label: 'OSPF change',     pattern: 'OSPF.*[Nn]eighbor|OSPF.*[Ss]tate' },
+  { label: 'Auth failure',    pattern: 'authentication.*fail|Invalid user|Failed password' },
+  { label: 'Config change',   pattern: 'SYS-5-CONFIG_I|PARSER-5-CFG_SAVD' },
+  { label: 'BGP change',      pattern: 'BGP.*[Dd]own|BGP.*[Cc]hange|BGP-5' },
+]
+
+function SyslogMatchFilter({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  let parsed: Record<string, string | number> = {}
+  try { if (value) parsed = JSON.parse(value) } catch {}
+
+  const update = (key: string, val: string) => {
+    const next: Record<string, string | number> = { ...parsed }
+    if (val) {
+      next[key] = key === 'severity_max' ? Number(val) : val
+    } else {
+      delete next[key]
+    }
+    onChange(Object.keys(next).length ? JSON.stringify(next) : '')
+  }
+
+  const inputCls = "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
+
+  return (
+    <div className="space-y-2">
+      <label className="block text-xs font-medium text-slate-600">
+        Pattern <span className="text-slate-400 font-normal">— RE2 regular expression matched against the message field</span>
+      </label>
+      <input
+        value={String(parsed.pattern ?? '')}
+        onChange={e => update('pattern', e.target.value)}
+        placeholder="Interface.*down|link.*down"
+        className={inputCls}
+      />
+      {/* Quick-pick examples */}
+      <div className="flex flex-wrap gap-1.5">
+        {SYSLOG_EXAMPLES.map(ex => (
+          <button key={ex.label} type="button"
+            onClick={() => update('pattern', ex.pattern)}
+            className={`px-2 py-0.5 rounded-md text-[11px] border transition-colors ${
+              parsed.pattern === ex.pattern
+                ? 'bg-blue-600 text-white border-blue-600'
+                : 'bg-slate-50 text-slate-600 border-slate-200 hover:border-blue-400 hover:text-blue-600'
+            }`}>
+            {ex.label}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-1">Program filter (optional)</label>
+          <input value={String(parsed.program ?? '')} onChange={e => update('program', e.target.value)}
+            placeholder="sshd" className={inputCls} />
+        </div>
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-1">Max severity</label>
+          <select value={String(parsed.severity_max ?? '')} onChange={e => update('severity_max', e.target.value)}
+            className={inputCls}>
+            <option value="">Any</option>
+            <option value="0">Emergency (0)</option>
+            <option value="1">Alert (1)</option>
+            <option value="2">Critical (2)</option>
+            <option value="3">Error (3)</option>
+            <option value="4">Warning (4)</option>
+            <option value="5">Notice (5)</option>
+          </select>
+        </div>
+      </div>
+      <p className="text-[10px] text-slate-400">
+        Threshold = minimum matches in the lookback window (duration field). E.g. threshold 1 + duration 300s fires if the pattern appears once in 5 minutes.
+      </p>
+    </div>
+  )
 }
 
 function SelectorSummary({ sel }: { sel: Record<string, unknown> | null }) {
@@ -200,14 +461,13 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
             </div>
           )}
           {f.metric === 'route_missing' && (
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">
-                Prefix to monitor <span className="text-slate-400 font-normal">exact match on destination</span>
-              </label>
-              <input value={f.custom_oid} onChange={e => set('custom_oid', e.target.value)}
-                placeholder="0.0.0.0/0"
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            </div>
+            <RoutePrefixInput value={f.custom_oid} onChange={v => set('custom_oid', v)} />
+          )}
+          {f.metric === 'flow_bandwidth' && (
+            <FlowBandwidthFilter value={f.custom_oid} onChange={v => set('custom_oid', v)} />
+          )}
+          {f.metric === 'syslog_match' && (
+            <SyslogMatchFilter value={f.custom_oid} onChange={v => set('custom_oid', v)} />
           )}
 
           {/* Threshold + condition */}

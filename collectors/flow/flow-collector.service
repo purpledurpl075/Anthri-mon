@@ -1,0 +1,14 @@
+[Unit]
+Description=Anthrimon flow collector (NetFlow v5/v9, IPFIX, sFlow v5)
+After=network.target postgresql.service clickhouse.service
+
+[Service]
+User=poly
+ExecStart=/home/poly/Anthri-mon/collectors/flow/flow-collector --config /home/poly/Anthri-mon/collectors/flow/flow-collector.yaml
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

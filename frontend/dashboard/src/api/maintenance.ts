@@ -14,6 +14,7 @@ export interface MaintenanceWindow {
   created_at: string
   updated_at: string
   is_active: boolean
+  next_fire_at: string | null
 }
 
 export interface MaintenanceWindowCreate {

@@ -87,11 +87,20 @@ async def dispatch(alert: Alert, rule: AlertRule, *, resolved: bool = False) -> 
         return
 
     async with AsyncSessionLocal() as tdb:
-        trow = (await tdb.execute(
-            select(SystemSetting).where(SystemSetting.key == _TEMPLATE_KEY)
+        # Try metric-specific template first, fall back to global default
+        metric_key = f"{_TEMPLATE_KEY}_{rule.metric}"
+        mrow = (await tdb.execute(
+            select(SystemSetting).where(SystemSetting.key == metric_key)
         )).scalar_one_or_none()
-        tmpl_subject = trow.value.get("subject") if trow else None
-        tmpl_html    = trow.value.get("html")    if trow else None
+        if mrow and mrow.value.get("html"):
+            tmpl_subject = mrow.value.get("subject")
+            tmpl_html    = mrow.value.get("html")
+        else:
+            trow = (await tdb.execute(
+                select(SystemSetting).where(SystemSetting.key == _TEMPLATE_KEY)
+            )).scalar_one_or_none()
+            tmpl_subject = trow.value.get("subject") if trow else None
+            tmpl_html    = trow.value.get("html")    if trow else None
 
         prow = (await tdb.execute(
             select(SystemSetting).where(SystemSetting.key == "platform")
@@ -176,13 +185,20 @@ def _build_email(
     ctx = {
         "tag":            tag,
         "title":          alert.title,
+        "metric":         alert_ctx.get("metric", rule.metric),
         "severity":       alert.severity,
         "severity_color": sev_color,
         "status":         "resolved" if resolved else alert.status,
         "rule_name":      rule.name,
+        "description":    rule.description or "",
         "device_name":    alert_ctx.get("device_name", ""),
         "value":          str(alert_ctx["value"])     if alert_ctx.get("value")     is not None else "—",
         "threshold":      str(alert_ctx["threshold"]) if alert_ctx.get("threshold") is not None else "—",
+        # Type-specific extras — empty string if not applicable
+        "interface_name": alert_ctx.get("interface_name", ""),
+        "prefix":         alert_ctx.get("prefix", ""),
+        "neighbour":      alert_ctx.get("neighbour", ""),
+        "ospf_state":     alert_ctx.get("ospf_state", ""),
         "triggered_at":   _fmt_ts(alert.triggered_at),
         "resolved_at":    _fmt_ts(alert.resolved_at),
         "alert_url":      f"{base_url}/alerts/{alert.id}" if base_url else "",

@@ -91,6 +91,12 @@ export interface AlertRule {
   severity: string
   channel_ids: string[]
   maintenance_window_ids: string[]
+  escalation_severity: string | null
+  escalation_seconds: number | null
+  stable_for_seconds: number
+  notify_on_resolve: boolean
+  suppress_if_parent_down: boolean
+  custom_oid: string | null
   created_at: string
   updated_at: string
 }

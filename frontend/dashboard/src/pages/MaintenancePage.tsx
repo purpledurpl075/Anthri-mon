@@ -263,6 +263,12 @@ export default function MaintenancePage() {
                               Recurring
                             </span>
                             <div className="font-mono text-slate-400 mt-0.5">{w.recurrence_cron}</div>
+                            {w.next_fire_at && (
+                              <div className="flex items-center gap-1 mt-1 text-slate-400">
+                                <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M12 8v4l3 3m6-3a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>
+                                Next: {fmtDateTime(w.next_fire_at)}
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <div>

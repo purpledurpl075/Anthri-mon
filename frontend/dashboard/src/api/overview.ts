@@ -43,6 +43,14 @@ export interface OverviewData {
     device_type: string
     count: number
   }[]
+  alert_trend: [number, number][]
+  recently_resolved: {
+    id: string
+    title: string
+    severity: string
+    resolved_at: string | null
+    device_id: string | null
+  }[]
   generated_at: string
 }
 
@@ -75,5 +83,5 @@ export interface TopBandwidthData {
 export const fetchOverview = () =>
   api.get<OverviewData>('/overview').then(r => r.data)
 
-export const fetchTopBandwidth = (limit = 8) =>
-  api.get<TopBandwidthData>('/overview/top-bandwidth', { params: { limit } }).then(r => r.data)
+export const fetchTopBandwidth = (limit = 8, windowMinutes = 30) =>
+  api.get<TopBandwidthData>('/overview/top-bandwidth', { params: { limit, window_minutes: windowMinutes } }).then(r => r.data)

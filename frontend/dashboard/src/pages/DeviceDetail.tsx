@@ -11,6 +11,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort } from '../api/devices'
 import TimeSeriesChart from '../components/TimeSeriesChart'
 import { fetchCredentials } from '../api/credentials'
+import { fetchConfigStatus, fetchBackups, fetchDiffs, fetchBackup, fetchDiff, triggerCollect, fetchComplianceResults, type ConfigBackupMeta, type ConfigDiffMeta } from '../api/config'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
@@ -850,6 +851,7 @@ const CRED_TYPE_LABEL: Record<string, string> = {
 
 function CredentialSection({ deviceId }: { deviceId: string }) {
   const qc = useQueryClient()
+  const canOperate = hasRole(useRole(), 'operator')
   const [selectedId, setSelectedId] = useState('')
   const [priority, setPriority]     = useState('0')
   const [confirmDel, setConfirmDel] = useState<string | null>(null)
@@ -1395,7 +1397,7 @@ export default function DeviceDetail() {
   const canAdmin   = hasRole(role, 'admin')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes' | 'vlans' | 'stp' | 'health'>('interfaces')
+  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes' | 'vlans' | 'stp' | 'health' | 'config'>('interfaces')
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(id!),
@@ -1899,6 +1901,7 @@ export default function DeviceDetail() {
               { id: 'vlans',       label: 'VLANs' },
               { id: 'stp',         label: 'STP' },
               { id: 'health',      label: 'Health' },
+              { id: 'config',      label: 'Config' },
             ] as const).map(t => (
               <button key={t.id} onClick={() => setTab(t.id as typeof tab)}
                 className={`flex items-center gap-1 px-2.5 md:px-3 py-2.5 md:py-3 text-xs md:text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 ${
@@ -1936,8 +1939,8 @@ export default function DeviceDetail() {
                   </thead>
                   <tbody className="divide-y divide-slate-50">
                     {(interfaces ?? []).map((iface) => {
-                      const ips: string[] = Array.isArray(iface.ip_addresses)
-                        ? iface.ip_addresses.map((a: any) => typeof a === 'string' ? a : a?.address ?? String(a))
+                      const ips: string[] = Array.isArray((iface as any).ip_addresses)
+                        ? (iface as any).ip_addresses.map((a: any) => typeof a === 'string' ? a : a?.address ?? String(a))
                         : []
                       return (
                         <tr
@@ -1999,9 +2002,246 @@ export default function DeviceDetail() {
           {tab === 'health' && (
             <HealthTab deviceId={id!} currentHealth={health ?? null} />
           )}
+          {tab === 'config' && id && (
+            <div className="p-5">
+              <DeviceConfigTab deviceId={id} />
+            </div>
+          )}
         </div>
 
       </main>
+    </div>
+  )
+}
+
+// ── Device Config Tab ─────────────────────────────────────────────────────────
+
+function DeviceConfigTab({ deviceId }: { deviceId: string }) {
+  const qc = useQueryClient()
+  const [view, setView] = useState<'history' | 'diff' | 'compliance'>('history')
+  const [selectedDiffId, setSelectedDiffId] = useState<string | null>(null)
+  const [selectedBackupId, setSelectedBackupId] = useState<string | null>(null)
+  const [collecting, setCollecting] = useState(false)
+
+  const { data: status } = useQuery({
+    queryKey: ['config-status', deviceId],
+    queryFn:  () => fetchConfigStatus(deviceId),
+    refetchInterval: 30_000,
+  })
+
+  const { data: backups = [] } = useQuery({
+    queryKey: ['config-backups', deviceId],
+    queryFn:  () => fetchBackups(deviceId),
+    enabled:  view === 'history',
+  })
+
+  const { data: diffs = [] } = useQuery({
+    queryKey: ['config-diffs', deviceId],
+    queryFn:  () => fetchDiffs(deviceId),
+    enabled:  view === 'history',
+  })
+
+  const { data: selectedDiff } = useQuery({
+    queryKey: ['config-diff', selectedDiffId],
+    queryFn:  () => fetchDiff(selectedDiffId!),
+    enabled:  !!selectedDiffId,
+  })
+
+  const { data: selectedBackup } = useQuery({
+    queryKey: ['config-backup', selectedBackupId],
+    queryFn:  () => fetchBackup(selectedBackupId!),
+    enabled:  !!selectedBackupId,
+  })
+
+  const { data: compliance = [] } = useQuery({
+    queryKey: ['compliance-results', deviceId],
+    queryFn:  () => fetchComplianceResults(deviceId),
+    enabled:  view === 'compliance',
+  })
+
+  const handleCollect = async () => {
+    setCollecting(true)
+    try {
+      await triggerCollect(deviceId)
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ['config-status', deviceId] })
+        qc.invalidateQueries({ queryKey: ['config-backups', deviceId] })
+        qc.invalidateQueries({ queryKey: ['config-diffs', deviceId] })
+        setCollecting(false)
+      }, 5000)
+    } catch {
+      setCollecting(false)
+    }
+  }
+
+  function fmtTime(iso: string) {
+    return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Status bar */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-4 text-sm">
+          {status?.has_backup ? (
+            <>
+              <span className="text-slate-600">
+                Last backup: <span className="font-medium">{status.last_collected ? fmtTime(status.last_collected) : '—'}</span>
+              </span>
+              <span className="text-slate-400">·</span>
+              <span className="text-slate-600">{status.backup_count} snapshots</span>
+              {status.compliance_total > 0 && (
+                <>
+                  <span className="text-slate-400">·</span>
+                  <span className={status.compliance_fail_count > 0 ? 'text-red-600 font-medium' : 'text-green-600'}>
+                    {status.compliance_fail_count > 0
+                      ? `${status.compliance_fail_count}/${status.compliance_total} compliance failures`
+                      : `${status.compliance_total} policies passing`}
+                  </span>
+                </>
+              )}
+            </>
+          ) : (
+            <span className="text-slate-400">No config backup yet</span>
+          )}
+        </div>
+        <button onClick={handleCollect} disabled={collecting}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-50">
+          <svg className={`w-3.5 h-3.5 ${collecting ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+            <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 0 0 4.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 0 1-15.357-2m15.357 2H15"/>
+          </svg>
+          {collecting ? 'Collecting…' : 'Collect now'}
+        </button>
+      </div>
+
+      {/* Sub-tabs */}
+      <div className="flex gap-0 border-b border-slate-100">
+        {(['history', 'compliance'] as const).map(v => (
+          <button key={v} onClick={() => setView(v)}
+            className={`px-4 py-2 text-xs font-medium capitalize border-b-2 transition-colors ${
+              view === v ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+            }`}>
+            {v}
+          </button>
+        ))}
+      </div>
+
+      {view === 'history' && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Backup timeline */}
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-800">Snapshots</h3>
+              <span className="text-xs text-slate-400">{backups.length} total</span>
+            </div>
+            {backups.length === 0 ? (
+              <div className="px-5 py-8 text-center text-sm text-slate-400">No backups yet</div>
+            ) : (
+              <div className="divide-y divide-slate-50 max-h-96 overflow-y-auto">
+                {backups.map(b => (
+                  <button key={b.id} onClick={() => setSelectedBackupId(b.id === selectedBackupId ? null : b.id)}
+                    className={`w-full flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition-colors text-left ${selectedBackupId === b.id ? 'bg-blue-50' : ''}`}>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-slate-700">{fmtTime(b.collected_at)}</div>
+                      <div className="text-[10px] font-mono text-slate-400 mt-0.5">{b.config_hash.slice(0, 12)}… · {(b.size_bytes / 1024).toFixed(1)} KB</div>
+                    </div>
+                    {b.is_latest && <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded shrink-0">latest</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Config viewer / diff viewer */}
+          <div className="space-y-4">
+            {/* Changes */}
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-800">Changes</h3>
+                <span className="text-xs text-slate-400">{diffs.length} recorded</span>
+              </div>
+              {diffs.length === 0 ? (
+                <div className="px-5 py-6 text-center text-sm text-slate-400">No changes detected yet</div>
+              ) : (
+                <div className="divide-y divide-slate-50 max-h-48 overflow-y-auto">
+                  {diffs.map(d => (
+                    <button key={d.id} onClick={() => setSelectedDiffId(d.id === selectedDiffId ? null : d.id)}
+                      className={`w-full flex items-center gap-3 px-5 py-2.5 hover:bg-slate-50 transition-colors text-left ${selectedDiffId === d.id ? 'bg-blue-50' : ''}`}>
+                      <div className="flex-1">
+                        <div className="text-xs font-medium text-slate-700">{fmtTime(d.created_at)}</div>
+                      </div>
+                      <span className="text-[10px] text-green-600 font-mono">+{d.lines_added}</span>
+                      <span className="text-[10px] text-red-500 font-mono">-{d.lines_removed}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Selected diff or backup text */}
+            {selectedDiff && (
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Diff</h3>
+                  <button onClick={() => setSelectedDiffId(null)} className="text-slate-300 hover:text-slate-500">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
+                </div>
+                <pre className="p-4 text-[11px] font-mono overflow-auto max-h-72 bg-slate-950 text-slate-300 leading-relaxed">
+                  {selectedDiff.diff_text.split('\n').map((line, i) => (
+                    <div key={i} className={
+                      line.startsWith('+') && !line.startsWith('+++') ? 'text-green-400' :
+                      line.startsWith('-') && !line.startsWith('---') ? 'text-red-400' :
+                      line.startsWith('@@') ? 'text-blue-400' : ''
+                    }>{line}</div>
+                  ))}
+                </pre>
+              </div>
+            )}
+
+            {selectedBackup && !selectedDiff && (
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Config — {fmtTime(selectedBackup.collected_at)}</h3>
+                  <button onClick={() => setSelectedBackupId(null)} className="text-slate-300 hover:text-slate-500">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
+                </div>
+                <pre className="p-4 text-[11px] font-mono overflow-auto max-h-96 bg-slate-950 text-green-400 leading-relaxed">{selectedBackup.config_text}</pre>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {view === 'compliance' && (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-800">Compliance</h3>
+            <Link to="/config" className="text-xs text-blue-600 hover:underline">Manage policies →</Link>
+          </div>
+          {compliance.length === 0 ? (
+            <div className="px-5 py-8 text-center text-sm text-slate-400">
+              No compliance results — <Link to="/config" className="text-blue-600 hover:underline">create a policy</Link> to get started
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-50">
+              {compliance.map(r => (
+                <div key={r.id} className="px-5 py-3 flex items-center gap-3">
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize shrink-0 ${
+                    r.status === 'pass' ? 'bg-green-100 text-green-700' : r.status === 'fail' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-500'
+                  }`}>{r.status}</span>
+                  <span className="text-sm text-slate-700 flex-1">{r.policy_name}</span>
+                  {r.status === 'fail' && (
+                    <span className="text-xs text-red-500">{r.findings.filter((f: any) => f.status === 'fail').length} failing</span>
+                  )}
+                  <span className="text-xs text-slate-400">{new Date(r.checked_at).toLocaleDateString()}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

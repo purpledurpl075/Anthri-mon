@@ -799,7 +799,7 @@ function TopologyPageInner() {
   const [rfNodes, setRfNodes] = useState<Node[]>([])
   const [rfEdges, setRfEdges] = useState<Edge[]>([])
 
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>()
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const savedLayout = useMemo(() => loadSavedLayout(), [])
 
   // ── Main topology query ────────────────────────────────────────────────

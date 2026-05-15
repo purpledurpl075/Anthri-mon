@@ -144,6 +144,45 @@ async def overview(
         for row in recent_alerts_result
     ]
 
+    # ── Alert trend (hourly triggered counts, last 24 h) ─────────────────────
+    trend_rows = await db.execute(
+        select(
+            func.date_trunc("hour", Alert.triggered_at).label("hour"),
+            func.count(Alert.id).label("n"),
+        )
+        .where(
+            Alert.tenant_id == tid,
+            text("alerts.triggered_at > NOW() - INTERVAL '24 hours'"),
+        )
+        .group_by(text("1"))
+        .order_by(text("1"))
+    )
+    alert_trend: list[list] = [
+        [int(row.hour.timestamp() * 1000), row.n] for row in trend_rows
+    ]
+
+    # ── Recently resolved alerts (last hour, up to 8) ────────────────────────
+    resolved_result = await db.execute(
+        select(Alert.id, Alert.title, Alert.severity, Alert.resolved_at, Alert.device_id)
+        .where(
+            Alert.tenant_id == tid,
+            text("alerts.status = 'resolved'::alert_status"),
+            text("alerts.resolved_at > NOW() - INTERVAL '1 hour'"),
+        )
+        .order_by(Alert.resolved_at.desc())
+        .limit(8)
+    )
+    recently_resolved = [
+        {
+            "id":          str(row.id),
+            "title":       row.title,
+            "severity":    row.severity,
+            "resolved_at": row.resolved_at.isoformat() if row.resolved_at else None,
+            "device_id":   str(row.device_id) if row.device_id else None,
+        }
+        for row in resolved_result
+    ]
+
     # ── Top alerting devices (up to 5) ───────────────────────────────────────
     top_alerting_result = await db.execute(
         select(
@@ -194,6 +233,8 @@ async def overview(
         "problem_devices":      problem_devices,
         "recent_alerts":        recent_alerts,
         "top_alerting_devices": top_alerting_devices,
+        "alert_trend":          alert_trend,
+        "recently_resolved":    recently_resolved,
         "generated_at":         datetime.now(timezone.utc).isoformat(),
     }
 
@@ -201,6 +242,7 @@ async def overview(
 @router.get("/overview/top-bandwidth", summary="Top interfaces and devices by current bandwidth")
 async def top_bandwidth(
     limit: int = Query(default=8, ge=1, le=20),
+    window_minutes: int = Query(default=30, ge=1, le=360),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -229,15 +271,20 @@ async def top_bandwidth(
     device_ids_re = "|".join({str(r.device_id) for r in iface_rows})
     key_to_iface  = {(str(r.device_id), str(r.if_index)): r for r in iface_rows}
 
-    now   = int(_time.time())
-    start = now - 1800   # 30-minute window
-    step  = 60
+    now = int(_time.time())
+    if window_minutes <= 5:
+        step, topk_win = 15, "2m"
+    elif window_minutes <= 30:
+        step, topk_win = 60, "5m"
+    else:
+        step, topk_win = 300, "10m"
+    start = now - window_minutes * 60
 
     # ── Step 1: instant topk to find the busiest interfaces ──────────────────
     topk_q = (
         f'topk({limit * 2},'
-        f' rate(anthrimon_if_in_octets_total{{device_id=~"{device_ids_re}"}}[5m]) * 8'
-        f' + rate(anthrimon_if_out_octets_total{{device_id=~"{device_ids_re}"}}[5m]) * 8)'
+        f' rate(anthrimon_if_in_octets_total{{device_id=~"{device_ids_re}"}}[{topk_win}]) * 8'
+        f' + rate(anthrimon_if_out_octets_total{{device_id=~"{device_ids_re}"}}[{topk_win}]) * 8)'
     )
     try:
         async with httpx.AsyncClient(timeout=8) as client:
@@ -262,9 +309,9 @@ async def top_bandwidth(
     if not candidates:
         return {"top_interfaces": [], "top_devices": []}
 
-    # ── Step 2: fetch 30-min range for each top interface (in + out) ─────────
+    # ── Step 2: fetch range for each top interface (in + out) ────────────────
     async def fetch_range(did: str, idx: str, metric: str) -> list:
-        q = f'rate({metric}{{device_id="{did}",if_index="{idx}"}}[{step}s]) * 8'
+        q = f'rate({metric}{{device_id="{did}",if_index="{idx}"}}[{topk_win}]) * 8'
         try:
             async with httpx.AsyncClient(timeout=8) as c:
                 resp = await c.get(

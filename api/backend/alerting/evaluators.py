@@ -399,6 +399,159 @@ async def eval_ospf_state(db: AsyncSession, device: dict) -> Optional[Breach]:
     )
 
 
+async def eval_flow_bandwidth(
+    device: dict, custom_oid: str, threshold: float
+) -> Optional[Breach]:
+    """Alert when flow bandwidth for a device (optionally filtered by src/dst IP or protocol)
+    exceeds threshold bytes/s, averaged over the last 5 minutes."""
+    import json as _json
+    import httpx as _httpx
+
+    try:
+        filt = _json.loads(custom_oid) if custom_oid else {}
+    except Exception:
+        filt = {}
+
+    device_id = device["id"]
+    clauses = [
+        f"collector_device_id = toUUID('{device_id}')",
+        "minute >= now() - INTERVAL 5 MINUTE",
+    ]
+    if filt.get("src_ip"):
+        clauses.append(f"src_ip = toIPv4('{filt['src_ip']}')")
+    if filt.get("dst_ip"):
+        clauses.append(f"dst_ip = toIPv4('{filt['dst_ip']}')")
+    if filt.get("protocol"):
+        clauses.append(f"ip_protocol = {int(filt['protocol'])}")
+
+    query = (
+        f"SELECT sum(bytes_total) / (5 * 60) AS bps "
+        f"FROM flow_agg_1min WHERE {' AND '.join(clauses)}"
+    )
+    try:
+        async with _httpx.AsyncClient(timeout=5) as client:
+            resp = await client.post(
+                "http://localhost:8123",
+                content=query + " FORMAT JSON",
+                headers={"Content-Type": "text/plain"},
+            )
+        rows = resp.json().get("data", [])
+        bps = float(rows[0]["bps"]) if rows else 0.0
+    except Exception:
+        return None
+
+    if bps <= threshold:
+        return None
+
+    desc_parts = []
+    if filt.get("src_ip"): desc_parts.append(f"src {filt['src_ip']}")
+    if filt.get("dst_ip"): desc_parts.append(f"dst {filt['dst_ip']}")
+    if filt.get("protocol"): desc_parts.append(f"proto {filt['protocol']}")
+    extra: dict = {"flow_filter": " ".join(desc_parts) if desc_parts else "all traffic"}
+    return Breach(device["id"], device["hostname"], value=bps, extra=extra)
+
+
+async def eval_syslog_match(
+    device: dict, custom_oid: str, threshold: float, duration_seconds: int
+) -> Optional[Breach]:
+    """Alert when syslog messages matching a regex pattern exceed a count threshold."""
+    import json as _json
+    import httpx as _httpx
+
+    try:
+        filt = _json.loads(custom_oid) if custom_oid else {}
+    except Exception:
+        filt = {}
+
+    pattern = filt.get("pattern", "").strip()
+    if not pattern:
+        return None
+
+    minutes  = max(1, duration_seconds // 60)
+    did      = device["id"]
+    esc_pat  = pattern.replace("'", "\\'")
+
+    clauses = [
+        f"device_id = toUUID('{did}')",
+        f"ts >= now() - INTERVAL {minutes} MINUTE",
+        f"match(message, '{esc_pat}')",
+    ]
+    if filt.get("program"):
+        clauses.append(f"program = '{filt['program']}'")
+    if filt.get("severity_max") is not None:
+        clauses.append(f"severity <= {int(filt['severity_max'])}")
+
+    where = " AND ".join(clauses)
+
+    try:
+        async with _httpx.AsyncClient(timeout=5) as client:
+            # Count
+            cnt_resp = await client.post(
+                "http://localhost:8123",
+                content=f"SELECT count() AS n FROM syslog_messages WHERE {where} FORMAT JSON",
+                headers={"Content-Type": "text/plain"},
+            )
+            cnt_data = cnt_resp.json().get("data", [])
+            count = int(cnt_data[0]["n"]) if cnt_data else 0
+
+            if count < threshold:
+                return None
+
+            # Grab the most recent matching message for the alert title/context
+            msg_resp = await client.post(
+                "http://localhost:8123",
+                content=(
+                    f"SELECT program, message FROM syslog_messages "
+                    f"WHERE {where} ORDER BY ts DESC LIMIT 1 FORMAT JSON"
+                ),
+                headers={"Content-Type": "text/plain"},
+            )
+            msg_rows = msg_resp.json().get("data", [])
+            latest   = msg_rows[0] if msg_rows else {}
+    except Exception:
+        return None
+
+    return Breach(
+        device["id"], device["hostname"],
+        value=float(count),
+        extra={
+            "syslog_pattern": pattern,
+            "syslog_program": latest.get("program", ""),
+            "syslog_message": latest.get("message", "")[:200],
+        },
+    )
+
+
+async def fetch_syslog_context(device_id: str, count: int = 5) -> list[dict]:
+    """Fetch the most recent syslog messages for a device to annotate an alert."""
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=3) as client:
+            resp = await client.post(
+                "http://localhost:8123",
+                content=(
+                    f"SELECT toUnixTimestamp(ts)*1000 AS ts_ms, severity, program, message "
+                    f"FROM syslog_messages "
+                    f"WHERE device_id = toUUID('{device_id}') "
+                    f"  AND ts >= now() - INTERVAL 10 MINUTE "
+                    f"ORDER BY ts DESC LIMIT {count} FORMAT JSON"
+                ),
+                headers={"Content-Type": "text/plain"},
+            )
+        rows = resp.json().get("data", [])
+        return [
+            {
+                "ts_ms":    int(r["ts_ms"]),
+                "severity": int(r["severity"]),
+                "program":  r["program"],
+                "message":  r["message"],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
+
+
 async def eval_route_missing(db: AsyncSession, device: dict, prefix: str) -> list[Breach]:
     """Alert when a specific route prefix is absent from route_entries for this device."""
     result = await db.execute(
