@@ -37,8 +37,20 @@ __pycache__/
 brain/
 docs/
 CLAUDE.md
+# Compiled collector binaries
 collectors/snmp/snmp-collector
-./claude
+collectors/flow/flow-collector
+collectors/syslog/syslog-collector
+collectors/remote/remote-collector
+
+# Python virtualenv
+api/.venv/
+
+# Frontend build output
+frontend/dashboard/dist/
+frontend/dashboard/node_modules/
+
+# Claude tooling
 .claude/
 
 # ClickHouse runtime-generated files
