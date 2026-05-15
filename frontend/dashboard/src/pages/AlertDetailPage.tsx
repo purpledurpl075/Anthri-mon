@@ -111,12 +111,9 @@ export default function AlertDetailPage() {
   const threshold = ctx.threshold as number | undefined
   const condition = ctx.condition as string | undefined
   const isPct = metric === 'cpu_util_pct' || metric === 'mem_util_pct'
-<<<<<<< HEAD
   const syslogContext = (ctx.syslog_context ?? []) as Array<{
     ts_ms: number; severity: number; program: string; message: string
   }>
-=======
->>>>>>> origin/main
 
   const sevColor   = alert.status === 'resolved'
     ? SEVERITY_COLOR.resolved
@@ -179,11 +176,7 @@ export default function AlertDetailPage() {
 
           {/* Value / threshold */}
           {value !== undefined && (
-<<<<<<< HEAD
             <div className="flex flex-wrap gap-3 mt-3">
-=======
-            <div className="flex gap-4 mt-3">
->>>>>>> origin/main
               <div className="bg-slate-50 rounded-xl px-5 py-3 border border-slate-100">
                 <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Value</p>
                 <p className="text-2xl font-bold" style={{ color: sevColor }}>
@@ -203,21 +196,13 @@ export default function AlertDetailPage() {
         </div>
 
         {/* Timeline strip */}
-<<<<<<< HEAD
         <div className="flex flex-col sm:flex-row border-t border-slate-100">
-=======
-        <div className="flex border-t border-slate-100">
->>>>>>> origin/main
           {[
             { label: 'Triggered',     ts: alert.triggered_at,   color: '#dc2626' },
             { label: 'Acknowledged',  ts: alert.acknowledged_at, color: '#d97706' },
             { label: 'Resolved',      ts: alert.resolved_at,     color: '#16a34a' },
           ].filter(e => e.ts).map(({ label, ts, color }, i, arr) => (
-<<<<<<< HEAD
             <div key={label} className={`px-4 py-2.5 flex-1 ${i < arr.length - 1 ? 'border-b sm:border-b-0 sm:border-r border-slate-100' : ''}`}>
-=======
-            <div key={label} className={`px-5 py-3 flex-1 ${i < arr.length - 1 ? 'border-r border-slate-100' : ''}`}>
->>>>>>> origin/main
               <div className="flex items-center gap-1.5 mb-0.5">
                 <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
                 <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">{label}</span>
@@ -229,11 +214,7 @@ export default function AlertDetailPage() {
       </div>
 
       {/* Detail cards */}
-<<<<<<< HEAD
       <div className="p-3 md:p-6 grid grid-cols-1 lg:grid-cols-2 gap-3 md:gap-4">
-=======
-      <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-5xl">
->>>>>>> origin/main
 
         {/* Device */}
         {device && (
@@ -304,22 +285,14 @@ export default function AlertDetailPage() {
         )}
 
         {/* Extra context */}
-<<<<<<< HEAD
         {Object.keys(ctx).some(k => !['metric','value','threshold','condition','syslog_context'].includes(k)) && (
-=======
-        {Object.keys(ctx).some(k => !['metric','value','threshold','condition'].includes(k)) && (
->>>>>>> origin/main
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
             <div className="px-5 py-3.5 border-b border-slate-100">
               <h2 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Context</h2>
             </div>
             <div className="px-5 py-1">
               {Object.entries(ctx)
-<<<<<<< HEAD
                 .filter(([k]) => !['metric','value','threshold','condition','syslog_context'].includes(k))
-=======
-                .filter(([k]) => !['metric','value','threshold','condition'].includes(k))
->>>>>>> origin/main
                 .map(([k, v]) => (
                   <Row key={k} label={k}>
                     <span className="font-mono text-[10px] text-slate-600">{String(v)}</span>
@@ -330,7 +303,6 @@ export default function AlertDetailPage() {
           </div>
         )}
 
-<<<<<<< HEAD
         {/* Correlated syslog */}
         {syslogContext.length > 0 && (
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden lg:col-span-2">
@@ -362,8 +334,6 @@ export default function AlertDetailPage() {
           </div>
         )}
 
-=======
->>>>>>> origin/main
         {/* Comments — full width */}
         <div className="lg:col-span-2">
           <CommentThread alertId={alert.id} />

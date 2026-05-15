@@ -830,17 +830,13 @@ function PlatformTab() {
 // ── Email template tab ─────────────────────────────────────────────────────────
 
 interface EmailTemplate { subject: string; html: string }
-<<<<<<< HEAD
 interface EmailTemplateStatus { metric: string; label: string; is_custom: boolean; subject: string; html: string }
-=======
->>>>>>> origin/main
 
 const TEMPLATE_VARS = [
   { name: 'title',          desc: 'Full alert title' },
   { name: 'tag',            desc: 'CRITICAL / RESOLVED' },
   { name: 'severity',       desc: 'critical / major / minor…' },
   { name: 'severity_color', desc: 'Hex colour for severity' },
-<<<<<<< HEAD
   { name: 'metric',         desc: 'Alert metric type' },
   { name: 'rule_name',      desc: 'Alert rule name' },
   { name: 'description',    desc: 'Rule description' },
@@ -900,49 +896,15 @@ const METRIC_LABELS: Record<string, string> = {
   ospf_state:       'OSPF neighbour issue',
   route_missing:    'Route missing',
   custom_oid:       'Custom OID',
-=======
-  { name: 'rule_name',      desc: 'Alert rule name' },
-  { name: 'device_name',    desc: 'Device hostname' },
-  { name: 'value',          desc: 'Current metric value' },
-  { name: 'threshold',      desc: 'Rule threshold' },
-  { name: 'triggered_at',   desc: 'Time alert fired' },
-  { name: 'resolved_at',    desc: 'Time alert resolved' },
-  { name: 'alert_url',      desc: 'Deep-link to alert detail' },
-  { name: 'platform_name', desc: 'Platform name from settings' },
-]
-
-// Sample context for live preview
-const PREVIEW_CTX: Record<string, string> = {
-  title:          'coresw: CPU 94.2%',
-  tag:            'CRITICAL',
-  severity:       'critical',
-  severity_color: '#dc2626',
-  rule_name:      'CPU High — Lab',
-  device_name:    'coresw.lab.local',
-  value:          '94.2%',
-  threshold:      '90%',
-  triggered_at:   '2026-05-10 02:45 UTC',
-  resolved_at:    '—',
-  alert_url:      '#',
-  alert_id:       '00000000-0000-0000-0000-000000000000',
-}
-
-function renderPreview(template: string): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, k) => PREVIEW_CTX[k] ?? `{{${k}}}`)
->>>>>>> origin/main
 }
 
 function EmailTemplateTab() {
   const qc = useQueryClient()
-<<<<<<< HEAD
   const [selectedMetric, setSelectedMetric] = useState('default')
-=======
->>>>>>> origin/main
   const [subject, setSubject] = useState('')
   const [html,    setHtml]    = useState('')
   const [saved,   setSaved]   = useState(false)
 
-<<<<<<< HEAD
   // Load all templates for sidebar status
   const { data: allTemplates = [] } = useQuery<EmailTemplateStatus[]>({
     queryKey: ['email-templates-all'],
@@ -957,11 +919,6 @@ function EmailTemplateTab() {
   const { data, isLoading } = useQuery<EmailTemplate>({
     queryKey: ['email-template', selectedMetric],
     queryFn:  () => api.get<EmailTemplate>(url).then(r => r.data),
-=======
-  const { data, isLoading } = useQuery<EmailTemplate>({
-    queryKey: ['email-template'],
-    queryFn:  () => api.get<EmailTemplate>('/admin/settings/email-template').then(r => r.data),
->>>>>>> origin/main
   })
 
   useEffect(() => {
@@ -969,7 +926,6 @@ function EmailTemplateTab() {
   }, [data])
 
   const saveMut = useMutation({
-<<<<<<< HEAD
     mutationFn: () => api.put(url, { subject, html }),
     onSuccess:  () => {
       qc.invalidateQueries({ queryKey: ['email-template', selectedMetric] })
@@ -1116,98 +1072,6 @@ function EmailTemplateTab() {
               title="Email preview"
             />
           </div>
-=======
-    mutationFn: () => api.put('/admin/settings/email-template', { subject, html }),
-    onSuccess:  () => { qc.invalidateQueries({ queryKey: ['email-template'] }); setSaved(true); setTimeout(() => setSaved(false), 2000) },
-  })
-
-  const resetMut = useMutation({
-    mutationFn: () => api.delete('/admin/settings/email-template'),
-    onSuccess:  () => qc.invalidateQueries({ queryKey: ['email-template'] }),
-  })
-
-  if (isLoading) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="px-6 py-3 border-b border-slate-100 flex items-center gap-3 bg-white shrink-0">
-        <div className="flex-1 flex items-center gap-2 min-w-0">
-          <span className="text-xs font-medium text-slate-500 shrink-0">Subject</span>
-          <input
-            value={subject}
-            onChange={e => setSubject(e.target.value)}
-            className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-0"
-            placeholder="[{{tag}}] {{title}}"
-          />
-        </div>
-        <button
-          onClick={() => { if (confirm('Reset to default template?')) resetMut.mutate() }}
-          disabled={resetMut.isPending}
-          className="px-3 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50 shrink-0"
-        >
-          Reset to default
-        </button>
-        <button
-          onClick={() => saveMut.mutate()}
-          disabled={saveMut.isPending}
-          className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-colors shrink-0 ${
-            saved ? 'bg-green-600 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'
-          } disabled:opacity-50`}
-        >
-          {saved ? 'Saved!' : saveMut.isPending ? 'Saving…' : 'Save'}
-        </button>
-      </div>
-
-      {/* Split pane */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* Editor */}
-        <div className="w-1/2 flex flex-col border-r border-slate-200 min-h-0">
-          <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">HTML</span>
-            <span className="text-[10px] text-slate-400">{html.length} chars</span>
-          </div>
-          <textarea
-            value={html}
-            onChange={e => setHtml(e.target.value)}
-            spellCheck={false}
-            className="flex-1 w-full p-4 font-mono text-xs text-slate-700 bg-slate-950 text-green-400 resize-none focus:outline-none leading-relaxed"
-            style={{ tabSize: 2 }}
-          />
-          {/* Variable reference */}
-          <div className="border-t border-slate-200 bg-slate-50 px-4 py-2.5 shrink-0">
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Available variables</p>
-            <div className="flex flex-wrap gap-1.5">
-              {TEMPLATE_VARS.map(v => (
-                <button
-                  key={v.name}
-                  title={v.desc}
-                  onClick={() => {
-                    const tag = `{{${v.name}}}`
-                    setHtml(h => h + tag)
-                  }}
-                  className="text-[10px] font-mono px-1.5 py-0.5 bg-slate-200 text-slate-600 rounded hover:bg-blue-100 hover:text-blue-700 transition-colors"
-                >
-                  {`{{${v.name}}}`}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Preview */}
-        <div className="w-1/2 flex flex-col min-h-0">
-          <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Preview</span>
-            <span className="text-[10px] text-slate-400">Sample data</span>
-          </div>
-          <iframe
-            srcDoc={renderPreview(html)}
-            sandbox="allow-same-origin"
-            className="flex-1 w-full border-none bg-white"
-            title="Email preview"
-          />
->>>>>>> origin/main
         </div>
       </div>
     </div>

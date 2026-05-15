@@ -11,10 +11,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort } from '../api/devices'
 import TimeSeriesChart from '../components/TimeSeriesChart'
 import { fetchCredentials } from '../api/credentials'
-<<<<<<< HEAD
 import { fetchConfigStatus, fetchBackups, fetchDiffs, fetchBackup, fetchDiff, triggerCollect, fetchComplianceResults, type ConfigBackupMeta, type ConfigDiffMeta } from '../api/config'
-=======
->>>>>>> origin/main
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
@@ -823,7 +820,6 @@ function AddressesSection({ deviceId }: { deviceId: string }) {
                   <td className="px-3 py-2">{typeBadge(e)}</td>
                   <td className="px-3 py-2 font-mono text-slate-700">{e.mac}</td>
                   <td className="px-3 py-2 font-mono text-slate-600">{e.ip ?? <span className="text-slate-300">—</span>}</td>
-<<<<<<< HEAD
                   <td className="px-3 py-2 text-slate-600">
                     {e.port
                       ? e.port_iface_id
@@ -834,9 +830,6 @@ function AddressesSection({ deviceId }: { deviceId: string }) {
                       <span className="ml-1.5 text-[10px] text-slate-400 font-mono">({e.vlan_interface})</span>
                     )}
                   </td>
-=======
-                  <td className="px-3 py-2 text-slate-600">{e.port ?? <span className="text-slate-300">—</span>}</td>
->>>>>>> origin/main
                   <td className="px-3 py-2 text-slate-500">{e.vlan ?? <span className="text-slate-300">—</span>}</td>
                   <td className="px-3 py-2 text-slate-400">{e.entry_type}</td>
                 </tr>
@@ -858,10 +851,7 @@ const CRED_TYPE_LABEL: Record<string, string> = {
 
 function CredentialSection({ deviceId }: { deviceId: string }) {
   const qc = useQueryClient()
-<<<<<<< HEAD
   const canOperate = hasRole(useRole(), 'operator')
-=======
->>>>>>> origin/main
   const [selectedId, setSelectedId] = useState('')
   const [priority, setPriority]     = useState('0')
   const [confirmDel, setConfirmDel] = useState<string | null>(null)
@@ -1407,11 +1397,7 @@ export default function DeviceDetail() {
   const canAdmin   = hasRole(role, 'admin')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-<<<<<<< HEAD
   const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes' | 'vlans' | 'stp' | 'health' | 'config'>('interfaces')
-=======
-  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes' | 'vlans' | 'stp' | 'health'>('interfaces')
->>>>>>> origin/main
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(id!),
@@ -1610,15 +1596,9 @@ export default function DeviceDetail() {
         </div>
 
         {/* Health metrics row */}
-<<<<<<< HEAD
         <div className="grid grid-cols-2 md:grid-cols-4 border-t border-slate-100 divide-x divide-slate-100">
           {/* CPU */}
           <div className="px-3 py-3 md:px-5 md:py-4">
-=======
-        <div className="grid grid-cols-2 md:grid-cols-4 border-t border-slate-100">
-          {/* CPU */}
-          <div className="px-5 py-4 border-r border-slate-100">
->>>>>>> origin/main
             <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">CPU</p>
             {health?.cpu_util_pct != null ? (
               <>
@@ -1635,11 +1615,7 @@ export default function DeviceDetail() {
           </div>
 
           {/* Memory */}
-<<<<<<< HEAD
           <div className="px-3 py-3 md:px-5 md:py-4">
-=======
-          <div className="px-5 py-4 border-r border-slate-100">
->>>>>>> origin/main
             <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Memory</p>
             {health?.mem_used_bytes && health?.mem_total_bytes ? (
               <>
@@ -1656,11 +1632,7 @@ export default function DeviceDetail() {
           </div>
 
           {/* Uptime */}
-<<<<<<< HEAD
           <div className="px-3 py-3 md:px-5 md:py-4">
-=======
-          <div className="px-5 py-4 border-r border-slate-100">
->>>>>>> origin/main
             <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Uptime</p>
             <p className="text-2xl font-bold text-slate-800">{formatUptime(health?.uptime_seconds ?? null)}</p>
             {health?.temperatures && health.temperatures.length > 0 && (
@@ -1675,11 +1647,7 @@ export default function DeviceDetail() {
           </div>
 
           {/* Interfaces */}
-<<<<<<< HEAD
           <div className="px-3 py-3 md:px-5 md:py-4">
-=======
-          <div className="px-5 py-4">
->>>>>>> origin/main
             <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Interfaces</p>
             <p className="text-2xl font-bold text-slate-800">
               {upIfaces}
@@ -1923,12 +1891,8 @@ export default function DeviceDetail() {
 
         {/* Tabbed panel */}
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-<<<<<<< HEAD
           <div className="border-b border-slate-100 px-2 md:px-4 flex items-center gap-0 overflow-x-auto scrollbar-hide"
             style={{ WebkitOverflowScrolling: 'touch' }}>
-=======
-          <div className="border-b border-slate-100 px-4 flex items-center gap-1">
->>>>>>> origin/main
             {([
               { id: 'interfaces',  label: 'Interfaces', badge: totalIfaces || undefined },
               { id: 'neighbours',  label: 'Neighbours' },
@@ -1937,16 +1901,10 @@ export default function DeviceDetail() {
               { id: 'vlans',       label: 'VLANs' },
               { id: 'stp',         label: 'STP' },
               { id: 'health',      label: 'Health' },
-<<<<<<< HEAD
               { id: 'config',      label: 'Config' },
             ] as const).map(t => (
               <button key={t.id} onClick={() => setTab(t.id as typeof tab)}
                 className={`flex items-center gap-1 px-2.5 md:px-3 py-2.5 md:py-3 text-xs md:text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 ${
-=======
-            ] as const).map(t => (
-              <button key={t.id} onClick={() => setTab(t.id as typeof tab)}
-                className={`flex items-center gap-1.5 px-3 py-3 text-sm font-medium border-b-2 transition-colors ${
->>>>>>> origin/main
                   tab === t.id
                     ? 'border-blue-500 text-blue-600'
                     : 'border-transparent text-slate-500 hover:text-slate-700'
@@ -1970,32 +1928,19 @@ export default function DeviceDetail() {
                   <thead>
                     <tr className="bg-slate-50 border-b border-slate-100">
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Name</th>
-<<<<<<< HEAD
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600 hidden md:table-cell">Description</th>
-=======
-                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">Description</th>
->>>>>>> origin/main
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Speed</th>
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Admin</th>
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">Oper</th>
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600">IP Address</th>
-<<<<<<< HEAD
                       <th className="text-left px-4 py-2.5 font-medium text-slate-600 hidden lg:table-cell">MAC</th>
-=======
-                      <th className="text-left px-4 py-2.5 font-medium text-slate-600">MAC</th>
->>>>>>> origin/main
                       <th className="px-4 py-2.5" />
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-50">
                     {(interfaces ?? []).map((iface) => {
-<<<<<<< HEAD
                       const ips: string[] = Array.isArray((iface as any).ip_addresses)
                         ? (iface as any).ip_addresses.map((a: any) => typeof a === 'string' ? a : a?.address ?? String(a))
-=======
-                      const ips: string[] = Array.isArray(iface.ip_addresses)
-                        ? iface.ip_addresses.map((a: any) => typeof a === 'string' ? a : a?.address ?? String(a))
->>>>>>> origin/main
                         : []
                       return (
                         <tr
@@ -2004,11 +1949,7 @@ export default function DeviceDetail() {
                           onClick={() => navigate(`/devices/${id}/interfaces/${iface.id}`)}
                         >
                           <td className="px-4 py-2 font-medium text-slate-700 font-mono text-sm group-hover:text-blue-600 transition-colors">{iface.name}</td>
-<<<<<<< HEAD
                           <td className="px-4 py-2 text-slate-500 max-w-[180px] truncate text-xs hidden md:table-cell">{iface.description ?? '—'}</td>
-=======
-                          <td className="px-4 py-2 text-slate-500 max-w-[180px] truncate text-xs">{iface.description ?? '—'}</td>
->>>>>>> origin/main
                           <td className="px-4 py-2 text-slate-600 text-sm">{formatSpeed(iface.speed_bps)}</td>
                           <td className="px-4 py-2"><StatusBadge status={iface.admin_status} /></td>
                           <td className="px-4 py-2"><StatusBadge status={iface.oper_status} /></td>
@@ -2016,11 +1957,7 @@ export default function DeviceDetail() {
                             {ips.length > 0 ? ips[0] : <span className="text-slate-300">—</span>}
                             {ips.length > 1 && <span className="text-slate-400 ml-1">+{ips.length - 1}</span>}
                           </td>
-<<<<<<< HEAD
                           <td className="px-4 py-2 font-mono text-xs text-slate-400 hidden lg:table-cell">{iface.mac_address ?? '—'}</td>
-=======
-                          <td className="px-4 py-2 font-mono text-xs text-slate-400">{iface.mac_address ?? '—'}</td>
->>>>>>> origin/main
                           <td className="px-4 py-2 text-slate-300 group-hover:text-blue-400 transition-colors">
                             <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
                           </td>
@@ -2065,21 +2002,17 @@ export default function DeviceDetail() {
           {tab === 'health' && (
             <HealthTab deviceId={id!} currentHealth={health ?? null} />
           )}
-<<<<<<< HEAD
           {tab === 'config' && id && (
             <div className="p-5">
               <DeviceConfigTab deviceId={id} />
             </div>
           )}
-=======
->>>>>>> origin/main
         </div>
 
       </main>
     </div>
   )
 }
-<<<<<<< HEAD
 
 // ── Device Config Tab ─────────────────────────────────────────────────────────
 
@@ -2312,5 +2245,3 @@ function DeviceConfigTab({ deviceId }: { deviceId: string }) {
     </div>
   )
 }
-=======
->>>>>>> origin/main

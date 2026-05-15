@@ -1,17 +1,9 @@
-<<<<<<< HEAD
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import api from '../api/client'
 import { fetchDevice } from '../api/devices'
 import { fetchInterfaceFlowTimeseries, fetchInterfaceTopTalkers } from '../api/flow'
-=======
-import React, { useState, useEffect, useRef } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { useParams, useNavigate } from 'react-router-dom'
-import api from '../api/client'
-import { fetchDevice } from '../api/devices'
->>>>>>> origin/main
 import StatusBadge from '../components/StatusBadge'
 import type { Interface } from '../api/types'
 
@@ -28,7 +20,6 @@ interface IfaceMetrics {
   out_discards: [number, number][]
 }
 
-<<<<<<< HEAD
 interface LivePoint {
   ts:           number
   in_bps:       number | null
@@ -41,8 +32,6 @@ interface LivePoint {
   util_out_pct: number | null
 }
 
-=======
->>>>>>> origin/main
 // ── Formatters ─────────────────────────────────────────────────────────────
 
 function fmtBps(v: number): string {
@@ -65,15 +54,12 @@ function fmtRateShort(v: number): string {
   return `${(v * 1000).toFixed(0)}m/s`
 }
 
-<<<<<<< HEAD
 function fmtPps(v: number): string {
   if (v >= 1e6) return `${(v / 1e6).toFixed(2)}M pps`
   if (v >= 1e3) return `${(v / 1e3).toFixed(1)}K pps`
   return `${v.toFixed(0)} pps`
 }
 
-=======
->>>>>>> origin/main
 function fmtSpeed(bps: number | null): string {
   if (!bps) return '—'
   if (bps >= 1e9) return `${bps / 1e9} Gbps`
@@ -100,15 +86,12 @@ function niceMax(v: number): number {
   return 10 * step
 }
 
-<<<<<<< HEAD
 function utilColor(pct: number): string {
   if (pct > 90) return '#dc2626'
   if (pct > 70) return '#f59e0b'
   return '#0891b2'
 }
 
-=======
->>>>>>> origin/main
 // ── Chart ──────────────────────────────────────────────────────────────────
 
 const M = { top: 10, right: 16, bottom: 28, left: 56 }
@@ -124,19 +107,13 @@ function TimeSeriesChart({
   height = 180,
   yFmt = fmtBpsShort,
   empty = 'No data',
-<<<<<<< HEAD
   live = false,
-=======
->>>>>>> origin/main
 }: {
   series:  Series[]
   height?: number
   yFmt?:   (v: number) => string
   empty?:  string
-<<<<<<< HEAD
   live?:   boolean
-=======
->>>>>>> origin/main
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [w, setW]       = useState(700)
@@ -205,10 +182,6 @@ function TimeSeriesChart({
         onMouseLeave={() => setHI(null)}
         style={{ cursor: 'crosshair' }}
       >
-<<<<<<< HEAD
-=======
-        {/* Y grid + labels */}
->>>>>>> origin/main
         {yTicks.map(v => (
           <g key={v}>
             <line x1={M.left} x2={w - M.right} y1={sy(v)} y2={sy(v)} stroke="#f1f5f9" strokeWidth={1} />
@@ -217,7 +190,6 @@ function TimeSeriesChart({
             </text>
           </g>
         ))}
-<<<<<<< HEAD
         <line x1={M.left} x2={w - M.right} y1={sy(0)} y2={sy(0)} stroke="#e2e8f0" strokeWidth={1} />
 
         {Array.from({ length: xTicks }, (_, i) => {
@@ -229,19 +201,6 @@ function TimeSeriesChart({
             : (i === xTicks - 1 ? 'now'
               : secsAgo >= 3600 ? `${Math.round(secsAgo / 3600)}h`
               : `${Math.round(secsAgo / 60)}m`)
-=======
-        {/* Baseline */}
-        <line x1={M.left} x2={w - M.right} y1={sy(0)} y2={sy(0)} stroke="#e2e8f0" strokeWidth={1} />
-
-        {/* X time labels */}
-        {Array.from({ length: xTicks }, (_, i) => {
-          const frac  = i / (xTicks - 1)
-          const t     = minT + frac * rangeT
-          const secsAgo = maxT - t
-          const label = i === xTicks - 1 ? 'now'
-            : secsAgo >= 3600 ? `${Math.round(secsAgo / 3600)}h`
-            : `${Math.round(secsAgo / 60)}m`
->>>>>>> origin/main
           return (
             <text key={i} x={sx(t)} y={height - 6} textAnchor="middle" fontSize={10} fill="#94a3b8">
               {label}
@@ -249,10 +208,6 @@ function TimeSeriesChart({
           )
         })}
 
-<<<<<<< HEAD
-=======
-        {/* Series */}
->>>>>>> origin/main
         {series.map(s => s.data.length >= 2 && (
           <g key={s.name}>
             <path d={areaPath(s.data)} fill={s.color} fillOpacity={0.12} />
@@ -260,10 +215,6 @@ function TimeSeriesChart({
           </g>
         ))}
 
-<<<<<<< HEAD
-=======
-        {/* Hover crosshair + dots */}
->>>>>>> origin/main
         {hoverX != null && <>
           <line x1={hoverX} x2={hoverX} y1={M.top} y2={height - M.bottom} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="4 2" />
           {series.map(s => {
@@ -273,21 +224,10 @@ function TimeSeriesChart({
         </>}
       </svg>
 
-<<<<<<< HEAD
       {hoverI != null && hoverX != null && (
         <div
           className="absolute bg-slate-800 text-white text-[11px] rounded-lg px-2.5 py-2 shadow-xl pointer-events-none z-10 whitespace-nowrap"
           style={{ top: M.top, left: hoverX + (hoverX > w * 0.65 ? -200 : 12) }}
-=======
-      {/* Hover tooltip */}
-      {hoverI != null && hoverX != null && (
-        <div
-          className="absolute bg-slate-800 text-white text-[11px] rounded-lg px-2.5 py-2 shadow-xl pointer-events-none z-10 whitespace-nowrap"
-          style={{
-            top:  M.top,
-            left: hoverX + (hoverX > w * 0.65 ? -(200) : 12),
-          }}
->>>>>>> origin/main
         >
           {series.map(s => {
             const pt = s.data[hoverI!]
@@ -316,7 +256,6 @@ function InfoCard({ label, value, mono = false }: { label: string; value: React.
   )
 }
 
-<<<<<<< HEAD
 // ── Live stat tile ─────────────────────────────────────────────────────────
 
 function LiveTile({ label, value, sub, color }: {
@@ -336,8 +275,6 @@ function LiveTile({ label, value, sub, color }: {
   )
 }
 
-=======
->>>>>>> origin/main
 // ── Page ───────────────────────────────────────────────────────────────────
 
 const RANGES = [
@@ -346,17 +283,13 @@ const RANGES = [
   { label: '24h', hours: 24 },
 ]
 
-<<<<<<< HEAD
 const LIVE_WINDOW_S = 180  // 3-minute rolling window
 
-=======
->>>>>>> origin/main
 export default function InterfaceDetailPage() {
   const { id: deviceId, ifaceId } = useParams<{ id: string; ifaceId: string }>()
   const navigate  = useNavigate()
   const [hours, setHours] = useState(1)
 
-<<<<<<< HEAD
   // ── Live mode state ─────────────────────────────────────────────────────
   const [liveMode,   setLiveMode]   = useState(false)
   const [livePoints, setLivePoints] = useState<LivePoint[]>([])
@@ -417,8 +350,6 @@ export default function InterfaceDetailPage() {
   useEffect(() => () => { esRef.current?.close() }, [])
 
   // ── Data queries ────────────────────────────────────────────────────────
-=======
->>>>>>> origin/main
   const { data: device } = useQuery({
     queryKey: ['device', deviceId],
     queryFn:  () => fetchDevice(deviceId!),
@@ -434,15 +365,9 @@ export default function InterfaceDetailPage() {
   const { data: metrics, isLoading: metricsLoading } = useQuery<IfaceMetrics>({
     queryKey:        ['iface-metrics', ifaceId, hours],
     queryFn:         () => api.get<IfaceMetrics>(`/interfaces/${ifaceId}/utilisation`, { params: { hours } }).then(r => r.data),
-<<<<<<< HEAD
     enabled:         !!ifaceId && !liveMode,
     staleTime:       0,
     refetchInterval: 30_000,
-=======
-    enabled:         !!ifaceId,
-    staleTime:       30_000,
-    refetchInterval: 60_000,
->>>>>>> origin/main
   })
 
   if (ifaceLoading) {
@@ -452,7 +377,6 @@ export default function InterfaceDetailPage() {
     return <div className="flex items-center justify-center h-full text-slate-400 text-sm">Interface not found</div>
   }
 
-<<<<<<< HEAD
   const speed     = metrics?.speed_bps ?? iface.speed_bps
   const hostname  = device?.fqdn ?? device?.hostname ?? deviceId
   const ipAddresses: string[] = Array.isArray((iface as any).ip_addresses)
@@ -492,22 +416,6 @@ export default function InterfaceDetailPage() {
 
   const liveInSeries:  [number, number][] = livePoints.filter(p => p.in_bps  != null).map(p => [p.ts, p.in_bps!])
   const liveOutSeries: [number, number][] = livePoints.filter(p => p.out_bps != null).map(p => [p.ts, p.out_bps!])
-=======
-  const speed      = metrics?.speed_bps ?? iface.speed_bps
-  const inLast     = metrics?.in_bps?.at(-1)?.[1]  ?? null
-  const outLast    = metrics?.out_bps?.at(-1)?.[1]  ?? null
-  const inPct      = speed && inLast  != null ? inLast  / speed * 100 : null
-  const outPct     = speed && outLast != null ? outLast / speed * 100 : null
-  const inErrLast  = metrics?.in_errors?.at(-1)?.[1]  ?? null
-  const outErrLast = metrics?.out_errors?.at(-1)?.[1]  ?? null
-  const inDiscLast = metrics?.in_discards?.at(-1)?.[1] ?? null
-  const outDiscLast = metrics?.out_discards?.at(-1)?.[1] ?? null
-
-  const hostname   = device?.fqdn ?? device?.hostname ?? deviceId
-  const ipAddresses: string[] = Array.isArray(iface.ip_addresses)
-    ? iface.ip_addresses.map((a: any) => (typeof a === 'string' ? a : a?.address ?? String(a)))
-    : []
->>>>>>> origin/main
 
   const adminUp = iface.admin_status === 'up'
   const operUp  = iface.oper_status  === 'up'
@@ -517,10 +425,6 @@ export default function InterfaceDetailPage() {
 
       {/* Header */}
       <div className="bg-white border-b border-slate-200 px-6 py-4">
-<<<<<<< HEAD
-=======
-        {/* Breadcrumb */}
->>>>>>> origin/main
         <nav className="flex items-center gap-1.5 text-xs text-slate-400 mb-3">
           <button onClick={() => navigate(`/devices/${deviceId}`)} className="hover:text-slate-600 transition-colors">
             {hostname}
@@ -540,21 +444,9 @@ export default function InterfaceDetailPage() {
               <StatusBadge status={iface.admin_status} />
               {iface.admin_status !== iface.oper_status && <StatusBadge status={iface.oper_status} />}
             </div>
-<<<<<<< HEAD
             {iface.description && <p className="text-sm text-slate-500">{iface.description}</p>}
             {!adminUp && <p className="text-xs text-amber-600 mt-0.5">Interface is administratively down</p>}
             {adminUp && !operUp && <p className="text-xs text-red-500 mt-0.5">Interface is down — link may be disconnected</p>}
-=======
-            {iface.description && (
-              <p className="text-sm text-slate-500">{iface.description}</p>
-            )}
-            {!adminUp && (
-              <p className="text-xs text-amber-600 mt-0.5">Interface is administratively down</p>
-            )}
-            {adminUp && !operUp && (
-              <p className="text-xs text-red-500 mt-0.5">Interface is down — link may be disconnected</p>
-            )}
->>>>>>> origin/main
           </div>
           <div className="text-right shrink-0">
             <div className="text-2xl font-bold text-slate-800">{fmtSpeed(speed)}</div>
@@ -565,17 +457,10 @@ export default function InterfaceDetailPage() {
 
       {/* Info cards */}
       <div className="px-6 py-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-<<<<<<< HEAD
         <InfoCard label="Speed"       value={fmtSpeed(iface.speed_bps)} />
         <InfoCard label="MTU"         value={iface.mtu ?? '—'} />
         <InfoCard label="Index"       value={iface.if_index} />
         <InfoCard label="MAC"         value={iface.mac_address ?? '—'} mono />
-=======
-        <InfoCard label="Speed"    value={fmtSpeed(iface.speed_bps)} />
-        <InfoCard label="MTU"      value={iface.mtu ?? '—'} />
-        <InfoCard label="Index"    value={iface.if_index} />
-        <InfoCard label="MAC"      value={iface.mac_address ?? '—'} mono />
->>>>>>> origin/main
         <InfoCard label="Last change" value={fmtAge(iface.last_change)} />
         <InfoCard
           label="IP addresses"
@@ -589,7 +474,6 @@ export default function InterfaceDetailPage() {
       {/* Metrics */}
       <div className="px-6 pb-6 space-y-5 flex-1">
 
-<<<<<<< HEAD
         {/* Header row: title + time range + Live button */}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-sm font-semibold text-slate-700">Interface metrics</h2>
@@ -659,34 +543,10 @@ export default function InterfaceDetailPage() {
         )}
 
         {/* ── Bandwidth chart ─────────────────────────────────────────── */}
-=======
-        {/* Time range selector */}
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-700">Interface metrics</h2>
-          <div className="flex rounded-lg overflow-hidden border border-slate-200 bg-white">
-            {RANGES.map(r => (
-              <button
-                key={r.hours}
-                onClick={() => setHours(r.hours)}
-                className={`px-3 py-1 text-xs font-medium transition-colors ${
-                  hours === r.hours
-                    ? 'bg-slate-800 text-white'
-                    : 'text-slate-500 hover:bg-slate-50'
-                } ${r.hours !== 1 ? 'border-l border-slate-200' : ''}`}
-              >
-                {r.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Bandwidth */}
->>>>>>> origin/main
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
           <div className="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-slate-800">Bandwidth</h3>
-<<<<<<< HEAD
               <p className="text-[11px] text-slate-400 mt-0.5">
                 {liveMode
                   ? `Live SNMP — 3 min rolling window · ${livePoints.filter(p => p.in_bps != null).length} samples`
@@ -699,22 +559,10 @@ export default function InterfaceDetailPage() {
             <div className="flex items-center gap-4 text-xs text-slate-500">
               <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded bg-cyan-500 inline-block" />In</span>
               <span className="flex items-center gap-1.5"><span className="w-3 h-0.5 rounded bg-amber-400 inline-block" />Out</span>
-=======
-              <p className="text-[11px] text-slate-400 mt-0.5">Traffic rate over the last {RANGES.find(r => r.hours === hours)?.label}</p>
-            </div>
-            <div className="flex items-center gap-4 text-xs text-slate-500">
-              <span className="flex items-center gap-1.5">
-                <span className="w-3 h-0.5 rounded bg-cyan-500 inline-block" />In
-              </span>
-              <span className="flex items-center gap-1.5">
-                <span className="w-3 h-0.5 rounded bg-amber-400 inline-block" />Out
-              </span>
->>>>>>> origin/main
             </div>
           </div>
 
           <div className="px-4 pt-3 pb-1">
-<<<<<<< HEAD
             {liveMode ? (
               liveInSeries.length < 2 && liveOutSeries.length < 2 ? (
                 <div className="flex items-center justify-center h-44 gap-2 text-slate-300 text-sm">
@@ -733,9 +581,6 @@ export default function InterfaceDetailPage() {
                 />
               )
             ) : metricsLoading ? (
-=======
-            {metricsLoading ? (
->>>>>>> origin/main
               <div className="flex items-center justify-center h-44 text-slate-300 text-sm">Loading…</div>
             ) : (
               <TimeSeriesChart
@@ -749,7 +594,6 @@ export default function InterfaceDetailPage() {
             )}
           </div>
 
-<<<<<<< HEAD
           {/* Stats row */}
           <div className={`grid divide-x divide-slate-100 border-t border-slate-100 ${
             liveMode ? 'grid-cols-2 sm:grid-cols-4' :
@@ -855,50 +699,10 @@ export default function InterfaceDetailPage() {
         </div>
 
         {/* ── Errors & Discards ────────────────────────────────────────── */}
-=======
-          {/* Current stats */}
-          <div className="grid grid-cols-2 divide-x divide-slate-100 border-t border-slate-100">
-            {[
-              { label: 'In',  val: inLast,  pct: inPct,  color: '#0891b2' },
-              { label: 'Out', val: outLast, pct: outPct, color: '#f59e0b' },
-            ].map(({ label, val, pct, color }) => (
-              <div key={label} className="px-5 py-3">
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
-                  <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{label}</span>
-                </div>
-                <div className="text-lg font-bold text-slate-800">
-                  {val != null ? fmtBps(val) : <span className="text-slate-300 text-sm">No data</span>}
-                </div>
-                {pct != null && (
-                  <div className="mt-1.5">
-                    <div className="flex justify-between text-[10px] text-slate-400 mb-0.5">
-                      <span>Utilisation</span>
-                      <span>{pct.toFixed(2)}%</span>
-                    </div>
-                    <div className="h-1 rounded-full bg-slate-100 overflow-hidden">
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{
-                          width: `${Math.min(pct, 100)}%`,
-                          backgroundColor: pct > 90 ? '#dc2626' : pct > 70 ? '#f59e0b' : color,
-                        }}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Errors & Discards */}
->>>>>>> origin/main
         <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
           <div className="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center justify-between">
             <div>
               <h3 className="text-sm font-semibold text-slate-800">Errors & Discards</h3>
-<<<<<<< HEAD
               <p className="text-[11px] text-slate-400 mt-0.5">
                 {liveMode ? 'Live SNMP error rates' : `Rate per second over the last ${RANGES.find(r => r.hours === hours)?.label}`}
               </p>
@@ -1086,62 +890,6 @@ function InterfaceFlowSection({ deviceId, ifIndex }: { deviceId: string; ifIndex
           )}
         </div>
       )}
-=======
-              <p className="text-[11px] text-slate-400 mt-0.5">Rate per second over the last {RANGES.find(r => r.hours === hours)?.label}</p>
-            </div>
-            <div className="flex items-center gap-3 text-xs text-slate-500 flex-wrap justify-end">
-              {[
-                { label: 'In errors',   color: '#dc2626' },
-                { label: 'Out errors',  color: '#f97316' },
-                { label: 'In discards', color: '#7c3aed' },
-                { label: 'Out discards',color: '#0891b2' },
-              ].map(({ label, color }) => (
-                <span key={label} className="flex items-center gap-1.5">
-                  <span className="w-3 h-0.5 rounded inline-block" style={{ backgroundColor: color }} />
-                  {label}
-                </span>
-              ))}
-            </div>
-          </div>
-
-          <div className="px-4 pt-3 pb-1">
-            {metricsLoading ? (
-              <div className="flex items-center justify-center h-32 text-slate-300 text-sm">Loading…</div>
-            ) : (
-              <TimeSeriesChart
-                height={140}
-                yFmt={fmtRateShort}
-                empty="No errors or discards recorded"
-                series={[
-                  { name: 'In errors',    color: '#dc2626', data: (metrics?.in_errors    ?? []) as [number, number][] },
-                  { name: 'Out errors',   color: '#f97316', data: (metrics?.out_errors   ?? []) as [number, number][] },
-                  { name: 'In discards',  color: '#7c3aed', data: (metrics?.in_discards  ?? []) as [number, number][] },
-                  { name: 'Out discards', color: '#0891b2', data: (metrics?.out_discards ?? []) as [number, number][] },
-                ]}
-              />
-            )}
-          </div>
-
-          {/* Current error stats */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-slate-100 border-t border-slate-100 text-center">
-            {[
-              { label: 'In errors',    val: inErrLast,  color: '#dc2626' },
-              { label: 'Out errors',   val: outErrLast, color: '#f97316' },
-              { label: 'In discards',  val: inDiscLast, color: '#7c3aed' },
-              { label: 'Out discards', val: outDiscLast,color: '#0891b2' },
-            ].map(({ label, val, color }) => (
-              <div key={label} className="px-3 py-2.5">
-                <div className="text-[9px] font-semibold uppercase tracking-wide mb-1" style={{ color }}>{label}</div>
-                <div className={`text-sm font-bold ${val ? 'text-slate-800' : 'text-slate-300'}`}>
-                  {val != null ? (val === 0 ? '0' : fmtRateShort(val)) : '—'}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-      </div>
->>>>>>> origin/main
     </div>
   )
 }
