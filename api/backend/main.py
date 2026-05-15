@@ -14,10 +14,12 @@ from .database import engine
 from .logging_config import configure_logging
 from .alerting.engine import start_alert_engine
 from .configmgmt.collector import start_config_collector
+from .collectors.monitor import start_collector_monitor
 from .routers import (admin_router, alerts_router, auth_router, channels_router,
-                      config_router, credentials_router, devices_router, discovery_router,
-                      flow_router, syslog_router, interfaces_router, maintenance_router, overview_router,
-                      policies_router, topology_router, users_router)
+                      collectors_router, config_router, credentials_router, devices_router,
+                      discovery_router, flow_router, syslog_router, interfaces_router,
+                      maintenance_router, overview_router, policies_router, topology_router,
+                      users_router)
 from .routers.topology import start_topology_refresh_loop
 
 configure_logging()
@@ -30,11 +32,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("anthrimon_api_starting", version="0.1.0")
     engine_task   = await start_alert_engine()
     topology_task = await start_topology_refresh_loop(interval_seconds=300)
-    config_task   = start_config_collector(interval_s=3600)
+    config_task    = start_config_collector(interval_s=3600)
+    monitor_task   = start_collector_monitor()
     yield
     engine_task.cancel()
     topology_task.cancel()
     config_task.cancel()
+    monitor_task.cancel()
     try:
         await engine_task
     except asyncio.CancelledError:
@@ -45,6 +49,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     try:
         await config_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await monitor_task
     except asyncio.CancelledError:
         pass
     await engine.dispose()
@@ -111,6 +119,7 @@ app.include_router(overview_router,    prefix=PREFIX)
 app.include_router(flow_router,        prefix=PREFIX)
 app.include_router(syslog_router,      prefix=PREFIX)
 app.include_router(config_router,      prefix=PREFIX)
+app.include_router(collectors_router,  prefix=PREFIX)
 app.include_router(policies_router,    prefix=PREFIX)
 app.include_router(topology_router,    prefix=PREFIX)
 app.include_router(users_router,       prefix=PREFIX)

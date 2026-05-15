@@ -94,11 +94,12 @@ def _build_title(rule: AlertRule, breach: Breach) -> str:
         "temperature":     f"temperature {breach.value:.1f}°C" if breach.value is not None else "temperature high",
         "interface_errors":   f"interface errors ({int(breach.value) if breach.value and math.isfinite(breach.value) else 0})",
         "interface_util_pct": f"bandwidth {breach.value:.1f}%" if breach.value is not None else "bandwidth high",
-        "ospf_state":      f"OSPF neighbour {breach.extra.get('neighbour','')} {breach.extra.get('ospf_state','')}",
-        "uptime":          f"rebooted (uptime {int(breach.value or 0)}s)",
+        "ospf_state":      f"OSPF neighbor {breach.extra.get('neighbor','')} {breach.extra.get('ospf_state','')}",
+        "uptime":          f"rebooted (uptime {int(breach.value) if breach.value and math.isfinite(breach.value) else 0}s)",
         "route_missing":    f"route {breach.extra.get('prefix', rule.custom_oid or '?')} missing",
         "flow_bandwidth":  f"flow bandwidth {breach.value / 1e6:.1f} Mbps ({breach.extra.get('flow_filter','')}) high" if breach.value is not None else "flow bandwidth high",
         "syslog_match":    f"syslog match ({int(breach.value or 0)}×): {breach.extra.get('syslog_message', breach.extra.get('syslog_pattern','')[:60])}",
+        "config_change":   f"config changed (+{breach.extra.get('lines_added',0)} -{breach.extra.get('lines_removed',0)} lines)",
     }
     return f"{base}: {metric_labels.get(rule.metric, rule.metric)}"
 

@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
 # Anthrimon — full-stack installer
-=======
-# Anthrimon — developer environment installer
->>>>>>> origin/main
 # Targets Ubuntu 22.04 / 24.04 LTS (bare metal or VM)
 # Usage: sudo bash infra/scripts/install-dev.sh
 #
 # What this script does:
-<<<<<<< HEAD
-#   1.  Installs system packages (nginx, build tools, etc.)
+#   1.  Installs system packages (nginx, wireguard-tools, build tools, etc.)
 #   2.  Installs Go 1.22.3
 #   3.  Installs Node.js 20.x (via NodeSource)
 #   4.  Installs Python virtualenv + API requirements
@@ -19,30 +14,17 @@
 #   8.  Installs VictoriaMetrics as a systemd service
 #   9.  Builds the SNMP collector (Go)
 #   10. Builds the flow collector (Go)
-#   11. Builds the frontend production bundle (npm)
-#   12. Configures nginx to serve the frontend and proxy the API
-#   13. Installs systemd units for all services
-#   14. Starts everything and prints a summary
+#   11. Builds the syslog collector (Go)
+#   12. Builds the frontend production bundle (npm)
+#   13. Generates TLS certificate (self-signed CA + server cert)
+#   14. Configures nginx with HTTPS
+#   15. Sets up WireGuard hub interface (wg0)
+#   16. Installs systemd units for all services
+#   17. Starts everything and prints a summary
 
 set -euo pipefail
 
 # ── Fixed constants ───────────────────────────────────────────────────────────
-=======
-#   1. Installs system packages
-#   2. Installs Go 1.22.3
-#   3. Installs Node.js 20.x (via NodeSource)
-#   4. Installs Python 3.10 packages (pip, venv) + project requirements
-#   5. Installs PostgreSQL 14 and creates the anthrimon role + database
-#   6. Runs all PostgreSQL migrations
-#   7. Installs ClickHouse 26.5 and runs the ClickHouse migration
-#   8. Installs VictoriaMetrics 1.96 as a systemd service
-#   9. Installs npm dependencies for the frontend
-#  10. Prints access URLs and next steps
-
-set -euo pipefail
-
-# ── Constants ─────────────────────────────────────────────────────────────────
->>>>>>> origin/main
 
 GO_VERSION="1.22.3"
 GO_ARCHIVE="go${GO_VERSION}.linux-amd64.tar.gz"
@@ -55,13 +37,8 @@ VM_URL="https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v${
 VM_INSTALL="/usr/local/bin/victoria-metrics-prod"
 VM_DATA="/var/lib/victoria-metrics"
 
-<<<<<<< HEAD
 API_PORT="8001"
-=======
-DB_NAME="anthrimon"
-DB_USER="anthrimon"
-DB_PASS="changeme"
->>>>>>> origin/main
+TLS_DIR="/etc/anthrimon/tls"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -77,17 +54,14 @@ err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; }
 hdr()  { echo -e "\n${BOLD}━━━  $*  ━━━${RESET}"; }
 die()  { err "$*"; exit 1; }
 
-<<<<<<< HEAD
 # ── Prompt helpers ────────────────────────────────────────────────────────────
 
-# ask VAR "Prompt text" "default"  — shows default, uses it on empty input
 ask() {
     local _var="$1" _prompt="$2" _default="$3" _input
     read -rp "$(echo -e "  ${CYAN}?${RESET}  ${_prompt} [${BOLD}${_default}${RESET}]: ")" _input </dev/tty
     printf -v "${_var}" '%s' "${_input:-${_default}}"
 }
 
-# ask_secret VAR "Prompt text"  — no echo, no default shown, confirms match
 ask_secret() {
     local _var="$1" _prompt="$2" _a _b
     while true; do
@@ -101,30 +75,21 @@ ask_secret() {
     done
 }
 
-# ask_yn VAR "Question?" — returns 'y' or 'n'
 ask_yn() {
     local _var="$1" _prompt="$2" _input
     read -rp "$(echo -e "  ${CYAN}?${RESET}  ${_prompt} [y/N]: ")" _input </dev/tty
     printf -v "${_var}" '%s' "${_input,,}"
 }
 
-=======
->>>>>>> origin/main
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
 hdr "Preflight"
-
 [[ $EUID -eq 0 ]] || die "Run with sudo: sudo bash $0"
 
-<<<<<<< HEAD
-=======
-# Identify the real user who invoked sudo (we install user-scoped things as them)
->>>>>>> origin/main
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME=$(eval echo "~${REAL_USER}")
 info "Installing for user: ${REAL_USER} (home: ${REAL_HOME})"
 
-<<<<<<< HEAD
 if ! grep -qE 'Ubuntu (22|24)\.04' /etc/os-release 2>/dev/null; then
     warn "This script targets Ubuntu 22.04 / 24.04 LTS. Continuing anyway."
 fi
@@ -137,63 +102,45 @@ echo -e "  Press Enter to accept the ${BOLD}default${RESET} shown in brackets.\n
 
 DETECTED_IP=$(hostname -I | awk '{print $1}')
 
-ask    DB_USER     "PostgreSQL role name"      "anthrimon"
-ask    DB_NAME     "PostgreSQL database name"  "anthrimon"
+ask    DB_USER      "PostgreSQL role name"             "anthrimon"
+ask    DB_NAME      "PostgreSQL database name"         "anthrimon"
 
 echo -e "  ${CYAN}→${RESET}  Leave the database password blank to generate a random one."
-ask_secret DB_PASS "Database password"
+ask_secret DB_PASS  "Database password"
 if [[ -z "${DB_PASS}" ]]; then
     DB_PASS=$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)
     ok "Generated random database password"
 fi
 
-ask    BASE_URL    "Public base URL (used in alert emails)" \
-                   "http://${DETECTED_IP}"
-# Strip trailing slash
+ask    BASE_URL     "Public base URL (used in alert emails and collector config)" \
+                    "https://${DETECTED_IP}"
 BASE_URL="${BASE_URL%/}"
 
-ask    NETFLOW_PORT "NetFlow / IPFIX UDP listen port" "2055"
-ask    SFLOW_PORT   "sFlow UDP listen port"           "6343"
+ask    NETFLOW_PORT "NetFlow / IPFIX UDP listen port"  "2055"
+ask    SFLOW_PORT   "sFlow UDP listen port"            "6343"
 
-# Confirm before installing
 echo ""
-echo -e "  ${BOLD}Summary of configuration:${RESET}"
+echo -e "  ${BOLD}Summary:${RESET}"
 echo -e "  DB role/database  : ${CYAN}${DB_USER}${RESET} / ${CYAN}${DB_NAME}${RESET}"
 echo -e "  DB password       : ${CYAN}(set)${RESET}"
 echo -e "  Public URL        : ${CYAN}${BASE_URL}${RESET}"
 echo -e "  NetFlow port      : ${CYAN}${NETFLOW_PORT}${RESET}"
 echo -e "  sFlow port        : ${CYAN}${SFLOW_PORT}${RESET}"
-echo -e "  Repo directory    : ${CYAN}${REPO_DIR}${RESET}"
 echo ""
 ask_yn _CONFIRM "Proceed with installation?"
 [[ "${_CONFIRM}" == "y" ]] || die "Aborted."
 
-=======
-# Ubuntu version check (22.04 and 24.04 supported)
-if ! grep -qE 'Ubuntu (22|24)\.04' /etc/os-release 2>/dev/null; then
-    warn "This script targets Ubuntu 22.04 / 24.04 LTS. Detected:"
-    grep PRETTY_NAME /etc/os-release || true
-    warn "Continuing anyway — things may break."
-fi
-ok "Preflight passed"
-
->>>>>>> origin/main
 # ── 1. System packages ────────────────────────────────────────────────────────
 
 hdr "System packages"
 apt-get update -qq
 apt-get install -y -qq \
     curl wget gnupg2 ca-certificates lsb-release apt-transport-https \
-<<<<<<< HEAD
     git build-essential openssl \
     python3 python3-pip python3-venv python3-dev \
     libpq-dev \
     nginx \
-=======
-    git build-essential \
-    python3 python3-pip python3-venv python3-dev \
-    libpq-dev \
->>>>>>> origin/main
+    wireguard wireguard-tools \
     net-tools iproute2 \
     jq unzip
 ok "System packages installed"
@@ -201,10 +148,7 @@ ok "System packages installed"
 # ── 2. Go ─────────────────────────────────────────────────────────────────────
 
 hdr "Go ${GO_VERSION}"
-<<<<<<< HEAD
 export PATH="$PATH:/usr/local/go/bin"
-=======
->>>>>>> origin/main
 if go version 2>/dev/null | grep -q "${GO_VERSION}"; then
     ok "Go ${GO_VERSION} already installed"
 else
@@ -214,23 +158,11 @@ else
     rm -rf "${GO_INSTALL_DIR}/go"
     tar -C "${GO_INSTALL_DIR}" -xzf "${TMP_GO}/${GO_ARCHIVE}"
     rm -rf "${TMP_GO}"
-<<<<<<< HEAD
     cat > /etc/profile.d/go.sh <<'EOF'
 export PATH=$PATH:/usr/local/go/bin
 EOF
     chmod 644 /etc/profile.d/go.sh
     ok "Go ${GO_VERSION} installed"
-=======
-
-    # Add to system-wide profile if not already there
-    GO_PROFILE=/etc/profile.d/go.sh
-    cat > "${GO_PROFILE}" <<'EOF'
-export PATH=$PATH:/usr/local/go/bin
-EOF
-    chmod 644 "${GO_PROFILE}"
-    export PATH="$PATH:/usr/local/go/bin"
-    ok "Go ${GO_VERSION} installed (${GO_INSTALL_DIR}/go)"
->>>>>>> origin/main
 fi
 
 # ── 3. Node.js 20.x ──────────────────────────────────────────────────────────
@@ -250,20 +182,14 @@ fi
 hdr "Python — virtualenv + requirements"
 API_DIR="${REPO_DIR}/api"
 VENV_DIR="${API_DIR}/.venv"
-
 if [[ ! -d "${VENV_DIR}" ]]; then
-    info "Creating virtualenv at ${VENV_DIR}..."
+    info "Creating virtualenv..."
     sudo -u "${REAL_USER}" python3 -m venv "${VENV_DIR}"
 fi
-
 info "Installing Python requirements..."
 sudo -u "${REAL_USER}" "${VENV_DIR}/bin/pip" install --quiet --upgrade pip
-<<<<<<< HEAD
 sudo -u "${REAL_USER}" "${VENV_DIR}/bin/pip" install --quiet \
     -r "${API_DIR}/backend/requirements.txt"
-=======
-sudo -u "${REAL_USER}" "${VENV_DIR}/bin/pip" install --quiet -r "${API_DIR}/backend/requirements.txt"
->>>>>>> origin/main
 ok "Python requirements installed"
 
 # ── 5. PostgreSQL 14 ─────────────────────────────────────────────────────────
@@ -310,10 +236,6 @@ fi
 hdr "PostgreSQL migrations"
 PG_MIGRATIONS="${REPO_DIR}/storage/migrations/postgres"
 
-<<<<<<< HEAD
-=======
-# Tracking table (idempotent)
->>>>>>> origin/main
 pg_su -d "${DB_NAME}" -c "
     CREATE TABLE IF NOT EXISTS schema_migrations (
         filename TEXT PRIMARY KEY,
@@ -322,10 +244,7 @@ pg_su -d "${DB_NAME}" -c "
 " 2>/dev/null
 
 for f in "${PG_MIGRATIONS}"/*.sql; do
-<<<<<<< HEAD
     [[ -f "$f" ]] || continue
-=======
->>>>>>> origin/main
     fname=$(basename "$f")
     if pg_su -d "${DB_NAME}" -tAc \
         "SELECT 1 FROM schema_migrations WHERE filename='${fname}'" 2>/dev/null | grep -q 1; then
@@ -335,14 +254,8 @@ for f in "${PG_MIGRATIONS}"/*.sql; do
         pg_su -d "${DB_NAME}" < "$f"
         pg_su -d "${DB_NAME}" -c \
             "INSERT INTO schema_migrations(filename) VALUES ('${fname}');"
-<<<<<<< HEAD
         pg_su -d "${DB_NAME}" -c "
             GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA public TO ${DB_USER};
-=======
-        # Grant privileges to the anthrimon role after each migration
-        pg_su -d "${DB_NAME}" -c "
-            GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${DB_USER};
->>>>>>> origin/main
             GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${DB_USER};
             GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO ${DB_USER};
         " 2>/dev/null || true
@@ -355,26 +268,13 @@ done
 hdr "ClickHouse"
 if ! dpkg -l clickhouse-server 2>/dev/null | grep -q '^ii'; then
     info "Adding ClickHouse apt repo..."
-<<<<<<< HEAD
     curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' \
         | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
-=======
-    # The RPM repodata key is the correct signing key for both RPM and DEB repos
-    curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' \
-        | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
-    # ClickHouse's deb repo doesn't publish per-codename suites; use 'stable'
->>>>>>> origin/main
     echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=amd64] \
 https://packages.clickhouse.com/deb stable main" \
         > /etc/apt/sources.list.d/clickhouse.list
     apt-get update -qq
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
-<<<<<<< HEAD
-        clickhouse-server clickhouse-client
-=======
-        clickhouse-server \
-        clickhouse-client
->>>>>>> origin/main
+    DEBIAN_FRONTEND=noninteractive apt-get install -y clickhouse-server clickhouse-client
     ok "ClickHouse installed"
 else
     ok "ClickHouse already installed"
@@ -382,8 +282,6 @@ fi
 
 systemctl enable clickhouse-server
 systemctl start clickhouse-server
-<<<<<<< HEAD
-# Wait for ClickHouse to be ready
 for i in $(seq 1 10); do
     clickhouse-client --query "SELECT 1" &>/dev/null && break || sleep 2
 done
@@ -398,18 +296,6 @@ for f in "${CH_MIGRATIONS}"/*.sql; do
         && ok "${fname} applied (or already exists)" \
         || warn "${fname} returned errors (tables may already exist)"
 done
-=======
-sleep 3
-
-# ClickHouse migration
-CH_MIGRATION="${REPO_DIR}/storage/migrations/clickhouse/001_flow_records.sql"
-if [[ -f "${CH_MIGRATION}" ]]; then
-    info "Applying ClickHouse migration 001_flow_records.sql..."
-    clickhouse-client --multiquery < "${CH_MIGRATION}" 2>/dev/null \
-        && ok "001_flow_records.sql applied (or already exists)" \
-        || warn "ClickHouse migration returned errors (tables may already exist — check manually)"
-fi
->>>>>>> origin/main
 
 # ── 8. VictoriaMetrics ────────────────────────────────────────────────────────
 
@@ -423,22 +309,12 @@ else
     tar -xzf "${TMP_VM}/${VM_BINARY}" -C "${TMP_VM}"
     install -m 755 "${TMP_VM}/victoria-metrics-prod" "${VM_INSTALL}"
     rm -rf "${TMP_VM}"
-<<<<<<< HEAD
     ok "VictoriaMetrics installed at ${VM_INSTALL}"
 fi
 
 mkdir -p "${VM_DATA}"
 chown -R "${REAL_USER}":"${REAL_USER}" "${VM_DATA}"
 
-=======
-    ok "VictoriaMetrics binary installed at ${VM_INSTALL}"
-fi
-
-mkdir -p "${VM_DATA}"
-chown -R "$REAL_USER":"$REAL_USER" "${VM_DATA}"
-
-# Install systemd unit for VictoriaMetrics
->>>>>>> origin/main
 cat > /etc/systemd/system/victoria-metrics.service <<EOF
 [Unit]
 Description=VictoriaMetrics time-series database
@@ -459,7 +335,6 @@ EOF
 
 systemctl daemon-reload
 systemctl enable victoria-metrics
-<<<<<<< HEAD
 systemctl restart victoria-metrics
 ok "VictoriaMetrics service running"
 
@@ -471,7 +346,6 @@ info "Building snmp-collector..."
 sudo -u "${REAL_USER}" bash -c "cd '${SNMP_DIR}' && /usr/local/go/bin/go build -o snmp-collector ./cmd/snmp-collector/"
 ok "snmp-collector binary built"
 
-# Write config if it doesn't exist
 SNMP_YAML="${SNMP_DIR}/snmp-collector.yaml"
 if [[ ! -f "${SNMP_YAML}" ]]; then
     cat > "${SNMP_YAML}" <<EOF
@@ -534,7 +408,6 @@ info "Building flow-collector..."
 sudo -u "${REAL_USER}" bash -c "cd '${FLOW_DIR}' && /usr/local/go/bin/go build -o flow-collector ./cmd/flow-collector/"
 ok "flow-collector binary built"
 
-# Write config if it doesn't exist
 FLOW_YAML="${FLOW_DIR}/flow-collector.yaml"
 if [[ ! -f "${FLOW_YAML}" ]]; then
     cat > "${FLOW_YAML}" <<EOF
@@ -555,7 +428,7 @@ listener:
   buffer_size:  65535
 
 writer:
-  batch_size:      2000
+  batch_size:       2000
   flush_interval_s: 5
 
 lookup:
@@ -589,7 +462,133 @@ systemctl enable flow-collector
 systemctl restart flow-collector
 ok "flow-collector service running"
 
-# ── 11. Frontend production build ─────────────────────────────────────────────
+# ── 11. Syslog collector (Go) ─────────────────────────────────────────────────
+
+hdr "Syslog collector"
+SYSLOG_DIR="${REPO_DIR}/collectors/syslog"
+info "Building syslog-collector..."
+sudo -u "${REAL_USER}" bash -c "cd '${SYSLOG_DIR}' && /usr/local/go/bin/go build -o syslog-collector ./cmd/syslog-collector/"
+ok "syslog-collector binary built"
+
+SYSLOG_YAML="${SYSLOG_DIR}/syslog-collector.yaml"
+if [[ ! -f "${SYSLOG_YAML}" ]]; then
+    cat > "${SYSLOG_YAML}" <<EOF
+log:
+  level: info
+
+database:
+  dsn: "postgres://${DB_USER}:${DB_PASS}@127.0.0.1/${DB_NAME}?sslmode=disable"
+  max_conns: 3
+
+clickhouse:
+  dsn: "clickhouse://localhost:9000/default"
+
+listener:
+  udp_addr: ":514"
+  tcp_addr: ":514"
+  buffer_size: 65535
+
+writer:
+  batch_size:       1000
+  flush_interval_s: 30
+
+lookup:
+  device_refresh_s: 300
+EOF
+    chown "${REAL_USER}":"${REAL_USER}" "${SYSLOG_YAML}"
+    ok "syslog-collector.yaml written"
+else
+    ok "syslog-collector.yaml already exists"
+fi
+
+cat > /etc/systemd/system/syslog-collector.service <<EOF
+[Unit]
+Description=Anthrimon syslog collector (RFC 3164 + RFC 5424)
+After=network.target postgresql.service clickhouse-server.service
+
+[Service]
+User=${REAL_USER}
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ExecStart=${SYSLOG_DIR}/syslog-collector --config ${SYSLOG_YAML}
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable syslog-collector
+systemctl restart syslog-collector
+ok "syslog-collector service running"
+
+# ── 11b. Remote collector (Go) ────────────────────────────────────────────────
+# Builds the binary and installs it system-wide. The service is NOT started here
+# because it requires a registration token from the hub UI first.
+
+hdr "Remote collector (build only)"
+REMOTE_DIR="${REPO_DIR}/collectors/remote"
+info "Building remote-collector..."
+sudo -u "${REAL_USER}" bash -c "cd '${REMOTE_DIR}' && /usr/local/go/bin/go build -o remote-collector ./cmd/remote-collector/"
+install -m 755 "${REMOTE_DIR}/remote-collector" /usr/local/bin/anthrimon-collector
+ok "anthrimon-collector installed to /usr/local/bin/anthrimon-collector"
+
+# Write default config + env template (do not overwrite if already bootstrapped)
+mkdir -p /etc/anthrimon
+if [[ ! -f "/etc/anthrimon/remote-collector.yaml" ]]; then
+    cat > /etc/anthrimon/remote-collector.yaml <<EOF
+hub_url: "${BASE_URL}"
+token: ""
+ca_cert: "/etc/anthrimon/tls/ca.crt"
+state_file: "/etc/anthrimon/collector-state.json"
+
+snmp:
+  polling_interval_s: 60
+  max_concurrent: 20
+  timeout_seconds: 10
+  retries: 2
+
+flow:
+  netflow_addr: ":2055"
+  sflow_addr: ":6343"
+  buffer_size: 65535
+
+syslog:
+  udp_addr: ":514"
+  tcp_addr: ":514"
+
+forward:
+  batch_size: 500
+  flush_interval_s: 10
+
+log:
+  level: info
+EOF
+    chown "${REAL_USER}":"${REAL_USER}" /etc/anthrimon/remote-collector.yaml
+    ok "Remote collector config written to /etc/anthrimon/remote-collector.yaml"
+fi
+
+# Write the env template (operator fills in ANTHRIMON_TOKEN before first run)
+if [[ ! -f "/etc/anthrimon/collector.env" ]]; then
+    cat > /etc/anthrimon/collector.env <<'EOF'
+# Paste the registration token from Anthrimon UI → Configuration → Collectors
+# ANTHRIMON_TOKEN=paste-token-here
+EOF
+    chmod 600 /etc/anthrimon/collector.env
+    ok "Env template written to /etc/anthrimon/collector.env"
+fi
+
+# Install systemd unit but do NOT enable/start — requires token first
+cp "${REMOTE_DIR}/remote-collector.service" /etc/systemd/system/anthrimon-collector.service
+systemctl daemon-reload
+warn "anthrimon-collector NOT started — register a collector in the UI first, then:"
+warn "  1. Edit /etc/anthrimon/collector.env and set ANTHRIMON_TOKEN"
+warn "  2. sudo systemctl enable --now anthrimon-collector"
+
+# ── 12. Frontend production build ─────────────────────────────────────────────
 
 hdr "Frontend production build"
 FRONTEND_DIR="${REPO_DIR}/frontend/dashboard"
@@ -599,60 +598,33 @@ info "Building production bundle..."
 sudo -u "${REAL_USER}" bash -c "cd '${FRONTEND_DIR}' && npm run build"
 ok "Frontend built to ${FRONTEND_DIR}/dist"
 
-# ── 12. nginx ─────────────────────────────────────────────────────────────────
+# ── 13. TLS (self-signed CA + server certificate) ─────────────────────────────
+
+hdr "TLS certificates"
+bash "${REPO_DIR}/scripts/setup-tls.sh"
+
+# ── 14. nginx (HTTPS — setup-tls.sh already updated the config) ───────────────
 
 hdr "nginx"
 
-# Grant nginx (www-data) traversal access to the dist directory
+# Grant nginx traversal access to the dist directory
 chmod o+x "${REAL_HOME}" \
           "${REPO_DIR}" \
           "${REPO_DIR}/frontend" \
           "${FRONTEND_DIR}" \
           "${FRONTEND_DIR}/dist"
 
-cat > /etc/nginx/sites-available/anthrimon <<NGINX
-server {
-    listen 80 default_server;
-    server_name _;
+# setup-tls.sh already wrote the HTTPS nginx config and reloaded nginx.
+# If TLS setup was skipped (certs existed), reload now to pick up any changes.
+nginx -t && systemctl reload nginx
+ok "nginx running with HTTPS"
 
-    root ${FRONTEND_DIR}/dist;
-    index index.html;
+# ── 15. WireGuard hub (wg0) ───────────────────────────────────────────────────
 
-    # SPA — all non-file routes serve index.html
-    location / {
-        try_files \$uri \$uri/ /index.html;
-    }
+hdr "WireGuard hub"
+bash "${REPO_DIR}/scripts/setup-wireguard.sh"
 
-    # Immutable static assets — cache for 1 year
-    location ~* \\.(?:js|css|woff2?|ttf|eot|svg|png|jpg|ico)\$ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
-    # API proxy → uvicorn
-    location /api/ {
-        proxy_pass         http://127.0.0.1:${API_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header   Host              \$host;
-        proxy_set_header   X-Real-IP         \$remote_addr;
-        proxy_set_header   X-Forwarded-For   \$proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto \$scheme;
-        proxy_set_header   Connection        '';
-        proxy_buffering    off;
-        proxy_read_timeout 3600s;
-    }
-}
-NGINX
-
-ln -sf /etc/nginx/sites-available/anthrimon /etc/nginx/sites-enabled/anthrimon
-rm -f /etc/nginx/sites-enabled/default
-
-nginx -t
-systemctl enable nginx
-systemctl restart nginx
-ok "nginx configured and running"
-
-# ── 13. API systemd unit ──────────────────────────────────────────────────────
+# ── 16. API systemd unit ──────────────────────────────────────────────────────
 
 hdr "Anthrimon API"
 
@@ -669,27 +641,6 @@ else
     ok "Generated new encryption and JWT secrets"
 fi
 
-=======
-systemctl start victoria-metrics
-ok "VictoriaMetrics service running"
-
-# ── 9. Frontend npm install ───────────────────────────────────────────────────
-
-hdr "Frontend — npm install"
-FRONTEND_DIR="${REPO_DIR}/frontend/dashboard"
-if [[ -f "${FRONTEND_DIR}/package.json" ]]; then
-    sudo -u "${REAL_USER}" bash -c "cd '${FRONTEND_DIR}' && npm install --silent"
-    ok "npm packages installed"
-else
-    warn "frontend/dashboard/package.json not found — skipping"
-fi
-
-# ── 10. Systemd units for API + Frontend (dev) ────────────────────────────────
-
-hdr "Systemd units (dev)"
-
-# API unit — uses the virtualenv
->>>>>>> origin/main
 cat > /etc/systemd/system/anthrimon-api.service <<EOF
 [Unit]
 Description=Anthrimon FastAPI backend
@@ -698,23 +649,15 @@ After=network.target postgresql.service
 [Service]
 User=${REAL_USER}
 WorkingDirectory=${REPO_DIR}/api
-<<<<<<< HEAD
 Environment="ANTHRIMON_ENCRYPTION_KEY=${ENCRYPTION_KEY}"
 Environment="JWT_SECRET_KEY=${JWT_SECRET}"
-=======
->>>>>>> origin/main
 Environment="DB_HOST=127.0.0.1"
 Environment="DB_USER=${DB_USER}"
 Environment="DB_PASSWORD=${DB_PASS}"
 Environment="DB_NAME=${DB_NAME}"
-<<<<<<< HEAD
 ExecStart=${VENV_DIR}/bin/python3 -m uvicorn backend.main:app --host 127.0.0.1 --port ${API_PORT}
 Restart=on-failure
 RestartSec=5
-=======
-ExecStart=${VENV_DIR}/bin/python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-Restart=on-failure
->>>>>>> origin/main
 
 [Install]
 WantedBy=multi-user.target
@@ -722,11 +665,10 @@ EOF
 
 systemctl daemon-reload
 systemctl enable anthrimon-api
-<<<<<<< HEAD
 systemctl restart anthrimon-api
 ok "anthrimon-api service running"
 
-# Seed base_url into platform settings so alert emails contain correct links
+# Seed base_url and platform settings
 info "Setting platform base_url to ${BASE_URL}..."
 pg_su -d "${DB_NAME}" -c "
     INSERT INTO system_settings (key, value)
@@ -734,47 +676,49 @@ pg_su -d "${DB_NAME}" -c "
     ON CONFLICT (key) DO UPDATE
         SET value = system_settings.value || jsonb_build_object('base_url', '${BASE_URL}');
 " 2>/dev/null && ok "Platform base_url set" || warn "Could not set platform base_url (run manually later)"
-=======
-systemctl start anthrimon-api
-ok "anthrimon-api service started"
->>>>>>> origin/main
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 IP=$(hostname -I | awk '{print $1}')
+HUB_PUBKEY=$(wg show wg0 public-key 2>/dev/null || echo "(wg0 not up)")
 
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-<<<<<<< HEAD
 echo -e "${GREEN}${BOLD}  Anthrimon is live${RESET}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "  Dashboard   ${CYAN}${BASE_URL}/${RESET}"
-echo -e "  API docs    ${CYAN}${BASE_URL}/api/docs${RESET}"
+echo -e "  Dashboard    ${CYAN}${BASE_URL}/${RESET}"
+echo -e "  API docs     ${CYAN}${BASE_URL}/api/docs${RESET}"
+echo -e "  CA cert      ${BOLD}${TLS_DIR}/ca.crt${RESET}"
+echo ""
+echo -e "  WireGuard hub:"
+echo -e "    Interface  ${CYAN}wg0 @ 10.100.0.1/24${RESET}"
+echo -e "    Pubkey     ${CYAN}${HUB_PUBKEY}${RESET}"
+echo -e "    Ensure UDP ${BOLD}51820${RESET} is open inbound for remote collectors"
+echo ""
+echo -e "  Remote collector binary: ${BOLD}/usr/local/bin/anthrimon-collector${RESET}"
+echo -e "  To deploy at a remote site:"
+echo -e "    1. Copy binary + CA cert to the remote host"
+echo -e "    2. Register in UI → Configuration → Collectors → New"
+echo -e "    3. Set ANTHRIMON_TOKEN in /etc/anthrimon/collector.env"
+echo -e "    4. ${BOLD}systemctl enable --now anthrimon-collector${RESET}"
 echo ""
 echo -e "  Services:"
 echo -e "    ${BOLD}systemctl status anthrimon-api${RESET}"
 echo -e "    ${BOLD}systemctl status snmp-collector${RESET}"
 echo -e "    ${BOLD}systemctl status flow-collector${RESET}"
+echo -e "    ${BOLD}systemctl status syslog-collector${RESET}"
 echo -e "    ${BOLD}systemctl status nginx${RESET}"
-=======
-echo -e "${GREEN}${BOLD}  Anthrimon dev environment ready${RESET}"
-echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
-echo -e "  API         ${CYAN}http://${IP}:8000${RESET}"
-echo -e "  API docs    ${CYAN}http://${IP}:8000/api/docs${RESET}"
-echo -e "  Metrics     ${CYAN}http://${IP}:8428${RESET}"
-echo ""
-echo -e "  Start frontend (in a terminal as ${REAL_USER}):"
-echo -e "    ${BOLD}cd ${REPO_DIR}/frontend/dashboard && npm run dev${RESET}"
-echo ""
-echo -e "  Python venv for API dev:"
-echo -e "    ${BOLD}source ${VENV_DIR}/bin/activate${RESET}"
-echo ""
-echo -e "  Services managed by systemd:"
-echo -e "    ${BOLD}systemctl status anthrimon-api${RESET}"
->>>>>>> origin/main
 echo -e "    ${BOLD}systemctl status victoria-metrics${RESET}"
 echo -e "    ${BOLD}systemctl status clickhouse-server${RESET}"
 echo -e "    ${BOLD}systemctl status postgresql${RESET}"
+echo -e "    ${BOLD}systemctl status wg-quick@wg0${RESET}"
+echo ""
+echo -e "  Flow export targets:"
+echo -e "    NetFlow / IPFIX  ${BOLD}${IP}:${NETFLOW_PORT}${RESET} (UDP)"
+echo -e "    sFlow            ${BOLD}${IP}:${SFLOW_PORT}${RESET} (UDP)"
+echo -e "    Syslog           ${BOLD}${IP}:514${RESET} (UDP/TCP)"
+echo ""
+echo -e "  Secrets stored in /etc/systemd/system/anthrimon-api.service"
 echo ""
 <<<<<<< HEAD
 echo -e "  Flow export targets:"

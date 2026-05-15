@@ -19,6 +19,7 @@ import MaintenancePage from './pages/MaintenancePage'
 import FlowPage from './pages/FlowPage'
 import SyslogPage from './pages/SyslogPage'
 import ConfigPage from './pages/ConfigPage'
+import CollectorsPage from './pages/CollectorsPage'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 
@@ -51,6 +52,7 @@ export default function App() {
             <Route path="/flow"          element={<FlowPage />} />
             <Route path="/syslog"        element={<SyslogPage />} />
             <Route path="/config"        element={<ConfigPage />} />
+            <Route path="/collectors"    element={<CollectorsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

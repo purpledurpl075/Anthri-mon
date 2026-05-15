@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from textwrap import dedent
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Optional
@@ -345,7 +346,7 @@ ALERT_METRICS = [
     "device_down", "interface_down", "interface_flap", "uptime",
     "temperature", "cpu_util_pct", "mem_util_pct",
     "interface_errors", "interface_util_pct",
-    "ospf_state", "route_missing", "custom_oid",
+    "ospf_state", "route_missing", "config_change", "syslog_match", "custom_oid",
 ]
 
 # Subjects tailored per metric — richer than the generic "[{{tag}}] {{title}}"
@@ -359,13 +360,16 @@ METRIC_DEFAULT_SUBJECTS: dict[str, str] = {
     "mem_util_pct":       "[{{tag}}] Memory high on {{device_name}} — {{value}}%",
     "interface_errors":   "[{{tag}}] Interface errors on {{device_name}}/{{interface_name}}",
     "interface_util_pct": "[{{tag}}] High bandwidth on {{device_name}}/{{interface_name}} — {{value}}%",
-    "ospf_state":         "[{{tag}}] OSPF neighbour {{neighbour}} issue on {{device_name}}",
+    "ospf_state":         "[{{tag}}] OSPF neighbor {{neighbor}} issue on {{device_name}}",
     "route_missing":      "[{{tag}}] Route {{prefix}} missing on {{device_name}}",
+    "syslog_match":       "[{{tag}}] Syslog pattern matched on {{device_name}}",
+    "config_change":      "[{{tag}}] Config changed on {{device_name}}",
     "custom_oid":         "[{{tag}}] {{title}}",
 }
 
 # State metrics: no meaningful value/threshold — use a simplified layout
-_STATE_METRICS = {"device_down", "interface_down", "interface_flap", "ospf_state", "route_missing", "uptime"}
+_STATE_METRICS = {"device_down", "interface_down", "interface_flap", "ospf_state",
+                  "route_missing", "uptime", "config_change", "syslog_match"}
 
 DEFAULT_HTML_STATE = dedent("""\
 <!DOCTYPE html>
@@ -414,8 +418,8 @@ DEFAULT_HTML_STATE = dedent("""\
           <td style="font-size:13px;color:#1e293b;font-weight:500;padding:5px 0;font-family:monospace;">{{prefix}}</td>
         </tr>
         <tr>
-          <td style="font-size:13px;color:#64748b;padding:5px 0;">Neighbour</td>
-          <td style="font-size:13px;color:#1e293b;font-weight:500;padding:5px 0;font-family:monospace;">{{neighbour}}</td>
+          <td style="font-size:13px;color:#64748b;padding:5px 0;">Neighbor</td>
+          <td style="font-size:13px;color:#1e293b;font-weight:500;padding:5px 0;font-family:monospace;">{{neighbor}}</td>
         </tr>
         <tr>
           <td style="font-size:13px;color:#64748b;padding:5px 0;">Triggered</td>
@@ -480,7 +484,7 @@ async def list_email_templates(
         "interface_flap": "Interface flapping", "uptime": "Device rebooted",
         "temperature": "Temperature high", "cpu_util_pct": "CPU utilisation",
         "mem_util_pct": "Memory utilisation", "interface_errors": "Interface errors",
-        "interface_util_pct": "Interface utilisation", "ospf_state": "OSPF neighbour issue",
+        "interface_util_pct": "Interface utilisation", "ospf_state": "OSPF neighbor issue",
         "route_missing": "Route missing", "custom_oid": "Custom OID",
     }
     # Load all template rows in one query
@@ -611,3 +615,137 @@ async def save_platform_settings(
     await db.commit()
     logger.info("platform_settings_updated")
     return PlatformSettingsRead(**value)
+
+
+# ── Data management ────────────────────────────────────────────────────────────
+
+_CH_URL = "http://localhost:8123"
+
+
+async def _ch_admin(query: str) -> list[dict]:
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(_CH_URL, content=" ".join(query.split()) + " FORMAT JSON",
+                                 headers={"Content-Type": "text/plain"})
+    resp.raise_for_status()
+    return resp.json().get("data", [])
+
+
+@router.get("/data/stats", summary="Storage usage stats across alerts, flow, and syslog")
+async def data_stats(
+    _: User = Depends(require_role("admin", "superadmin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    from sqlalchemy import func, text
+    from ..models.alert import Alert
+
+    alert_count_row = (await db.execute(select(func.count()).select_from(Alert))).scalar_one()
+    alert_size_row = (await db.execute(text(
+        "SELECT pg_size_pretty(pg_total_relation_size('alerts'))"
+    ))).scalar_one()
+    oldest_alert = (await db.execute(
+        select(func.min(Alert.triggered_at)).select_from(Alert)
+    )).scalar_one_or_none()
+
+    cb_count = (await db.execute(text("SELECT count(*) FROM config_backups"))).scalar_one()
+    cb_size = (await db.execute(text(
+        "SELECT pg_size_pretty(pg_total_relation_size('config_backups'))"
+    ))).scalar_one()
+
+    ch_flow = await _ch_admin(
+        "SELECT count() AS rows, formatReadableSize(sum(bytes_on_disk)) AS size "
+        "FROM system.parts WHERE database='default' AND table='flow_records' AND active=1"
+    )
+    ch_flow_oldest = await _ch_admin(
+        "SELECT min(flow_start) AS oldest FROM flow_records"
+    )
+    ch_syslog = await _ch_admin(
+        "SELECT count() AS rows, formatReadableSize(sum(bytes_on_disk)) AS size "
+        "FROM system.parts WHERE database='default' AND table='syslog_messages' AND active=1"
+    )
+    ch_syslog_oldest = await _ch_admin(
+        "SELECT min(received_at) AS oldest FROM syslog_messages"
+    )
+    ch_ttls = await _ch_admin(
+        "SELECT name, engine_full FROM system.tables "
+        "WHERE database='default' AND name IN ('flow_records','syslog_messages')"
+    )
+
+    import re as _re
+    def _ttl(engine_full: str) -> int:
+        m = _re.search(r'toIntervalDay\((\d+)\)', engine_full)
+        return int(m.group(1)) if m else 90
+
+    ttl_map = {r["name"]: _ttl(r["engine_full"]) for r in ch_ttls}
+    platform = await load_platform_settings(db)
+
+    return {
+        "alerts": {
+            "count":          alert_count_row,
+            "size":           alert_size_row,
+            "oldest":         oldest_alert.isoformat() if oldest_alert else None,
+            "retention_days": platform.get("alert_retention_days", 90),
+        },
+        "flow": {
+            "rows":           int(ch_flow[0]["rows"]) if ch_flow else 0,
+            "size":           ch_flow[0].get("size", "0 B") if ch_flow else "0 B",
+            "oldest":         ch_flow_oldest[0].get("oldest") if ch_flow_oldest else None,
+            "retention_days": ttl_map.get("flow_records", 90),
+        },
+        "syslog": {
+            "rows":           int(ch_syslog[0]["rows"]) if ch_syslog else 0,
+            "size":           ch_syslog[0].get("size", "0 B") if ch_syslog else "0 B",
+            "oldest":         ch_syslog_oldest[0].get("oldest") if ch_syslog_oldest else None,
+            "retention_days": ttl_map.get("syslog_messages", 90),
+        },
+        "config": {
+            "backup_count": cb_count,
+            "size":         cb_size,
+        },
+    }
+
+
+class RetentionUpdate(BaseModel):
+    retention_days: int
+
+
+@router.put("/data/retention/alerts", summary="Set alert retention days")
+async def set_alert_retention(
+    body: RetentionUpdate,
+    current_user: User = Depends(require_role("admin", "superadmin")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    if not 1 <= body.retention_days <= 3650:
+        raise HTTPException(status_code=400, detail="retention_days must be 1–3650")
+    settings = await load_platform_settings(db)
+    settings["alert_retention_days"] = body.retention_days
+    row = (await db.execute(
+        select(SystemSetting).where(SystemSetting.key == _PLATFORM_KEY)
+    )).scalar_one_or_none()
+    if row:
+        row.value = settings
+    else:
+        db.add(SystemSetting(key=_PLATFORM_KEY, value=settings))
+    await db.commit()
+    return {"retention_days": body.retention_days}
+
+
+@router.put("/data/retention/flow", summary="Set flow data TTL in ClickHouse")
+async def set_flow_retention(body: RetentionUpdate, _: User = Depends(require_role("admin", "superadmin"))) -> dict:
+    if not 1 <= body.retention_days <= 3650:
+        raise HTTPException(status_code=400, detail="retention_days must be 1–3650")
+    d = body.retention_days
+    for table, col in [("flow_records","flow_start"),("flow_agg_1min","minute"),
+                       ("flow_agg_proto_5min","bucket"),("flow_agg_asn_5min","bucket"),
+                       ("flow_agg_iface_1hr","hour")]:
+        await _ch_admin(f"ALTER TABLE {table} MODIFY TTL toDateTime({col}) + toIntervalDay({d})")
+    return {"retention_days": d}
+
+
+@router.put("/data/retention/syslog", summary="Set syslog data TTL in ClickHouse")
+async def set_syslog_retention(body: RetentionUpdate, _: User = Depends(require_role("admin", "superadmin"))) -> dict:
+    if not 1 <= body.retention_days <= 3650:
+        raise HTTPException(status_code=400, detail="retention_days must be 1–3650")
+    d = body.retention_days
+    for table, col in [("syslog_messages","ts"),("syslog_agg_1hr","hour")]:
+        await _ch_admin(f"ALTER TABLE {table} MODIFY TTL toDateTime({col}) + toIntervalDay({d})")
+    return {"retention_days": d}

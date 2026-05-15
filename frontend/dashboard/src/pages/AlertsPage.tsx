@@ -84,11 +84,7 @@ export default function AlertsPage() {
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Header */}
-<<<<<<< HEAD
       <div className="px-3 md:px-6 py-3 md:py-4 border-b border-slate-200 bg-white">
-=======
-      <div className="px-6 py-4 border-b border-slate-200 bg-white">
->>>>>>> origin/main
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
             <h1 className="text-base font-semibold text-slate-800">Alerts</h1>
@@ -108,11 +104,7 @@ export default function AlertsPage() {
         </div>
 
         {/* Filter bar */}
-<<<<<<< HEAD
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3">
-=======
-        <div className="flex items-center gap-3 flex-wrap">
->>>>>>> origin/main
           {/* Status pills */}
           <div className="flex rounded-lg overflow-hidden border border-slate-200">
             {statusPills.map(s => (
@@ -128,11 +120,7 @@ export default function AlertsPage() {
           </div>
 
           {/* Severity filter */}
-<<<<<<< HEAD
           <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-hide pb-0.5">
-=======
-          <div className="flex items-center gap-1.5 flex-wrap">
->>>>>>> origin/main
             {['', 'critical', 'major', 'minor', 'warning', 'info'].map(sev => (
               <button key={sev} onClick={() => setSeverityFilter(sev)}
                 className={`px-3 py-1.5 text-xs font-medium rounded-lg border transition-colors ${
@@ -150,11 +138,7 @@ export default function AlertsPage() {
         </div>
       </div>
 
-<<<<<<< HEAD
       <main className="p-3 md:p-6">
-=======
-      <main className="p-6 max-w-6xl">
->>>>>>> origin/main
         {alerts.length === 0 ? (
           <div className="bg-white rounded-2xl border border-slate-200 py-16 text-center">
             <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-3">

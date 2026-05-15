@@ -1,0 +1,15 @@
+[Unit]
+Description=Anthrimon remote collector agent
+After=network.target
+
+[Service]
+User=root
+EnvironmentFile=-/etc/anthrimon/collector.env
+ExecStart=/usr/local/bin/anthrimon-collector --config /etc/anthrimon/remote-collector.yaml
+Restart=on-failure
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -197,7 +197,7 @@ def _build_email(
         # Type-specific extras — empty string if not applicable
         "interface_name": alert_ctx.get("interface_name", ""),
         "prefix":         alert_ctx.get("prefix", ""),
-        "neighbour":      alert_ctx.get("neighbour", ""),
+        "neighbor":      alert_ctx.get("neighbor", ""),
         "ospf_state":     alert_ctx.get("ospf_state", ""),
         "triggered_at":   _fmt_ts(alert.triggered_at),
         "resolved_at":    _fmt_ts(alert.resolved_at),

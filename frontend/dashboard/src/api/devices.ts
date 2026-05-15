@@ -66,7 +66,7 @@ export const unlinkDeviceCredential = (deviceId: string, credentialId: string) =
 export const runSnmpDiag = (id: string) =>
   api.post<SnmpDiagResult>(`/devices/${id}/snmp-diag`).then(r => r.data)
 
-export interface LLDPNeighbourEntry {
+export interface LLDPNeighborEntry {
   local_port: string
   remote_system_name: string | null
   remote_port: string | null
@@ -77,7 +77,7 @@ export interface LLDPNeighbourEntry {
   updated_at: string
 }
 
-export interface CDPNeighbourEntry {
+export interface CDPNeighborEntry {
   local_port: string
   remote_device: string | null
   remote_port: string | null
@@ -89,16 +89,16 @@ export interface CDPNeighbourEntry {
   updated_at: string
 }
 
-export interface NeighboursResponse {
-  lldp: LLDPNeighbourEntry[]
-  cdp: CDPNeighbourEntry[]
+export interface NeighborsResponse {
+  lldp: LLDPNeighborEntry[]
+  cdp: CDPNeighborEntry[]
 }
 
-export const fetchDeviceNeighbours = (id: string) =>
-  api.get<NeighboursResponse>(`/devices/${id}/neighbours`).then(r => r.data)
+export const fetchDeviceNeighbors = (id: string) =>
+  api.get<NeighborsResponse>(`/devices/${id}/neighbors`).then(r => r.data)
 
-export interface OSPFNeighbourEntry {
-  neighbour_ip: string | null
+export interface OSPFNeighborEntry {
+  neighbor_ip: string | null
   router_id: string | null
   display_name?: string | null
   state: string
@@ -111,7 +111,7 @@ export interface OSPFNeighbourEntry {
 }
 
 export const fetchDeviceOSPF = (id: string) =>
-  api.get<OSPFNeighbourEntry[]>(`/devices/${id}/ospf`).then(r => r.data)
+  api.get<OSPFNeighborEntry[]>(`/devices/${id}/ospf`).then(r => r.data)
 
 export interface RouteEntry {
   destination: string

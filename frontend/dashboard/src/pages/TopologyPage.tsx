@@ -1,23 +1,14 @@
-<<<<<<< HEAD
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   ReactFlow, ReactFlowProvider, Controls, Background, MiniMap, Panel, useReactFlow,
-=======
-import React, { useState, useEffect, useCallback } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
-import {
-  ReactFlow, Controls, Background, MiniMap, Panel, useReactFlow,
->>>>>>> origin/main
   EdgeLabelRenderer, getSmoothStepPath, applyNodeChanges,
   Handle, Position,
   type NodeProps, type Node, type Edge, type EdgeProps,
   type NodeMouseHandler, type NodeChange,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-<<<<<<< HEAD
 import {
   fetchTopology, fetchLinkUtil, fetchLinkUtilBatch,
   type TopologyNode, type TopologyEdge as ApiEdge,
@@ -27,12 +18,6 @@ import { DeviceTypeIcon, DEVICE_TYPE_COLOR as TYPE_COLOR, DEVICE_TYPE_LABEL as T
 import api from '../api/client'
 
 // ── Palettes ───────────────────────────────────────────────────────────────
-=======
-import { fetchTopology, fetchLinkUtil, type TopologyNode, type TopologyEdge as ApiEdge, type LinkUtilisation } from '../api/topology'
-import { DeviceTypeIcon, DEVICE_TYPE_COLOR as TYPE_COLOR, DEVICE_TYPE_LABEL as TYPE_LABEL } from '../components/DeviceTypeIcon'
-
-// ── Palette ────────────────────────────────────────────────────────────────
->>>>>>> origin/main
 
 const STATUS_COLOR: Record<string, string> = {
   up:          '#16a34a',
@@ -43,7 +28,6 @@ const STATUS_COLOR: Record<string, string> = {
 const STATUS_LABEL: Record<string, string> = {
   up: 'Up', down: 'Down', unreachable: 'Unreachable', unknown: 'Unknown',
 }
-<<<<<<< HEAD
 const SEVERITY_COLOR: Record<string, string> = {
   critical: '#dc2626',
   major:    '#ea580c',
@@ -59,26 +43,12 @@ const NODE_W  = 160
 const H_STEP  = 240
 const V_STEP  = 190
 
-=======
-
-// ── Layout constants ───────────────────────────────────────────────────────
-
-const NODE_W  = 160   // matches rendered node width
-const H_STEP  = 240   // center-to-center horizontal spacing in a layer
-const V_STEP  = 190   // center-to-center vertical spacing between layers
-
-// Root-election priority per device type (higher = preferred as hierarchy root)
->>>>>>> origin/main
 const ROOT_PRIO: Record<string, number> = {
   router: 5, firewall: 5, load_balancer: 4,
   switch: 3, wireless_controller: 2, access_point: 0, unknown: 1,
 }
 
-<<<<<<< HEAD
 // ── Helpers ────────────────────────────────────────────────────────────────
-=======
-// ── Formatters ────────────────────────────────────────────────────────────
->>>>>>> origin/main
 
 function fmtSpeed(bps: number): string {
   if (bps >= 1e9) return `${bps / 1e9} Gbps`
@@ -94,7 +64,6 @@ function fmtBps(bps: number): string {
   return `${bps.toFixed(0)} bps`
 }
 
-<<<<<<< HEAD
 // Colour an edge based on utilisation percentage
 function utilEdgeColor(pct: number | null, protocol: string): string {
   if (pct === null) return protocol === 'lldp' ? '#0891b2' : '#7c3aed'
@@ -114,8 +83,6 @@ function edgeStrokeWidth(speedBps: number | null): number {
   return 1.5
 }
 
-=======
->>>>>>> origin/main
 // ── Hierarchical layout ────────────────────────────────────────────────────
 
 function hierLayout(
@@ -140,10 +107,6 @@ function hierLayout(
   const score = (id: string) =>
     (ROOT_PRIO[nodeMap[id]?.device_type ?? 'unknown'] ?? 1) * 20 + deg[id]
 
-<<<<<<< HEAD
-=======
-  // BFS from highest-scoring unvisited node → one component per iteration
->>>>>>> origin/main
   const visited = new Set<string>()
   const layer: Record<string, number> = {}
   const comps: string[][] = []
@@ -178,10 +141,6 @@ function hierLayout(
     const byLayer: Record<number, string[]> = {}
     comp.forEach(id => { (byLayer[layer[id] ?? 0] ??= []).push(id) })
 
-<<<<<<< HEAD
-=======
-    // Minimise crossings: sort each layer by average parent index
->>>>>>> origin/main
     const layerNums = Object.keys(byLayer).map(Number).sort((a, b) => a - b)
     for (let li = 1; li < layerNums.length; li++) {
       const l = layerNums[li]
@@ -212,11 +171,7 @@ function hierLayout(
   return pos
 }
 
-<<<<<<< HEAD
 // ── Handle routing ────────────────────────────────────────────────────────
-=======
-// ── Determine which handles an edge should use ─────────────────────────────
->>>>>>> origin/main
 
 type HandleSide = 'top' | 'bottom' | 'left' | 'right'
 
@@ -227,10 +182,6 @@ function edgeHandles(
   if (!src || !tgt) return { sh: 'bottom', th: 'top', sp: Position.Bottom, tp: Position.Top }
   const dx = tgt.x - src.x
   const dy = tgt.y - src.y
-<<<<<<< HEAD
-=======
-  // Prefer vertical routing (network hierarchies read top→bottom)
->>>>>>> origin/main
   if (Math.abs(dy) >= Math.abs(dx) * 0.6) {
     return dy >= 0
       ? { sh: 'bottom', th: 'top',    sp: Position.Bottom, tp: Position.Top    }
@@ -247,7 +198,6 @@ const H: React.CSSProperties = {
   opacity: 0, width: 2, height: 2, minWidth: 2, minHeight: 2, border: 'none',
 }
 
-<<<<<<< HEAD
 type NodeData = TopologyNode & {
   alerts:    { count: number; severity: string } | null
   dimmed:    boolean
@@ -262,15 +212,6 @@ function DeviceNode({ data, selected }: NodeProps) {
 
   return (
     <div style={{ width: NODE_W, opacity: d.dimmed ? 0.15 : 1, transition: 'opacity 0.2s' }}>
-=======
-function DeviceNode({ data, selected }: NodeProps) {
-  const d = data as unknown as TopologyNode
-  const color  = TYPE_COLOR[d.device_type] ?? '#475569'
-  const sc     = STATUS_COLOR[d.status] ?? '#94a3b8'
-
-  return (
-    <div style={{ width: NODE_W }}>
->>>>>>> origin/main
       <Handle id="top"    type="source" position={Position.Top}    style={H} />
       <Handle id="top"    type="target" position={Position.Top}    style={H} />
       <Handle id="bottom" type="source" position={Position.Bottom} style={H} />
@@ -280,7 +221,6 @@ function DeviceNode({ data, selected }: NodeProps) {
       <Handle id="right"  type="source" position={Position.Right}  style={H} />
       <Handle id="right"  type="target" position={Position.Right}  style={H} />
 
-<<<<<<< HEAD
       <div className="relative">
         {/* Alert badge */}
         {d.alerts && d.alerts.count > 0 && (
@@ -336,44 +276,6 @@ function DeviceNode({ data, selected }: NodeProps) {
           >
             {TYPE_LABEL[d.device_type] ?? 'Unknown'}
           </div>
-=======
-      <div
-        className="rounded-xl bg-white transition-shadow"
-        style={{
-          border:     `1.5px solid ${selected ? color : '#e2e8f0'}`,
-          boxShadow:  selected
-            ? `0 0 0 3px ${color}22, 0 6px 20px rgba(0,0,0,0.10)`
-            : '0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04)',
-        }}
-      >
-        {/* Coloured accent bar */}
-        <div style={{ height: 3, backgroundColor: color, borderRadius: '8px 8px 0 0' }} />
-
-        {/* Body */}
-        <div className="px-3 pt-2.5 pb-2">
-          <div className="flex items-start justify-between mb-1.5">
-            <span style={{ color }}><DeviceTypeIcon type={d.device_type} size={22} /></span>
-            <span
-              className="w-2 h-2 rounded-full mt-0.5 shrink-0"
-              style={{ backgroundColor: sc }}
-              title={STATUS_LABEL[d.status] ?? d.status}
-            />
-          </div>
-          <div className="text-[11px] font-semibold text-slate-800 truncate leading-tight">
-            {d.hostname}
-          </div>
-          <div className="text-[10px] font-mono text-slate-400 mt-0.5 truncate">
-            {d.mgmt_ip || '—'}
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div
-          className="px-3 py-1 border-t text-[9px] text-slate-400 capitalize rounded-b-xl"
-          style={{ borderColor: `${color}20`, backgroundColor: `${color}07` }}
-        >
-          {TYPE_LABEL[d.device_type] ?? 'Unknown'}
->>>>>>> origin/main
         </div>
       </div>
     </div>
@@ -395,12 +297,9 @@ type EdgeData = {
   source_hostname?: string
   target_hostname?: string
   source_iface_id?: string | null
-<<<<<<< HEAD
   util_pct?: number | null
   util_in_pct?: number | null
   util_out_pct?: number | null
-=======
->>>>>>> origin/main
 }
 
 function TopologyEdge({
@@ -409,7 +308,6 @@ function TopologyEdge({
   data, selected,
 }: EdgeProps) {
   const [hovered, setHovered] = useState(false)
-<<<<<<< HEAD
   const d       = data as EdgeData
   const utilPct = d.util_pct ?? null
   const color   = utilEdgeColor(utilPct, d.protocol ?? 'lldp')
@@ -421,13 +319,6 @@ function TopologyEdge({
   const flowDur = (!hilit && utilPct !== null && utilPct > 8)
     ? Math.max(0.5, 3 - utilPct * 0.025)
     : null
-=======
-  const d      = data as EdgeData
-  const isLLDP = d.protocol === 'lldp'
-  const color  = isLLDP ? '#0891b2' : '#7c3aed'
-  const dimmed = !!d.dimmed
-  const hilit  = !!d.highlighted || selected
->>>>>>> origin/main
 
   const [path, labelX, labelY] = getSmoothStepPath({
     sourceX, sourceY, sourcePosition,
@@ -438,7 +329,6 @@ function TopologyEdge({
 
   return (
     <>
-<<<<<<< HEAD
       {/* Glow halo when selected */}
       {hilit && (
         <path d={path} fill="none" stroke={color} strokeWidth={(sw + 6)} strokeOpacity={0.12} strokeLinecap="round" />
@@ -468,30 +358,6 @@ function TopologyEdge({
         }}
       />
       {/* Wide invisible hit area */}
-=======
-      {hilit && (
-        <path d={path} fill="none" stroke={color} strokeWidth={12} strokeOpacity={0.12} strokeLinecap="round" />
-      )}
-      <path
-        d={path} fill="none" stroke="white"
-        strokeWidth={hilit ? 5 : 3.5}
-        strokeOpacity={dimmed ? 0 : 0.65}
-        strokeLinecap="round"
-      />
-      <path
-        id={id} d={path} fill="none"
-        stroke={color}
-        strokeWidth={hilit ? 2.5 : 1.5}
-        strokeOpacity={dimmed ? 0.08 : 1}
-        strokeLinecap="round"
-        strokeDasharray={hilit ? '7 4' : undefined}
-        style={{
-          animation:  hilit ? 'topoEdgeDash 1s linear infinite' : undefined,
-          transition: 'stroke-opacity 0.15s, stroke-width 0.15s',
-        }}
-      />
-      {/* Wide invisible hit area for hover/click */}
->>>>>>> origin/main
       <path
         d={path} fill="none" stroke="transparent" strokeWidth={20}
         style={{ cursor: 'pointer' }}
@@ -525,7 +391,6 @@ function TopologyEdge({
                       <span className="text-cyan-300">{fmtSpeed(d.speed_bps)}</span>
                     </div>
                   )}
-<<<<<<< HEAD
                   {utilPct !== null && (
                     <div className="flex items-center gap-2">
                       <span className="text-slate-400 w-12 shrink-0">Util</span>
@@ -550,16 +415,6 @@ function TopologyEdge({
                   {d.label}
                 </span>
               ) : null
-=======
-                </div>
-              </div>
-            ) : (
-              d.label && (
-                <span className="text-[9px] font-mono text-slate-500 bg-white border border-slate-200 rounded px-1.5 py-0.5 shadow-sm leading-none whitespace-nowrap">
-                  {d.label}
-                </span>
-              )
->>>>>>> origin/main
             )}
           </div>
         </EdgeLabelRenderer>
@@ -570,11 +425,7 @@ function TopologyEdge({
 
 const EDGE_TYPES = { topology: TopologyEdge }
 
-<<<<<<< HEAD
 // ── Device panel ───────────────────────────────────────────────────────────
-=======
-// ── Detail panel ───────────────────────────────────────────────────────────
->>>>>>> origin/main
 
 function DevicePanel({
   node, edges, nodesById, onClose, onNavigate,
@@ -585,30 +436,17 @@ function DevicePanel({
   onClose: () => void
   onNavigate: (id: string) => void
 }) {
-<<<<<<< HEAD
   const color = TYPE_COLOR[node.device_type] ?? '#475569'
   const sc    = STATUS_COLOR[node.status]    ?? '#94a3b8'
-=======
-  const color  = TYPE_COLOR[node.device_type] ?? '#475569'
-  const sc     = STATUS_COLOR[node.status]    ?? '#94a3b8'
->>>>>>> origin/main
 
   const links = edges
     .filter(e => e.source === node.id || e.target === node.id)
     .map(e => {
-<<<<<<< HEAD
       const isSrc  = e.source === node.id
       const peerId = isSrc ? e.target : e.source
       const peer   = nodesById[peerId]
       const lp     = isSrc ? e.source_port : e.target_port
       const rp     = isSrc ? e.target_port : e.source_port
-=======
-      const isSrc   = e.source === node.id
-      const peerId  = isSrc ? e.target : e.source
-      const peer    = nodesById[peerId]
-      const lp      = isSrc ? e.source_port : e.target_port
-      const rp      = isSrc ? e.target_port : e.source_port
->>>>>>> origin/main
       return { peer, lp, rp, protocol: e.protocol }
     })
 
@@ -617,10 +455,6 @@ function DevicePanel({
       className="absolute top-4 right-4 w-72 bg-white rounded-2xl shadow-xl border border-slate-200 z-10 flex flex-col overflow-hidden"
       style={{ maxHeight: 'calc(100% - 2rem)' }}
     >
-<<<<<<< HEAD
-=======
-      {/* Header */}
->>>>>>> origin/main
       <div className="px-4 py-3 flex items-start justify-between" style={{ borderBottom: `3px solid ${color}` }}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-0.5">
@@ -629,25 +463,11 @@ function DevicePanel({
           </div>
           <h3 className="text-sm font-bold text-slate-800 truncate">{node.hostname}</h3>
         </div>
-<<<<<<< HEAD
         <button onClick={onClose} className="ml-2 p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors shrink-0">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></svg>
         </button>
       </div>
 
-=======
-        <button
-          onClick={onClose}
-          className="ml-2 p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition-colors shrink-0"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Details */}
->>>>>>> origin/main
       <div className="px-4 py-3 space-y-2 overflow-y-auto flex-1 text-xs">
         <div className="flex items-center justify-between">
           <span className="text-slate-400">Status</span>
@@ -666,10 +486,6 @@ function DevicePanel({
             <span className="text-slate-700 capitalize">{node.vendor.replace('_', ' ')}</span>
           </div>
         )}
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/main
         {links.length > 0 && (
           <div className="pt-2 border-t border-slate-100">
             <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">
@@ -699,23 +515,13 @@ function DevicePanel({
         )}
       </div>
 
-<<<<<<< HEAD
-=======
-      {/* Footer */}
->>>>>>> origin/main
       <div className="px-4 py-3 border-t border-slate-100">
         <button
           onClick={() => onNavigate(node.id)}
           className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors"
         >
           Open device
-<<<<<<< HEAD
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
-=======
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-            <path d="M5 12h14M12 5l7 7-7 7" />
-          </svg>
->>>>>>> origin/main
         </button>
       </div>
     </div>
@@ -797,18 +603,10 @@ function LinkPanel({
   const inPct   = speed && inLast  != null ? inLast  / speed * 100 : null
   const outPct  = speed && outLast != null ? outLast / speed * 100 : null
 
-<<<<<<< HEAD
   const W = 284
   const left    = Math.min(Math.max(clickPos.x - W / 2, 8), window.innerWidth - W - 8)
   const below   = clickPos.y + 12
   const above   = clickPos.y - 12
-=======
-  // Position near click, clamped to viewport
-  const W = 284
-  const left = Math.min(Math.max(clickPos.x - W / 2, 8), window.innerWidth - W - 8)
-  const below = clickPos.y + 12
-  const above = clickPos.y - 12  // panel will grow upward via bottom anchor
->>>>>>> origin/main
   const fitsBelow = below + 420 < window.innerHeight
 
   return (
@@ -823,10 +621,6 @@ function LinkPanel({
       }}
       className="bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
     >
-<<<<<<< HEAD
-=======
-      {/* Header */}
->>>>>>> origin/main
       <div className="px-3 py-2.5 flex items-center justify-between bg-slate-800 rounded-t-2xl">
         <div className="flex items-center gap-2 min-w-0">
           <svg className="w-3.5 h-3.5 text-slate-400 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
@@ -841,23 +635,11 @@ function LinkPanel({
           </span>
         </div>
         <button onClick={onClose} className="ml-2 p-1 text-slate-400 hover:text-white rounded transition-colors shrink-0">
-<<<<<<< HEAD
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></svg>
         </button>
       </div>
 
       <div className="overflow-y-auto flex-1">
-=======
-          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Body */}
-      <div className="overflow-y-auto flex-1">
-        {/* Port row */}
->>>>>>> origin/main
         <div className="grid grid-cols-2 divide-x divide-slate-100 border-b border-slate-100">
           {[
             { device: src, port: edge.source_port, side: 'Local' },
@@ -876,10 +658,6 @@ function LinkPanel({
           ))}
         </div>
 
-<<<<<<< HEAD
-=======
-        {/* Speed */}
->>>>>>> origin/main
         {speed != null && (
           <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
             <span className="text-[11px] text-slate-500">Port speed</span>
@@ -887,10 +665,6 @@ function LinkPanel({
           </div>
         )}
 
-<<<<<<< HEAD
-=======
-        {/* Graph + stats */}
->>>>>>> origin/main
         {edge.source_iface_id ? (
           <div className="px-3 pt-2.5 pb-3">
             <div className="flex items-center justify-between mb-1.5">
@@ -909,12 +683,7 @@ function LinkPanel({
                   <Sparkline
                     inSeries={util.in_bps as [number, number][]}
                     outSeries={util.out_bps as [number, number][]}
-<<<<<<< HEAD
                     w={248} h={64}
-=======
-                    w={248}
-                    h={64}
->>>>>>> origin/main
                   />
                 </div>
 
@@ -967,7 +736,6 @@ function FitBtn() {
   )
 }
 
-<<<<<<< HEAD
 // ── Utilisation legend ────────────────────────────────────────────────────
 
 function UtilLegend() {
@@ -1017,12 +785,6 @@ function TopologyPageInner() {
   const navigate = useNavigate()
   const { fitView } = useReactFlow()
 
-=======
-// ── Page ───────────────────────────────────────────────────────────────────
-
-export default function TopologyPage() {
-  const navigate = useNavigate()
->>>>>>> origin/main
   const [selectedId,     setSelectedId]    = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [edgePanelPos,   setEdgePanelPos]  = useState<{ x: number; y: number } | null>(null)
@@ -1031,16 +793,12 @@ export default function TopologyPage() {
   const [protocolFilter, setProtocol]      = useState<'all' | 'lldp' | 'cdp'>('all')
   const [hiddenTypes,    setHiddenTypes]   = useState<Set<string>>(new Set())
   const [typeMenuOpen,   setTypeMenuOpen]  = useState(false)
-<<<<<<< HEAD
   const [search,         setSearch]        = useState('')
   const [showUtilLegend, setShowUtilLegend] = useState(false)
-=======
->>>>>>> origin/main
 
   const [rfNodes, setRfNodes] = useState<Node[]>([])
   const [rfEdges, setRfEdges] = useState<Edge[]>([])
 
-<<<<<<< HEAD
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const savedLayout = useMemo(() => loadSavedLayout(), [])
 
@@ -1111,19 +869,6 @@ export default function TopologyPage() {
   const nodesById = Object.fromEntries((data?.nodes ?? []).map(n => [n.id, n]))
   const deviceTypes = [...new Set((data?.nodes ?? []).map(n => n.device_type))].filter(Boolean)
 
-=======
-  const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['topology'],
-    queryFn:  fetchTopology,
-    staleTime: 30_000,
-  })
-
-  const nodesById = Object.fromEntries((data?.nodes ?? []).map(n => [n.id, n]))
-  const deviceTypes = [...new Set((data?.nodes ?? []).map(n => n.device_type))].filter(Boolean)
-
-  // Recompute layout whenever topology data or filter changes.
-  // Preserves user-dragged positions for nodes that already exist.
->>>>>>> origin/main
   useEffect(() => {
     if (!data) return
 
@@ -1135,7 +880,6 @@ export default function TopologyPage() {
 
     setRfNodes(prev => {
       const prevById = Object.fromEntries(prev.map(n => [n.id, n]))
-<<<<<<< HEAD
       return visible.map(n => {
         const isSearchDimmed = searchMatchIds !== null && !searchMatchIds.has(n.id)
         const isSearchHit    = searchMatchIds !== null && searchMatchIds.has(n.id)
@@ -1153,16 +897,6 @@ export default function TopologyPage() {
           draggable: true,
         }
       })
-=======
-      return visible.map(n => ({
-        id:       n.id,
-        type:     'device',
-        position: prevById[n.id]?.position ?? pos[n.id] ?? { x: 0, y: 0 },
-        selected: n.id === selectedId,
-        data:     n as unknown as Record<string, unknown>,
-        draggable: true,
-      }))
->>>>>>> origin/main
     })
 
     setRfEdges(
@@ -1179,7 +913,6 @@ export default function TopologyPage() {
                 ? `${e.source_port} → ${e.target_port}`
                 : e.source_port ?? e.target_port ?? '')
             : ''
-<<<<<<< HEAD
 
           // Compute utilisation percentage from batch snapshot
           let utilPct: number | null = null
@@ -1197,8 +930,6 @@ export default function TopologyPage() {
           const edgeDimmed = (!!selectedId && !isAdj) ||
             (searchMatchIds !== null && !searchMatchIds.has(e.source) && !searchMatchIds.has(e.target))
 
-=======
->>>>>>> origin/main
           return {
             id: e.id, source: e.source, target: e.target,
             sourceHandle: sh, targetHandle: th,
@@ -1207,28 +938,20 @@ export default function TopologyPage() {
               label,
               protocol:        e.protocol,
               highlighted:     !!selectedId && isAdj,
-<<<<<<< HEAD
               dimmed:          edgeDimmed,
-=======
-              dimmed:          !!selectedId && !isAdj,
->>>>>>> origin/main
               source_port:     e.source_port,
               target_port:     e.target_port,
               speed_bps:       e.source_speed_bps,
               source_hostname: nodesById[e.source]?.hostname,
               target_hostname: nodesById[e.target]?.hostname,
               source_iface_id: e.source_iface_id,
-<<<<<<< HEAD
               util_pct:        utilPct,
               util_in_pct:     utilInPct,
               util_out_pct:    utilOutPct,
-=======
->>>>>>> origin/main
             },
           }
         })
     )
-<<<<<<< HEAD
   }, [data, showIsolated, hiddenTypes, selectedId, protocolFilter, showLabels,
       alertsByDevice, utilBatch, searchMatchIds, savedLayout])
 
@@ -1244,12 +967,6 @@ export default function TopologyPage() {
       }, 800)
       return next
     })
-=======
-  }, [data, showIsolated, hiddenTypes, selectedId, protocolFilter, showLabels])
-
-  const onNodesChange = useCallback((changes: NodeChange[]) => {
-    setRfNodes(prev => applyNodeChanges(changes, prev))
->>>>>>> origin/main
   }, [])
 
   const onNodeClick: NodeMouseHandler = (_, node) => {
@@ -1257,13 +974,10 @@ export default function TopologyPage() {
     setSelectedId(id => id === node.id ? null : node.id)
   }
 
-<<<<<<< HEAD
   const onNodeDoubleClick: NodeMouseHandler = (_, node) => {
     navigate(`/devices/${node.id}`)
   }
 
-=======
->>>>>>> origin/main
   const onEdgeClick = useCallback((e: React.MouseEvent, edge: Edge) => {
     setSelectedId(null)
     setSelectedEdgeId(prev => {
@@ -1292,7 +1006,6 @@ export default function TopologyPage() {
     </button>
   )
 
-<<<<<<< HEAD
   const hasUtilData = Object.keys(utilBatch ?? {}).length > 0
 
   return (
@@ -1353,31 +1066,6 @@ export default function TopologyPage() {
             {(['all', 'lldp', 'cdp'] as const).map(p => (
               <button key={p} onClick={() => setProtocol(p)}
                 className={`px-2 py-1 text-xs font-medium transition-colors ${
-=======
-  return (
-    <div className="flex flex-col h-screen bg-slate-50">
-      {/* Dash animation keyframe */}
-      <style>{`@keyframes topoEdgeDash { to { stroke-dashoffset: -22; } }`}</style>
-
-      {/* Toolbar */}
-      <div className="px-4 py-2.5 border-b border-slate-200 bg-white flex items-center gap-3 shrink-0 flex-wrap z-10">
-        <div className="mr-1">
-          <span className="text-sm font-semibold text-slate-800">Topology</span>
-          <span className="ml-2 text-xs text-slate-400">
-            {rfNodes.length} node{rfNodes.length !== 1 ? 's' : ''} · {rfEdges.length} link{rfEdges.length !== 1 ? 's' : ''}
-          </span>
-        </div>
-
-        <div className="h-4 w-px bg-slate-200" />
-
-        {/* Protocol */}
-        <div className="flex items-center gap-1.5">
-          <span className="text-xs text-slate-400">Protocol</span>
-          <div className="flex rounded-lg overflow-hidden border border-slate-200">
-            {(['all', 'lldp', 'cdp'] as const).map(p => (
-              <button key={p} onClick={() => setProtocol(p)}
-                className={`px-2.5 py-1 text-xs font-medium transition-colors ${
->>>>>>> origin/main
                   protocolFilter === p
                     ? p === 'lldp' ? 'bg-cyan-600 text-white'
                       : p === 'cdp' ? 'bg-violet-600 text-white'
@@ -1389,7 +1077,6 @@ export default function TopologyPage() {
               </button>
             ))}
           </div>
-<<<<<<< HEAD
 
           {/* Device type filter */}
           <div className="relative">
@@ -1483,72 +1170,6 @@ export default function TopologyPage() {
             }
           </div>
         )}
-=======
-        </div>
-
-        <div className="h-4 w-px bg-slate-200" />
-
-        {/* Device type filter */}
-        <div className="relative">
-          <button
-            onClick={() => setTypeMenuOpen(o => !o)}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
-              hiddenTypes.size > 0 ? 'bg-blue-50 text-blue-600 border-blue-200' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
-            }`}
-          >
-            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-              <path d="M4 6h16M8 12h8M11 18h2" />
-            </svg>
-            Types
-            {hiddenTypes.size > 0 && (
-              <span className="ml-0.5 bg-blue-600 text-white rounded-full px-1 text-[10px]">{hiddenTypes.size}</span>
-            )}
-          </button>
-          {typeMenuOpen && (
-            <div
-              className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-50 py-2 min-w-[160px]"
-              onMouseLeave={() => setTypeMenuOpen(false)}
-            >
-              {deviceTypes.map(t => (
-                <label key={t} className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-slate-50 cursor-pointer">
-                  <input type="checkbox" checked={!hiddenTypes.has(t)} onChange={() => toggleType(t)} className="rounded border-slate-300 text-blue-600" />
-                  <span style={{ color: TYPE_COLOR[t] ?? '#475569', opacity: hiddenTypes.has(t) ? 0.3 : 1 }}>
-                    <DeviceTypeIcon type={t} size={13} />
-                  </span>
-                  <span className="text-xs text-slate-600 capitalize">{(t ?? 'unknown').replace('_', ' ')}</span>
-                </label>
-              ))}
-              {hiddenTypes.size > 0 && (
-                <button onClick={() => setHiddenTypes(new Set())}
-                  className="w-full text-left px-3 py-1.5 text-xs text-blue-600 hover:bg-slate-50 border-t border-slate-100 mt-1">
-                  Show all
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div className="h-4 w-px bg-slate-200" />
-
-        <Pill active={showLabels}  onClick={() => setShowLabels(v => !v)}>
-          {showLabels ? 'Labels on' : 'Labels off'}
-        </Pill>
-        <Pill active={showIsolated} onClick={() => setShowIsolated(v => !v)}>
-          {showIsolated ? 'All devices' : 'Connected only'}
-        </Pill>
-
-        <div className="flex-1" />
-        <button
-          onClick={() => refetch()}
-          disabled={isFetching}
-          className="flex items-center gap-1.5 text-xs text-blue-600 hover:underline disabled:opacity-50"
-        >
-          <svg className={`w-3.5 h-3.5 ${isFetching ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
-            <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.66 0 3-4.03 3-9s-1.34-9-3-9m0 18c-1.66 0-3-4.03-3-9s1.34-9 3-9" />
-          </svg>
-          {isFetching ? 'Refreshing…' : 'Refresh'}
-        </button>
->>>>>>> origin/main
       </div>
 
       {/* Canvas */}
@@ -1557,7 +1178,7 @@ export default function TopologyPage() {
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
               <p className="text-slate-400 text-sm mb-1">No topology data yet.</p>
-              <p className="text-slate-300 text-xs">LLDP/CDP neighbours are collected on each poll cycle.</p>
+              <p className="text-slate-300 text-xs">LLDP/CDP neighbors are collected on each poll cycle.</p>
             </div>
           </div>
         ) : (
@@ -1569,7 +1190,6 @@ export default function TopologyPage() {
               edgeTypes={EDGE_TYPES}
               onNodesChange={onNodesChange}
               onNodeClick={onNodeClick}
-<<<<<<< HEAD
               onNodeDoubleClick={onNodeDoubleClick}
               onEdgeClick={onEdgeClick}
               onPaneClick={() => {
@@ -1578,10 +1198,6 @@ export default function TopologyPage() {
                 setEdgePanelPos(null)
                 setTypeMenuOpen(false)
               }}
-=======
-              onEdgeClick={onEdgeClick}
-              onPaneClick={() => { setSelectedId(null); setSelectedEdgeId(null); setEdgePanelPos(null); setTypeMenuOpen(false) }}
->>>>>>> origin/main
               fitView
               fitViewOptions={{ padding: 0.22 }}
               minZoom={0.1}
@@ -1622,14 +1238,11 @@ export default function TopologyPage() {
                 />
               ) : null
             })()}
-<<<<<<< HEAD
 
             {/* Hint */}
             <div className="absolute bottom-14 left-1/2 -translate-x-1/2 text-[10px] text-slate-400 pointer-events-none">
               Click node to inspect · Double-click to open · Click link for bandwidth
             </div>
-=======
->>>>>>> origin/main
           </>
         )}
       </div>

@@ -184,6 +184,180 @@ def _collect_ssh(host: str, port: int, vendor_key: str, cred_data: dict) -> str:
     return output.strip()
 
 
+# Vendor-specific config mode entry/exit commands
+_CONFIG_ENTER: dict[str, str] = {
+    "arista":     "configure terminal",
+    "cisco_ios":  "configure terminal",
+    "cisco_iosxe":"configure terminal",
+    "cisco_iosxr":"configure terminal",
+    "cisco_nxos": "configure terminal",
+    "juniper":    "configure",
+    "hp_procurve":"configure",
+    "procurve":   "configure",
+    "aruba_cx":   "configure terminal",
+    "fortios":    "",   # FortiOS has no config mode — commands sent directly
+    "ubiquiti":   "",
+}
+_CONFIG_EXIT: dict[str, str] = {
+    "juniper":    "commit\nexit",
+}
+_SAVE_CMD: dict[str, str] = {
+    "arista":     "write memory",
+    "cisco_ios":  "write memory",
+    "cisco_iosxe":"write memory",
+    "cisco_iosxr":"commit",
+    "cisco_nxos": "copy running-config startup-config",
+    "juniper":    "",   # juniper commits on exit
+    "hp_procurve":"write memory",
+    "procurve":   "write memory",
+    "aruba_cx":   "write memory",
+    "fortios":    "execute cfg save",
+}
+
+
+def _deploy_ssh(
+    host: str, port: int, vendor_key: str, cred_data: dict,
+    commands: list[str], save: bool,
+) -> str:
+    """Push config commands to a device via SSH. Returns combined CLI output."""
+    if vendor_key in _PARAMIKO_VENDORS:
+        return _deploy_ssh_paramiko(host, port, vendor_key, cred_data, commands, save)
+
+    from netmiko import ConnectHandler
+
+    device_type = _NETMIKO_TYPE.get(vendor_key, "cisco_ios")
+    is_procurve  = vendor_key in {"hp_procurve"}
+    _NEEDS_ENABLE_DEPLOY = {"arista", "cisco_ios", "cisco_iosxe", "cisco_iosxr",
+                             "cisco_nxos", "hp_procurve", "aruba_cx"}
+
+    conn_params = {
+        "device_type":         device_type,
+        "host":                host,
+        "port":                port,
+        "username":            cred_data.get("username", ""),
+        "password":            cred_data.get("password", ""),
+        "timeout":             60 if is_procurve else 30,
+        "conn_timeout":        30 if is_procurve else 15,
+        "auth_timeout":        30 if is_procurve else 20,
+        "banner_timeout":      30 if is_procurve else 20,
+        "fast_cli":            False,
+        "global_delay_factor": 4 if is_procurve else 1,
+    }
+    if cred_data.get("enable_secret"):
+        conn_params["secret"] = cred_data["enable_secret"]
+    elif vendor_key in _NEEDS_ENABLE_DEPLOY:
+        conn_params["secret"] = cred_data.get("password", "")
+
+    output_parts: list[str] = []
+
+    with ConnectHandler(**conn_params) as conn:
+        if vendor_key in _NEEDS_ENABLE_DEPLOY:
+            try:
+                conn.enable()
+            except Exception:
+                pass
+
+        enter_cmd = _CONFIG_ENTER.get(vendor_key, "configure terminal")
+        if enter_cmd:
+            out = conn.send_command_timing(enter_cmd, delay_factor=2)
+            output_parts.append(f"$ {enter_cmd}\n{out}")
+
+        for cmd in commands:
+            if not cmd.strip():
+                continue
+            out = conn.send_command_timing(cmd.strip(), delay_factor=2)
+            output_parts.append(f"$ {cmd.strip()}\n{out}")
+
+        # Exit config mode
+        exit_cmd = _CONFIG_EXIT.get(vendor_key, "end")
+        if exit_cmd:
+            for line in exit_cmd.splitlines():
+                out = conn.send_command_timing(line, delay_factor=2)
+                output_parts.append(f"$ {line}\n{out}")
+        else:
+            conn.send_command_timing("end", delay_factor=2)
+
+        # Save to startup config
+        if save:
+            save_cmd = _SAVE_CMD.get(vendor_key, "write memory")
+            if save_cmd:
+                out = conn.send_command_timing(save_cmd, delay_factor=2)
+                output_parts.append(f"$ {save_cmd}\n{out}")
+
+    return "\n".join(output_parts).strip()
+
+
+def _deploy_ssh_paramiko(
+    host: str, port: int, vendor_key: str, cred_data: dict,
+    commands: list[str], save: bool,
+) -> str:
+    """Deploy config via paramiko invoke_shell (for ProCurve)."""
+    import paramiko, time, socket
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(
+        hostname=host, port=port,
+        username=cred_data.get("username", ""),
+        password=cred_data.get("password", ""),
+        timeout=30, look_for_keys=False, allow_agent=False,
+    )
+
+    output_parts: list[str] = []
+
+    try:
+        shell = client.invoke_shell(width=200, height=200)
+        shell.settimeout(5)
+
+        def _read(timeout: float = 8.0) -> str:
+            buf, deadline = "", time.time() + timeout
+            while time.time() < deadline:
+                try:
+                    chunk = shell.recv(4096).decode("utf-8", errors="replace")
+                    buf += chunk
+                    if buf.rstrip().endswith(("#", ">")):
+                        break
+                except socket.timeout:
+                    if buf.rstrip().endswith(("#", ">")):
+                        break
+            return buf
+
+        _read(12)  # wait for initial prompt
+
+        def _send(cmd: str) -> str:
+            shell.send(cmd + "\n")
+            out = _read()
+            lines = out.splitlines()
+            return "\n".join(lines[1:-1]).strip() if len(lines) > 2 else out.strip()
+
+        _send("no page")
+
+        enter_cmd = _CONFIG_ENTER.get(vendor_key, "configure")
+        if enter_cmd:
+            output_parts.append(f"$ {enter_cmd}\n{_send(enter_cmd)}")
+
+        for cmd in commands:
+            if not cmd.strip():
+                continue
+            out = _send(cmd.strip())
+            output_parts.append(f"$ {cmd.strip()}\n{out}")
+
+        exit_cmd = _CONFIG_EXIT.get(vendor_key, "end")
+        for line in (exit_cmd.splitlines() if exit_cmd else ["end"]):
+            _send(line)
+
+        if save:
+            save_cmd = _SAVE_CMD.get(vendor_key, "write memory")
+            if save_cmd:
+                out = _send(save_cmd)
+                output_parts.append(f"$ {save_cmd}\n{out}")
+
+    finally:
+        client.close()
+
+    return "\n".join(output_parts).strip()
+
+
 async def collect_device(device_id: str, db: AsyncSession) -> Optional[ConfigBackup]:
     """Collect running config for one device.  Returns the new ConfigBackup if
     a change was detected, else None."""
@@ -296,7 +470,86 @@ async def collect_device(device_id: str, db: AsyncSession) -> Optional[ConfigBac
     await db.commit()
     logger.info("config_collected", device=dev.hostname, hash=config_hash[:12],
                 changed=prev is not None)
+
+    # Fire change alerts if this was an actual change (not first backup)
+    if prev:
+        await _fire_config_change_alerts(
+            db=db, dev=dev,
+            lines_added=lines_added, lines_removed=lines_removed,
+            backup_id=str(backup.id),
+        )
+
     return backup
+
+
+async def _fire_config_change_alerts(
+    db: AsyncSession, dev: Device,
+    lines_added: int, lines_removed: int, backup_id: str,
+) -> None:
+    """Create alert + dispatch notifications for config_change rules matching this device."""
+    import uuid as _uuid
+    import hashlib as _hashlib
+    from ..models.alert import Alert, AlertRule
+    from ..alerting.engine import _device_matches_selector, _fingerprint
+    from ..alerting import notify
+
+    # Find enabled config_change rules for this tenant
+    rules = (await db.execute(
+        select(AlertRule).where(
+            AlertRule.tenant_id == dev.tenant_id,
+            AlertRule.metric == "config_change",
+            AlertRule.is_enabled == True,  # noqa: E712
+        )
+    )).scalars().all()
+
+    if not rules:
+        return
+
+    device_dict = {"id": str(dev.id), "vendor": dev.vendor or "", "tags": dev.tags or []}
+    now = datetime.now(timezone.utc)
+
+    for rule in rules:
+        # Apply device selector filter
+        if rule.device_selector and not _device_matches_selector(device_dict, rule.device_selector):
+            continue
+
+        fp = _fingerprint(str(rule.id), str(dev.id))
+        title = (
+            f"{dev.fqdn or dev.hostname}: "
+            f"config changed (+{lines_added} -{lines_removed} lines)"
+        )
+
+        alert = Alert(
+            id=_uuid.uuid4(),
+            tenant_id=rule.tenant_id,
+            rule_id=rule.id,
+            device_id=dev.id,
+            severity=rule.severity,
+            status="open",
+            title=title,
+            message=rule.description,
+            context={
+                "metric":        "config_change",
+                "device_name":   dev.fqdn or dev.hostname,
+                "lines_added":   lines_added,
+                "lines_removed": lines_removed,
+                "backup_id":     backup_id,
+            },
+            triggered_at=now,
+            fingerprint=fp + f":{backup_id[:8]}",  # unique per change event
+            last_notified_at=now,
+        )
+        db.add(alert)
+        await db.commit()
+
+        logger.info("config_change_alert_fired", device=dev.hostname, rule=rule.name,
+                    added=lines_added, removed=lines_removed)
+
+        # Dispatch notification
+        try:
+            await notify.dispatch(alert, rule, resolved=False)
+        except Exception as exc:
+            logger.error("config_change_notify_failed", error=str(exc))
 
 
 class ConfigCollector:

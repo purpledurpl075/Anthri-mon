@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchSmtpSettings, saveSmtpSettings, testSmtpSettings } from '../api/admin'
 import { fetchChannels, createChannel, updateChannel, deleteChannel, testChannel, type NotificationChannel } from '../api/channels'
@@ -830,17 +830,13 @@ function PlatformTab() {
 // ── Email template tab ─────────────────────────────────────────────────────────
 
 interface EmailTemplate { subject: string; html: string }
-<<<<<<< HEAD
 interface EmailTemplateStatus { metric: string; label: string; is_custom: boolean; subject: string; html: string }
-=======
->>>>>>> origin/main
 
 const TEMPLATE_VARS = [
   { name: 'title',          desc: 'Full alert title' },
   { name: 'tag',            desc: 'CRITICAL / RESOLVED' },
   { name: 'severity',       desc: 'critical / major / minor…' },
   { name: 'severity_color', desc: 'Hex colour for severity' },
-<<<<<<< HEAD
   { name: 'metric',         desc: 'Alert metric type' },
   { name: 'rule_name',      desc: 'Alert rule name' },
   { name: 'description',    desc: 'Rule description' },
@@ -849,7 +845,7 @@ const TEMPLATE_VARS = [
   { name: 'threshold',      desc: 'Rule threshold' },
   { name: 'interface_name', desc: 'Interface name (interface alerts)' },
   { name: 'prefix',         desc: 'Route prefix (route_missing)' },
-  { name: 'neighbour',      desc: 'OSPF neighbour (ospf_state)' },
+  { name: 'neighbor',      desc: 'OSPF neighbor (ospf_state)' },
   { name: 'triggered_at',   desc: 'Time alert fired' },
   { name: 'resolved_at',    desc: 'Time alert resolved' },
   { name: 'alert_url',      desc: 'Deep-link to alert detail' },
@@ -867,18 +863,18 @@ const PREVIEW_CTX_BASE: Record<string, string> = {
 
 const PREVIEW_CTX_BY_METRIC: Record<string, Record<string, string>> = {
   default:          { ...PREVIEW_CTX_BASE, metric: '', title: 'coresw: CPU 94.2%', value: '94.2', threshold: '90' },
-  cpu_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'cpu_util_pct', title: 'coresw: CPU 94.2%', value: '94.2', threshold: '90', interface_name: '', prefix: '', neighbour: '' },
-  mem_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'mem_util_pct', title: 'coresw: Memory 88%', value: '88', threshold: '85', interface_name: '', prefix: '', neighbour: '' },
-  device_down:      { ...PREVIEW_CTX_BASE, metric: 'device_down', title: 'coresw.lab.local: device unreachable', value: '—', threshold: '—', interface_name: '', prefix: '', neighbour: '' },
-  interface_down:   { ...PREVIEW_CTX_BASE, metric: 'interface_down', title: 'coresw: Gi0/1 down', value: '—', threshold: '—', interface_name: 'GigabitEthernet0/1', prefix: '', neighbour: '' },
-  interface_flap:   { ...PREVIEW_CTX_BASE, metric: 'interface_flap', title: 'coresw: Gi0/1 flapping', value: '5', threshold: '3', interface_name: 'GigabitEthernet0/1', prefix: '', neighbour: '' },
-  route_missing:    { ...PREVIEW_CTX_BASE, metric: 'route_missing', title: 'route 10.0.0.0/8 missing', value: '—', threshold: '—', interface_name: '', prefix: '10.0.0.0/8', neighbour: '' },
-  ospf_state:       { ...PREVIEW_CTX_BASE, metric: 'ospf_state', title: 'OSPF neighbour 192.168.1.2 not full', value: '—', threshold: '—', interface_name: '', prefix: '', neighbour: '192.168.1.2' },
-  temperature:      { ...PREVIEW_CTX_BASE, metric: 'temperature', title: 'coresw: temperature 78°C', value: '78', threshold: '70', interface_name: '', prefix: '', neighbour: '' },
-  interface_errors: { ...PREVIEW_CTX_BASE, metric: 'interface_errors', title: 'coresw: interface errors (342)', value: '342', threshold: '100', interface_name: 'GigabitEthernet0/2', prefix: '', neighbour: '' },
-  interface_util_pct: { ...PREVIEW_CTX_BASE, metric: 'interface_util_pct', title: 'coresw: bandwidth 92%', value: '92', threshold: '80', interface_name: 'GigabitEthernet0/0', prefix: '', neighbour: '' },
-  uptime:           { ...PREVIEW_CTX_BASE, metric: 'uptime', title: 'coresw rebooted (uptime 45s)', value: '45', threshold: '300', interface_name: '', prefix: '', neighbour: '' },
-  custom_oid:       { ...PREVIEW_CTX_BASE, metric: 'custom_oid', title: 'Custom OID alert', value: '42', threshold: '10', interface_name: '', prefix: '', neighbour: '' },
+  cpu_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'cpu_util_pct', title: 'coresw: CPU 94.2%', value: '94.2', threshold: '90', interface_name: '', prefix: '', neighbor: '' },
+  mem_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'mem_util_pct', title: 'coresw: Memory 88%', value: '88', threshold: '85', interface_name: '', prefix: '', neighbor: '' },
+  device_down:      { ...PREVIEW_CTX_BASE, metric: 'device_down', title: 'coresw.lab.local: device unreachable', value: '—', threshold: '—', interface_name: '', prefix: '', neighbor: '' },
+  interface_down:   { ...PREVIEW_CTX_BASE, metric: 'interface_down', title: 'coresw: Gi0/1 down', value: '—', threshold: '—', interface_name: 'GigabitEthernet0/1', prefix: '', neighbor: '' },
+  interface_flap:   { ...PREVIEW_CTX_BASE, metric: 'interface_flap', title: 'coresw: Gi0/1 flapping', value: '5', threshold: '3', interface_name: 'GigabitEthernet0/1', prefix: '', neighbor: '' },
+  route_missing:    { ...PREVIEW_CTX_BASE, metric: 'route_missing', title: 'route 10.0.0.0/8 missing', value: '—', threshold: '—', interface_name: '', prefix: '10.0.0.0/8', neighbor: '' },
+  ospf_state:       { ...PREVIEW_CTX_BASE, metric: 'ospf_state', title: 'OSPF neighbor 192.168.1.2 not full', value: '—', threshold: '—', interface_name: '', prefix: '', neighbor: '192.168.1.2' },
+  temperature:      { ...PREVIEW_CTX_BASE, metric: 'temperature', title: 'coresw: temperature 78°C', value: '78', threshold: '70', interface_name: '', prefix: '', neighbor: '' },
+  interface_errors: { ...PREVIEW_CTX_BASE, metric: 'interface_errors', title: 'coresw: interface errors (342)', value: '342', threshold: '100', interface_name: 'GigabitEthernet0/2', prefix: '', neighbor: '' },
+  interface_util_pct: { ...PREVIEW_CTX_BASE, metric: 'interface_util_pct', title: 'coresw: bandwidth 92%', value: '92', threshold: '80', interface_name: 'GigabitEthernet0/0', prefix: '', neighbor: '' },
+  uptime:           { ...PREVIEW_CTX_BASE, metric: 'uptime', title: 'coresw rebooted (uptime 45s)', value: '45', threshold: '300', interface_name: '', prefix: '', neighbor: '' },
+  custom_oid:       { ...PREVIEW_CTX_BASE, metric: 'custom_oid', title: 'Custom OID alert', value: '42', threshold: '10', interface_name: '', prefix: '', neighbor: '' },
 }
 
 function renderPreview(template: string, metric: string): string {
@@ -897,52 +893,18 @@ const METRIC_LABELS: Record<string, string> = {
   mem_util_pct:     'Memory utilisation',
   interface_errors: 'Interface errors',
   interface_util_pct: 'Interface utilisation',
-  ospf_state:       'OSPF neighbour issue',
+  ospf_state:       'OSPF neighbor issue',
   route_missing:    'Route missing',
   custom_oid:       'Custom OID',
-=======
-  { name: 'rule_name',      desc: 'Alert rule name' },
-  { name: 'device_name',    desc: 'Device hostname' },
-  { name: 'value',          desc: 'Current metric value' },
-  { name: 'threshold',      desc: 'Rule threshold' },
-  { name: 'triggered_at',   desc: 'Time alert fired' },
-  { name: 'resolved_at',    desc: 'Time alert resolved' },
-  { name: 'alert_url',      desc: 'Deep-link to alert detail' },
-  { name: 'platform_name', desc: 'Platform name from settings' },
-]
-
-// Sample context for live preview
-const PREVIEW_CTX: Record<string, string> = {
-  title:          'coresw: CPU 94.2%',
-  tag:            'CRITICAL',
-  severity:       'critical',
-  severity_color: '#dc2626',
-  rule_name:      'CPU High — Lab',
-  device_name:    'coresw.lab.local',
-  value:          '94.2%',
-  threshold:      '90%',
-  triggered_at:   '2026-05-10 02:45 UTC',
-  resolved_at:    '—',
-  alert_url:      '#',
-  alert_id:       '00000000-0000-0000-0000-000000000000',
-}
-
-function renderPreview(template: string): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, k) => PREVIEW_CTX[k] ?? `{{${k}}}`)
->>>>>>> origin/main
 }
 
 function EmailTemplateTab() {
   const qc = useQueryClient()
-<<<<<<< HEAD
   const [selectedMetric, setSelectedMetric] = useState('default')
-=======
->>>>>>> origin/main
   const [subject, setSubject] = useState('')
   const [html,    setHtml]    = useState('')
   const [saved,   setSaved]   = useState(false)
 
-<<<<<<< HEAD
   // Load all templates for sidebar status
   const { data: allTemplates = [] } = useQuery<EmailTemplateStatus[]>({
     queryKey: ['email-templates-all'],
@@ -957,11 +919,6 @@ function EmailTemplateTab() {
   const { data, isLoading } = useQuery<EmailTemplate>({
     queryKey: ['email-template', selectedMetric],
     queryFn:  () => api.get<EmailTemplate>(url).then(r => r.data),
-=======
-  const { data, isLoading } = useQuery<EmailTemplate>({
-    queryKey: ['email-template'],
-    queryFn:  () => api.get<EmailTemplate>('/admin/settings/email-template').then(r => r.data),
->>>>>>> origin/main
   })
 
   useEffect(() => {
@@ -969,7 +926,6 @@ function EmailTemplateTab() {
   }, [data])
 
   const saveMut = useMutation({
-<<<<<<< HEAD
     mutationFn: () => api.put(url, { subject, html }),
     onSuccess:  () => {
       qc.invalidateQueries({ queryKey: ['email-template', selectedMetric] })
@@ -1116,105 +1072,13 @@ function EmailTemplateTab() {
               title="Email preview"
             />
           </div>
-=======
-    mutationFn: () => api.put('/admin/settings/email-template', { subject, html }),
-    onSuccess:  () => { qc.invalidateQueries({ queryKey: ['email-template'] }); setSaved(true); setTimeout(() => setSaved(false), 2000) },
-  })
-
-  const resetMut = useMutation({
-    mutationFn: () => api.delete('/admin/settings/email-template'),
-    onSuccess:  () => qc.invalidateQueries({ queryKey: ['email-template'] }),
-  })
-
-  if (isLoading) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="px-6 py-3 border-b border-slate-100 flex items-center gap-3 bg-white shrink-0">
-        <div className="flex-1 flex items-center gap-2 min-w-0">
-          <span className="text-xs font-medium text-slate-500 shrink-0">Subject</span>
-          <input
-            value={subject}
-            onChange={e => setSubject(e.target.value)}
-            className="flex-1 border border-slate-200 rounded-lg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-0"
-            placeholder="[{{tag}}] {{title}}"
-          />
-        </div>
-        <button
-          onClick={() => { if (confirm('Reset to default template?')) resetMut.mutate() }}
-          disabled={resetMut.isPending}
-          className="px-3 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50 shrink-0"
-        >
-          Reset to default
-        </button>
-        <button
-          onClick={() => saveMut.mutate()}
-          disabled={saveMut.isPending}
-          className={`px-4 py-1.5 text-xs font-medium rounded-lg transition-colors shrink-0 ${
-            saved ? 'bg-green-600 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'
-          } disabled:opacity-50`}
-        >
-          {saved ? 'Saved!' : saveMut.isPending ? 'Saving…' : 'Save'}
-        </button>
-      </div>
-
-      {/* Split pane */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* Editor */}
-        <div className="w-1/2 flex flex-col border-r border-slate-200 min-h-0">
-          <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">HTML</span>
-            <span className="text-[10px] text-slate-400">{html.length} chars</span>
-          </div>
-          <textarea
-            value={html}
-            onChange={e => setHtml(e.target.value)}
-            spellCheck={false}
-            className="flex-1 w-full p-4 font-mono text-xs text-slate-700 bg-slate-950 text-green-400 resize-none focus:outline-none leading-relaxed"
-            style={{ tabSize: 2 }}
-          />
-          {/* Variable reference */}
-          <div className="border-t border-slate-200 bg-slate-50 px-4 py-2.5 shrink-0">
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Available variables</p>
-            <div className="flex flex-wrap gap-1.5">
-              {TEMPLATE_VARS.map(v => (
-                <button
-                  key={v.name}
-                  title={v.desc}
-                  onClick={() => {
-                    const tag = `{{${v.name}}}`
-                    setHtml(h => h + tag)
-                  }}
-                  className="text-[10px] font-mono px-1.5 py-0.5 bg-slate-200 text-slate-600 rounded hover:bg-blue-100 hover:text-blue-700 transition-colors"
-                >
-                  {`{{${v.name}}}`}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {/* Preview */}
-        <div className="w-1/2 flex flex-col min-h-0">
-          <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between shrink-0">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Preview</span>
-            <span className="text-[10px] text-slate-400">Sample data</span>
-          </div>
-          <iframe
-            srcDoc={renderPreview(html)}
-            sandbox="allow-same-origin"
-            className="flex-1 w-full border-none bg-white"
-            title="Email preview"
-          />
->>>>>>> origin/main
         </div>
       </div>
     </div>
   )
 }
 
-type Tab = 'platform' | 'smtp' | 'channels' | 'users' | 'template'
+type Tab = 'platform' | 'smtp' | 'channels' | 'users' | 'template' | 'data'
 
 export default function AdminPage() {
   const role = useRole()
@@ -1241,6 +1105,7 @@ export default function AdminPage() {
     { id: 'channels', label: 'Notification Channels' },
     { id: 'users',    label: 'Users' },
     { id: 'template', label: 'Email Template' },
+    { id: 'data',     label: 'Data' },
   ]
 
   return (
@@ -1269,6 +1134,188 @@ export default function AdminPage() {
       {tab === 'channels' && <ChannelsTab />}
       {tab === 'users'    && <UsersTab />}
       {tab === 'template' && <EmailTemplateTab />}
+      {tab === 'data'     && <DataTab />}
+    </div>
+  )
+}
+
+// ── Data management tab ────────────────────────────────────────────────────────
+
+interface DataStats {
+  alerts:  { count: number; size: string; oldest: string|null; retention_days: number }
+  flow:    { rows: number;  size: string; oldest: string|null; retention_days: number }
+  syslog:  { rows: number;  size: string; oldest: string|null; retention_days: number }
+  config:  { backup_count: number; size: string }
+}
+
+function fmtNum(n: number): string {
+  if (n >= 1e9) return `${(n/1e9).toFixed(1)}B`
+  if (n >= 1e6) return `${(n/1e6).toFixed(1)}M`
+  if (n >= 1e3) return `${(n/1e3).toFixed(0)}K`
+  return String(n)
+}
+
+function fmtAge(iso: string|null): string {
+  if (!iso) return '—'
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)
+  return d === 0 ? 'today' : `${d}d ago`
+}
+
+function RetentionCard({ title, description, icon, stats, onSave, saving }: {
+  title: string
+  description: string
+  icon: React.ReactNode
+  stats: { label: string; value: string }[]
+  onSave: (days: number) => void
+  saving: boolean
+}) {
+  const currentDays = stats.find(s => s.label === 'Retention')?.value.replace(' days', '') ?? '90'
+  const [days, setDays] = React.useState(currentDays)
+
+  // sync if stats update
+  React.useEffect(() => {
+    setDays(stats.find(s => s.label === 'Retention')?.value.replace(' days', '') ?? '90')
+  }, [stats])
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-6">
+      <div className="flex items-start gap-4 mb-5">
+        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0 text-slate-500">
+          {icon}
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+          <p className="text-xs text-slate-400 mt-0.5">{description}</p>
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+        {stats.map(s => (
+          <div key={s.label} className="bg-slate-50 rounded-xl px-3 py-2.5">
+            <p className="text-[10px] text-slate-400 uppercase tracking-wide font-medium">{s.label}</p>
+            <p className="text-sm font-bold text-slate-700 mt-0.5 tabular-nums">{s.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Retention control */}
+      <div className="flex items-center gap-3 border-t border-slate-100 pt-4">
+        <label className="text-xs font-medium text-slate-600 shrink-0">Retention</label>
+        <div className="flex items-center gap-2 flex-1">
+          <input
+            type="number" min={1} max={3650}
+            value={days}
+            onChange={e => setDays(e.target.value)}
+            className="w-20 border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <span className="text-sm text-slate-500">days</span>
+        </div>
+        <button
+          onClick={() => onSave(Number(days))}
+          disabled={saving || Number(days) < 1}
+          className="px-4 py-1.5 text-xs font-medium bg-slate-800 text-white rounded-xl hover:bg-slate-700 transition-colors disabled:opacity-50 shrink-0"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function DataTab() {
+  const qc = useQueryClient()
+
+  const { data: stats, isLoading } = useQuery<DataStats>({
+    queryKey:        ['data-stats'],
+    queryFn:         () => api.get<DataStats>('/admin/data/stats').then(r => r.data),
+    refetchInterval: 60_000,
+  })
+
+  const makeMut = (url: string) => useMutation({
+    mutationFn: (days: number) => api.put(url, { retention_days: days }),
+    onSuccess:  () => qc.invalidateQueries({ queryKey: ['data-stats'] }),
+  })
+
+  const alertMut  = makeMut('/admin/data/retention/alerts')
+  const flowMut   = makeMut('/admin/data/retention/flow')
+  const syslogMut = makeMut('/admin/data/retention/syslog')
+
+  if (isLoading || !stats) {
+    return <div className="p-8 text-slate-400 text-sm">Loading…</div>
+  }
+
+  const sections = [
+    {
+      title: 'Alerts',
+      description: 'Open, resolved, and expired alerts stored in PostgreSQL',
+      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+      stats: [
+        { label: 'Records',   value: fmtNum(stats.alerts.count) },
+        { label: 'Size',      value: stats.alerts.size },
+        { label: 'Oldest',    value: fmtAge(stats.alerts.oldest) },
+        { label: 'Retention', value: `${stats.alerts.retention_days} days` },
+      ],
+      onSave: (d: number) => alertMut.mutate(d),
+      saving: alertMut.isPending,
+    },
+    {
+      title: 'Flow data',
+      description: 'NetFlow / sFlow / IPFIX records stored in ClickHouse',
+      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
+      stats: [
+        { label: 'Records',   value: fmtNum(stats.flow.rows) },
+        { label: 'Size',      value: stats.flow.size },
+        { label: 'Oldest',    value: fmtAge(stats.flow.oldest) },
+        { label: 'Retention', value: `${stats.flow.retention_days} days` },
+      ],
+      onSave: (d: number) => flowMut.mutate(d),
+      saving: flowMut.isPending,
+    },
+    {
+      title: 'Syslog',
+      description: 'RFC 3164 / RFC 5424 messages stored in ClickHouse',
+      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M4 6h16M4 10h16M4 14h10M4 18h6"/></svg>,
+      stats: [
+        { label: 'Records',   value: fmtNum(stats.syslog.rows) },
+        { label: 'Size',      value: stats.syslog.size },
+        { label: 'Oldest',    value: fmtAge(stats.syslog.oldest) },
+        { label: 'Retention', value: `${stats.syslog.retention_days} days` },
+      ],
+      onSave: (d: number) => syslogMut.mutate(d),
+      saving: syslogMut.isPending,
+    },
+    {
+      title: 'Config backups',
+      description: 'Device running-config snapshots stored in PostgreSQL',
+      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>,
+      stats: [
+        { label: 'Backups', value: fmtNum(stats.config.backup_count) },
+        { label: 'Size',    value: stats.config.size },
+      ],
+    },
+  ]
+
+  return (
+    <div className="p-6 max-w-4xl space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-slate-800">Data management</h2>
+        <p className="text-xs text-slate-400 mt-0.5">
+          View storage usage and configure retention periods. Changes to ClickHouse TTLs take effect on the next background merge.
+        </p>
+      </div>
+
+      {sections.map(s => (
+        <RetentionCard
+          key={s.title}
+          title={s.title}
+          description={s.description}
+          icon={s.icon}
+          stats={s.stats}
+          onSave={s.onSave ?? (() => {})}
+          saving={s.saving ?? false}
+        />
+      ))}
     </div>
   )
 }

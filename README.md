@@ -1,123 +1,250 @@
-# Anthri-mon
-Next Generation Open-Source Network Monitor
+# Anthrimon
+
+**Open-source network monitoring and orchestration platform** — built to exceed the capability and usability of Zabbix, LibreNMS, and Auvik.
+
+Anthrimon combines deep SNMP polling, NetFlow/sFlow analysis, syslog ingest, device configuration management, and distributed remote collection into a single, self-hosted platform with a modern React dashboard.
+
+---
+
+## Features
+
+| Capability | Details |
+|---|---|
+| **SNMP monitoring** | Interface counters, CPU/memory/temperature/uptime, DOM optical power, ARP/MAC tables, LLDP/CDP neighbors, OSPF, STP, VLANs, routing table |
+| **Flow monitoring** | NetFlow v5/v9, IPFIX, sFlow v5 — top talkers, protocol breakdown, interface-level analysis, flow alerts |
+| **Syslog** | RFC 3164 + RFC 5424, UDP/TCP on :514, severity breakdown, pattern-match alerts, alert correlation |
+| **Config management** | SSH backup (Netmiko), diff viewer, compliance policies, multi-device deploy with template variables |
+| **Alerting** | 15-second evaluation, 13 metric types including flow bandwidth and syslog patterns, email notifications, maintenance windows |
+| **Topology** | Live L2/L3 map from LLDP/CDP, bandwidth sparklines, persistent layout |
+| **Remote collectors** | WireGuard-tunnelled distributed polling agents — one binary, three protocols |
+| **Dashboard** | Customizable overview with drag-to-reorder widgets, dark mode, mobile layout |
+
+### Vendor support
+Arista EOS · Cisco IOS/IOS-XE/IOS-XR/NX-OS · Juniper · Aruba CX · HP ProCurve · FortiGate · Ubiquiti UniFi · Aruba AP
+
+---
 
 ## Requirements
 
-- Ubuntu 22.04 or 24.04 LTS
-- Go 1.22+
-- Node.js 20.x
-- Python 3.12
-- PostgreSQL 14
-- ClickHouse
-- VictoriaMetrics
+- Ubuntu 22.04 or 24.04 LTS (bare metal or VM)
+- 2+ CPU cores, 4 GB RAM minimum (8 GB recommended)
+- Outbound internet access for the installer (downloads packages)
 
-## First-time setup
+The installer handles everything else.
 
-Run the installer as root. It installs all dependencies, creates the database, runs migrations, and registers systemd services.
+---
+
+## Installation
 
 ```bash
+git clone https://github.com/purpledurpl075/Anthri-mon.git
+cd Anthri-mon
 sudo bash infra/scripts/install-dev.sh
 ```
 
-Then seed the default admin user:
+The installer prompts for:
 
-```bash
-sudo -u postgres psql -d anthrimon < storage/migrations/postgres/seed_admin.sql
-```
+| Setting | Default | Notes |
+|---|---|---|
+| PostgreSQL role | `anthrimon` | |
+| PostgreSQL database | `anthrimon` | |
+| Database password | *(random)* | Leave blank to auto-generate |
+| Public base URL | `https://<IP>` | Used in alert emails and collector configs |
+| NetFlow/IPFIX port | `2055` | UDP |
+| sFlow port | `6343` | UDP |
 
-Default login: **admin / admin** — change it after first login.
+It installs all dependencies, creates the database, runs all migrations, builds Go collectors and the React frontend, generates TLS certificates, configures nginx with HTTPS, sets up the WireGuard hub interface, and registers all systemd services.
+
+### First login
+
+Navigate to `https://<your-server-ip>/` and sign in with the default superadmin account:
+
+| Field | Value |
+|---|---|
+| Username | `admin` |
+| Password | `admin` |
+
+> **Change this password immediately** after first login via **Administration → Users**.
+
+---
+
+## Port reference
+
+Open these ports inbound on your server firewall / cloud security group:
+
+| Port | Protocol | Required | Purpose |
+|---|---|---|---|
+| 443 | TCP | Yes | HTTPS — dashboard and API |
+| 51820 | UDP | Remote collectors only | WireGuard VPN tunnel |
+| 2055 | UDP | Configurable | NetFlow v5/v9 / IPFIX from network devices |
+| 6343 | UDP | Configurable | sFlow from network devices |
+| 514 | UDP + TCP | Configurable | Syslog from network devices |
+
+Ports 2055, 6343, and 514 only need to be reachable from your network devices. Port 51820 only needs to be reachable from remote collector hosts.
+
+The API (8001), VictoriaMetrics (8428), ClickHouse (8123/9000), and PostgreSQL (5432) all bind to localhost and are not exposed externally.
+
+---
+
+## Disk space
+
+Rough estimates for 90-day retention defaults:
+
+| Data type | Per device/day | 10 devices, 90 days |
+|---|---|---|
+| SNMP metrics (VictoriaMetrics) | ~5 MB | ~4.5 GB |
+| Flow records (ClickHouse) | ~50 MB at 1k flows/s | varies greatly |
+| Syslog (ClickHouse) | ~10 MB | ~9 GB |
+| Config backups (PostgreSQL) | ~100 KB/backup | negligible |
+
+Flow data dominates. A quiet network exporting at 1,000 flows/second averages ~4 GB/day in ClickHouse. Reduce the ClickHouse TTL from the default 90 days in **Administration → Data** if disk is constrained.
+
+VictoriaMetrics compresses time-series data aggressively — real usage is typically 30–50% lower than the estimate above.
+
+---
+
+## Stack
+
+| Component | Technology |
+|---|---|
+| API | Python 3.12, FastAPI, SQLAlchemy, uvicorn |
+| Frontend | React 19, Vite, Tailwind CSS v4, React Query |
+| Time-series | VictoriaMetrics |
+| Flow/Syslog storage | ClickHouse |
+| Relational DB | PostgreSQL 14 |
+| SNMP collector | Go 1.22 |
+| Flow collector | Go 1.22 — NetFlow v5/v9, IPFIX, sFlow v5 |
+| Syslog collector | Go 1.22 — RFC 3164 + RFC 5424 |
+| Reverse proxy | nginx — HTTPS with self-signed CA |
+| VPN | WireGuard — remote collector tunnels |
+
+---
 
 ## Services
 
-All backend services are managed by systemd after installation.
-
-| Service | Command |
-|---------|---------|
-| API | `sudo systemctl start anthrimon-api` |
-| SNMP collector | `sudo systemctl start snmp-collector` |
-| VictoriaMetrics | `sudo systemctl start victoria-metrics` |
-| ClickHouse | `sudo systemctl start clickhouse-server` |
-| PostgreSQL | `sudo systemctl start postgresql` |
-
-Check status of all services:
+All services are managed by systemd:
 
 ```bash
-sudo systemctl status anthrimon-api snmp-collector victoria-metrics clickhouse-server postgresql
+systemctl status anthrimon-api       # FastAPI backend (127.0.0.1:8001)
+systemctl status snmp-collector      # SNMP polling daemon
+systemctl status flow-collector      # NetFlow/sFlow listener (:2055, :6343)
+systemctl status syslog-collector    # Syslog listener (:514 UDP/TCP)
+systemctl status nginx               # HTTPS frontend + API proxy (:443)
+systemctl status victoria-metrics    # Time-series store (:8428)
+systemctl status clickhouse-server   # Flow/syslog analytics store
+systemctl status postgresql          # Relational database
+systemctl status wg-quick@wg0        # WireGuard hub interface
 ```
 
-View live collector logs:
+---
+
+## Architecture
+
+```
+                    HTTPS :443
+Browser ──────────────────────────▶ nginx ──▶ dist/ (React SPA)
+                                          └──▶ :8001 (FastAPI)
+                                                    │
+                              ┌─────────────────────┼────────────────────┐
+                              ▼                     ▼                    ▼
+                        PostgreSQL          VictoriaMetrics          ClickHouse
+                      (alerts, cfg)          (SNMP metrics)       (flows, syslog)
+
+Network devices
+  SNMP polling  ◀────── snmp-collector (Go)
+  NetFlow/sFlow ───────▶ flow-collector (Go)     :2055 / :6343
+  Syslog        ───────▶ syslog-collector (Go)   :514
+
+Remote sites (WireGuard tunnel 10.100.0.0/24)
+  wg0: 10.100.0.1 ◀──── collector binary         SNMP + flow + syslog
+                        (polls local devices, forwards data to hub)
+```
+
+---
+
+## Remote Collectors
+
+For devices at remote sites that can't reach the hub directly, deploy a lightweight collector binary that tunnels home over WireGuard.
+
+**Hub setup** (runs automatically during installation):
+```bash
+sudo bash scripts/setup-wireguard.sh   # creates wg0 at 10.100.0.1/24
+```
+
+**Register a collector** — in the Anthrimon UI:
+1. Go to **Configuration → Collectors → New collector**
+2. Save the registration token and CA cert shown (one-time display)
+3. On the remote server:
+```bash
+export ANTHRIMON_HUB=https://<hub-ip>
+export ANTHRIMON_TOKEN=<registration-token>
+export ANTHRIMON_CA=/etc/anthrimon/ca.crt
+anthrimon-collector
+```
+
+The collector generates a WireGuard keypair, bootstraps the peer via HTTPS, then all subsequent communication goes through the encrypted tunnel. Devices in the hub UI can be assigned to a specific collector.
+
+---
+
+## TLS
+
+The installer generates a self-signed CA and server certificate. The CA cert lives at `/etc/anthrimon/tls/ca.crt`.
+
+**Add to your browser** (removes the security warning):
+```bash
+scp <server>:/etc/anthrimon/tls/ca.crt ~/anthrimon-ca.crt
+# macOS:   open ~/anthrimon-ca.crt → trust for all users
+# Linux:   sudo cp ~/anthrimon-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates
+# Windows: double-click → Install → Trusted Root Certification Authorities
+```
+
+**Renew the server certificate** (CA is preserved, valid 2 years):
+```bash
+sudo bash scripts/setup-tls.sh
+```
+
+---
+
+## Upgrading
 
 ```bash
-journalctl -u snmp-collector -f
+git pull
+sudo bash infra/scripts/install-dev.sh
 ```
 
-## Frontend (dev)
+The installer is idempotent — it skips steps already complete (existing CA, existing WireGuard config, already-applied migrations).
 
-The frontend is a Vite dev server during development. Start it with:
+---
 
-```bash
-./dev-frontend.sh
+## Project layout
+
+```
+collectors/
+  snmp/           Go SNMP polling daemon
+  flow/           Go NetFlow/sFlow collector
+  syslog/         Go syslog collector
+api/
+  backend/
+    routers/      FastAPI endpoints
+    models/       SQLAlchemy models
+    alerting/     Alert engine + evaluators
+    configmgmt/   Config backup/deploy engine
+frontend/
+  dashboard/      React 19 + Vite frontend
+storage/
+  migrations/
+    postgres/     PostgreSQL schema migrations (021 files)
+    clickhouse/   ClickHouse schema migrations (003 files)
+scripts/
+  setup-tls.sh           Generate self-signed CA + server cert, configure nginx HTTPS
+  setup-wireguard.sh     Set up WireGuard hub interface (wg0, 10.100.0.1/24)
+infra/
+  scripts/
+    install-dev.sh       Full installer — prompts for config, installs everything
 ```
 
-Accessible at `http://<server-ip>:5173`.
+---
 
-> **Note:** Production deployments should use `npm run build` inside `frontend/dashboard` and serve the output with Nginx.
+## License
 
-## Collector config
-
-The SNMP collector is configured at `collectors/snmp/snmp-collector.yaml`.
-
-Key settings:
-
-```yaml
-database:
-  dsn: "postgres://anthrimon:changeme@127.0.0.1/anthrimon?sslmode=disable"
-
-polling:
-  default_interval_s: 15      # how often to poll interfaces
-  health_multiplier: 1        # health polls every N × default_interval_s
-  device_refresh_s: 30        # how often to pull updated device list from DB
-
-metrics:
-  victoriametrics_url: "http://localhost:8428"
-```
-
-After editing the config, restart the collector:
-
-```bash
-sudo systemctl restart snmp-collector
-```
-
-## Rebuilding the SNMP collector
-
-The SNMP collector is a Go binary. Rebuild after any changes to the `collectors/snmp` source:
-
-```bash
-cd collectors/snmp
-go build -o snmp-collector ./cmd/snmp-collector/
-sudo systemctl restart snmp-collector
-```
-
-## API
-
-- API base: `http://<server-ip>:8001/api/v1`
-- Swagger docs: `http://<server-ip>:8001/api/docs`
-
-The API runs on port **8001** (port 8000 is reserved to avoid conflicts with other services that commonly bind there).
-
-The API uses a Python virtualenv at `api/.venv`. To work with it directly:
-
-```bash
-source api/.venv/bin/activate
-```
-
-## Access
-
-| Service | URL |
-|---------|-----|
-| Dashboard | `http://<server-ip>:5173` (dev) |
-| API | `http://<server-ip>:8001` |
-| API docs | `http://<server-ip>:8001/api/docs` |
-| VictoriaMetrics | `http://<server-ip>:8428` |
-
-> **Port note:** If port 8001 conflicts with something on your host, change `--port 8001` in `/etc/systemd/system/anthrimon-api.service`, update the `proxy` target in `frontend/dashboard/vite.config.ts` to match, then `sudo systemctl daemon-reload && sudo systemctl restart anthrimon-api`.
+MIT
