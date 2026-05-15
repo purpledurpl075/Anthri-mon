@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchSmtpSettings, saveSmtpSettings, testSmtpSettings } from '../api/admin'
 import { fetchChannels, createChannel, updateChannel, deleteChannel, testChannel, type NotificationChannel } from '../api/channels'
@@ -1214,7 +1214,7 @@ function EmailTemplateTab() {
   )
 }
 
-type Tab = 'platform' | 'smtp' | 'channels' | 'users' | 'template'
+type Tab = 'platform' | 'smtp' | 'channels' | 'users' | 'template' | 'data'
 
 export default function AdminPage() {
   const role = useRole()
@@ -1241,6 +1241,7 @@ export default function AdminPage() {
     { id: 'channels', label: 'Notification Channels' },
     { id: 'users',    label: 'Users' },
     { id: 'template', label: 'Email Template' },
+    { id: 'data',     label: 'Data' },
   ]
 
   return (
@@ -1269,6 +1270,188 @@ export default function AdminPage() {
       {tab === 'channels' && <ChannelsTab />}
       {tab === 'users'    && <UsersTab />}
       {tab === 'template' && <EmailTemplateTab />}
+      {tab === 'data'     && <DataTab />}
+    </div>
+  )
+}
+
+// ── Data management tab ────────────────────────────────────────────────────────
+
+interface DataStats {
+  alerts:  { count: number; size: string; oldest: string|null; retention_days: number }
+  flow:    { rows: number;  size: string; oldest: string|null; retention_days: number }
+  syslog:  { rows: number;  size: string; oldest: string|null; retention_days: number }
+  config:  { backup_count: number; size: string }
+}
+
+function fmtNum(n: number): string {
+  if (n >= 1e9) return `${(n/1e9).toFixed(1)}B`
+  if (n >= 1e6) return `${(n/1e6).toFixed(1)}M`
+  if (n >= 1e3) return `${(n/1e3).toFixed(0)}K`
+  return String(n)
+}
+
+function fmtAge(iso: string|null): string {
+  if (!iso) return '—'
+  const d = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000)
+  return d === 0 ? 'today' : `${d}d ago`
+}
+
+function RetentionCard({ title, description, icon, stats, onSave, saving }: {
+  title: string
+  description: string
+  icon: React.ReactNode
+  stats: { label: string; value: string }[]
+  onSave: (days: number) => void
+  saving: boolean
+}) {
+  const currentDays = stats.find(s => s.label === 'Retention')?.value.replace(' days', '') ?? '90'
+  const [days, setDays] = React.useState(currentDays)
+
+  // sync if stats update
+  React.useEffect(() => {
+    setDays(stats.find(s => s.label === 'Retention')?.value.replace(' days', '') ?? '90')
+  }, [stats])
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-6">
+      <div className="flex items-start gap-4 mb-5">
+        <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center shrink-0 text-slate-500">
+          {icon}
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold text-slate-800">{title}</h3>
+          <p className="text-xs text-slate-400 mt-0.5">{description}</p>
+        </div>
+      </div>
+
+      {/* Stats grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5">
+        {stats.map(s => (
+          <div key={s.label} className="bg-slate-50 rounded-xl px-3 py-2.5">
+            <p className="text-[10px] text-slate-400 uppercase tracking-wide font-medium">{s.label}</p>
+            <p className="text-sm font-bold text-slate-700 mt-0.5 tabular-nums">{s.value}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Retention control */}
+      <div className="flex items-center gap-3 border-t border-slate-100 pt-4">
+        <label className="text-xs font-medium text-slate-600 shrink-0">Retention</label>
+        <div className="flex items-center gap-2 flex-1">
+          <input
+            type="number" min={1} max={3650}
+            value={days}
+            onChange={e => setDays(e.target.value)}
+            className="w-20 border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <span className="text-sm text-slate-500">days</span>
+        </div>
+        <button
+          onClick={() => onSave(Number(days))}
+          disabled={saving || Number(days) < 1}
+          className="px-4 py-1.5 text-xs font-medium bg-slate-800 text-white rounded-xl hover:bg-slate-700 transition-colors disabled:opacity-50 shrink-0"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function DataTab() {
+  const qc = useQueryClient()
+
+  const { data: stats, isLoading } = useQuery<DataStats>({
+    queryKey:        ['data-stats'],
+    queryFn:         () => api.get<DataStats>('/admin/data/stats').then(r => r.data),
+    refetchInterval: 60_000,
+  })
+
+  const makeMut = (url: string) => useMutation({
+    mutationFn: (days: number) => api.put(url, { retention_days: days }),
+    onSuccess:  () => qc.invalidateQueries({ queryKey: ['data-stats'] }),
+  })
+
+  const alertMut  = makeMut('/admin/data/retention/alerts')
+  const flowMut   = makeMut('/admin/data/retention/flow')
+  const syslogMut = makeMut('/admin/data/retention/syslog')
+
+  if (isLoading || !stats) {
+    return <div className="p-8 text-slate-400 text-sm">Loading…</div>
+  }
+
+  const sections = [
+    {
+      title: 'Alerts',
+      description: 'Open, resolved, and expired alerts stored in PostgreSQL',
+      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+      stats: [
+        { label: 'Records',   value: fmtNum(stats.alerts.count) },
+        { label: 'Size',      value: stats.alerts.size },
+        { label: 'Oldest',    value: fmtAge(stats.alerts.oldest) },
+        { label: 'Retention', value: `${stats.alerts.retention_days} days` },
+      ],
+      onSave: (d: number) => alertMut.mutate(d),
+      saving: alertMut.isPending,
+    },
+    {
+      title: 'Flow data',
+      description: 'NetFlow / sFlow / IPFIX records stored in ClickHouse',
+      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
+      stats: [
+        { label: 'Records',   value: fmtNum(stats.flow.rows) },
+        { label: 'Size',      value: stats.flow.size },
+        { label: 'Oldest',    value: fmtAge(stats.flow.oldest) },
+        { label: 'Retention', value: `${stats.flow.retention_days} days` },
+      ],
+      onSave: (d: number) => flowMut.mutate(d),
+      saving: flowMut.isPending,
+    },
+    {
+      title: 'Syslog',
+      description: 'RFC 3164 / RFC 5424 messages stored in ClickHouse',
+      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M4 6h16M4 10h16M4 14h10M4 18h6"/></svg>,
+      stats: [
+        { label: 'Records',   value: fmtNum(stats.syslog.rows) },
+        { label: 'Size',      value: stats.syslog.size },
+        { label: 'Oldest',    value: fmtAge(stats.syslog.oldest) },
+        { label: 'Retention', value: `${stats.syslog.retention_days} days` },
+      ],
+      onSave: (d: number) => syslogMut.mutate(d),
+      saving: syslogMut.isPending,
+    },
+    {
+      title: 'Config backups',
+      description: 'Device running-config snapshots stored in PostgreSQL',
+      icon: <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>,
+      stats: [
+        { label: 'Backups', value: fmtNum(stats.config.backup_count) },
+        { label: 'Size',    value: stats.config.size },
+      ],
+    },
+  ]
+
+  return (
+    <div className="p-6 max-w-4xl space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold text-slate-800">Data management</h2>
+        <p className="text-xs text-slate-400 mt-0.5">
+          View storage usage and configure retention periods. Changes to ClickHouse TTLs take effect on the next background merge.
+        </p>
+      </div>
+
+      {sections.map(s => (
+        <RetentionCard
+          key={s.title}
+          title={s.title}
+          description={s.description}
+          icon={s.icon}
+          stats={s.stats}
+          onSave={s.onSave ?? (() => {})}
+          saving={s.saving ?? false}
+        />
+      ))}
     </div>
   )
 }
