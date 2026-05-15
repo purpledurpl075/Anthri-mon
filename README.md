@@ -1,6 +1,6 @@
 # Anthrimon
 
-**Open-source network monitoring and orchestration platform** — built to exceed the capability and usability of Zabbix, LibreNMS, and Auvik.
+
 
 Anthrimon combines deep SNMP polling, NetFlow/sFlow analysis, syslog ingest, device configuration management, and distributed remote collection into a single, self-hosted platform with a modern React dashboard.
 
@@ -23,7 +23,37 @@ Anthrimon combines deep SNMP polling, NetFlow/sFlow analysis, syslog ingest, dev
 Arista EOS · Cisco IOS/IOS-XE/IOS-XR/NX-OS · Juniper · Aruba CX · HP ProCurve · FortiGate · Ubiquiti UniFi · Aruba AP
 
 ---
-
+<table>
+    <tr>
+      <td><a href="https://github.com/user-attachments/assets/5e5bb9e7-3ce4-4724-bd35-4cb1be5e49c4" target="_blank"><img
+   src="https://github.com/user-attachments/assets/5e5bb9e7-3ce4-4724-bd35-4cb1be5e49c4" alt="Overview"
+  width="100%"/></a><br/><sub><b>Overview dashboard</b></sub></td>
+      <td><a href="https://github.com/user-attachments/assets/7e5b331e-880f-4a92-b959-3ed839b3f9a4" target="_blank"><img
+   src="https://github.com/user-attachments/assets/7e5b331e-880f-4a92-b959-3ed839b3f9a4" alt="Devices"
+  width="100%"/></a><br/><sub><b>Device list</b></sub></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/user-attachments/assets/40c44dd3-77b1-420a-975f-86b50a88b423" target="_blank"><img
+   src="https://github.com/user-attachments/assets/40c44dd3-77b1-420a-975f-86b50a88b423" alt="Topology"
+  width="100%"/></a><br/><sub><b>Network topology</b></sub></td>
+      <td><a href="https://github.com/user-attachments/assets/32711003-dc57-4f34-bfac-c9c929ae4803" target="_blank"><img
+   src="https://github.com/user-attachments/assets/32711003-dc57-4f34-bfac-c9c929ae4803" alt="Flow"
+  width="100%"/></a><br/><sub><b>Flow monitoring</b></sub></td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/user-attachments/assets/872a551c-7090-4cda-bc7e-7a048e23293b" target="_blank"><img
+   src="https://github.com/user-attachments/assets/872a551c-7090-4cda-bc7e-7a048e23293b" alt="Alerts"
+  width="100%"/></a><br/><sub><b>Alerting</b></sub></td>
+      <td><a href="https://github.com/user-attachments/assets/8915293a-bb42-488b-9d0f-9ece5424958f" target="_blank"><img
+   src="https://github.com/user-attachments/assets/8915293a-bb42-488b-9d0f-9ece5424958f" alt="Config"
+  width="100%"/></a><br/><sub><b>Config management</b></sub></td>
+    </tr>
+    <tr>
+      <td colspan="2"><a href="https://github.com/user-attachments/assets/68de9a97-1a2e-4cb3-b8ed-0fe2820e958e"
+  target="_blank"><img src="https://github.com/user-attachments/assets/68de9a97-1a2e-4cb3-b8ed-0fe2820e958e"
+  alt="Syslog" width="100%"/></a><br/><sub><b>Syslog explorer</b></sub></td>
+    </tr>
+  </table>
 ## Requirements
 
 - Ubuntu 22.04 or 24.04 LTS (bare metal or VM)
