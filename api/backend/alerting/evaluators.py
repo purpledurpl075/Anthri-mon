@@ -364,7 +364,7 @@ async def eval_interface_flap(db: AsyncSession, device: dict, threshold: float, 
 
 
 async def eval_ospf_state(db: AsyncSession, device: dict) -> Optional[Breach]:
-    """Fire if any OSPF neighbour is not in full state.
+    """Fire if any OSPF neighbor is not in full state.
 
     States that trigger: down, attempt, init, two_way, exstart, exchange, loading.
     'unknown' is ignored (no data yet). 'full' is the only healthy state.
@@ -392,10 +392,10 @@ async def eval_ospf_state(db: AsyncSession, device: dict) -> Optional[Breach]:
     )).mappings().first()
     if not row:
         return None
-    neighbour = row["neighbor_router_id"] or row["neighbor_ip"] or "unknown"
+    neighbor = row["neighbor_router_id"] or row["neighbor_ip"] or "unknown"
     return Breach(
         device["id"], device["hostname"],
-        extra={"neighbour": neighbour, "ospf_state": row["state"]},
+        extra={"neighbor": neighbor, "ospf_state": row["state"]},
     )
 
 

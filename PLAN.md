@@ -190,8 +190,8 @@ Network device configuration backup, diff, and compliance.
 - [x] Diff viewer — inline unified diff with syntax highlighting (green/red/blue) in device Config tab
 - [x] Compliance rules — regex_present, regex_absent, contains, not_contains; quick-pick examples
 - [x] Compliance report — per-device pass/fail with per-rule findings; /config compliance dashboard
-- [ ] Config deploy — push a config snippet or full config via SSH/RESTCONF
-- [ ] Change alerts — notify when a running config changes unexpectedly
+- [x] Config deploy — SSH via Netmiko/paramiko; Deploy tab on device detail; vendor config mode entry/exit; save-to-startup option; auto-backup after deploy
+- [x] Change alerts — `config_change` metric fires event-driven when backup hash changes; integrates with existing alert rules + notification pipeline
 - [x] Frontend — /config page (compliance dashboard + policy management); Config tab on device detail (snapshots, diff viewer, compliance results)
 
 ---
@@ -200,13 +200,13 @@ Network device configuration backup, diff, and compliance.
 
 Distributed polling with a central aggregation hub.
 
-- [ ] Collector agent — lightweight Go binary, runs SNMP + flow + syslog collection
-- [ ] Collector registration — API key auth, heartbeat, capability advertisement
-- [ ] Encrypted tunnel — mTLS or WireGuard between collector and hub
-- [ ] Task dispatch — hub assigns devices to collectors based on reachability / region
-- [ ] Metric forwarding — collector pushes to central VictoriaMetrics via remote write
-- [ ] Collector health monitoring — latency, queue depth, last-seen; alert if collector goes dark
-- [ ] Frontend — collector map, per-collector device list, health dashboard
+- [x] Collector agent — Go binary at collectors/remote/; SNMP+flow+syslog; WireGuard bootstrap; forwards to hub API
+- [x] Collector registration — one-time token over HTTPS, WireGuard peer provisioned, API key returned; admin UI with token modal
+- [x] Encrypted tunnel — WireGuard VPN (wg0 10.100.0.1/24); setup-wireguard.sh; bootstrap configures peer automatically
+- [x] Task dispatch — device collector_id FK; assignment dropdown in device settings panel
+- [x] Metric forwarding — POST Prometheus text to /collectors/metrics → VM; flows → /collectors/flows → CH; syslog → /collectors/syslog → CH
+- [x] Collector health monitoring — background task marks online/offline from last_seen; fires major alert after 5 min dark; auto-resolves on recovery
+- [x] Frontend — Collectors page (create/list/revoke/token modal); collector status on list; device assignment in settings
 
 ---
 

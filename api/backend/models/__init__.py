@@ -1,5 +1,5 @@
 from .tenant import Tenant, User, ApiToken
-from .site import Site, RemoteCollector
+from .site import Site, RemoteCollector, WgIpPool
 from .credential import Credential, DeviceCredential
 from .device import Device
 from .interface import Interface, InterfaceStatusLog
@@ -8,7 +8,7 @@ from .alert import NotificationChannel, MaintenanceWindow, AlertRule, Alert, Aud
 
 __all__ = [
     "Tenant", "User", "ApiToken",
-    "Site", "RemoteCollector",
+    "Site", "RemoteCollector", "WgIpPool",
     "Credential", "DeviceCredential",
     "Device",
     "Interface", "InterfaceStatusLog",

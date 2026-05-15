@@ -18,7 +18,7 @@ from ..models.alert import Alert
 from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
 from ..models.health import DeviceHealthLatest
-from ..models.interface import ARPEntry, CDPNeighbor, Interface, LLDPNeighbor, MACEntry, OSPFNeighbour, RouteEntry
+from ..models.interface import ARPEntry, CDPNeighbor, Interface, LLDPNeighbor, MACEntry, OSPFNeighbor, RouteEntry
 from ..models.tenant import User
 from ..schemas.alert import AlertRead
 from ..schemas.common import PaginatedResponse
@@ -705,8 +705,8 @@ async def get_device_stp(
 
 # ── OSPF ──────────────────────────────────────────────────────────────────────
 
-@router.get("/{device_id}/ospf", summary="OSPF neighbour state")
-async def get_ospf_neighbours(
+@router.get("/{device_id}/ospf", summary="OSPF neighbor state")
+async def get_ospf_neighbors(
     device_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -718,26 +718,26 @@ async def get_ospf_neighbours(
 
     # Direct: rows where this device is the reporter
     direct = (await db.execute(
-        select(OSPFNeighbour)
-        .where(OSPFNeighbour.device_id == device_id)
-        .order_by(OSPFNeighbour.neighbor_router_id)
+        select(OSPFNeighbor)
+        .where(OSPFNeighbor.device_id == device_id)
+        .order_by(OSPFNeighbor.neighbor_router_id)
     )).scalars().all()
 
-    # Inferred: rows from OTHER devices that list this device's IP as the neighbour.
+    # Inferred: rows from OTHER devices that list this device's IP as the neighbor.
     # Covers devices whose SNMP agent doesn't expose OSPF-MIB (e.g. UniFi).
     inferred = (await db.execute(
-        select(OSPFNeighbour, Device)
-        .join(Device, Device.id == OSPFNeighbour.device_id)
+        select(OSPFNeighbor, Device)
+        .join(Device, Device.id == OSPFNeighbor.device_id)
         .where(
-            OSPFNeighbour.device_id != device_id,
+            OSPFNeighbor.device_id != device_id,
             Device.tenant_id == current_user.tenant_id,
-            cast(OSPFNeighbour.neighbor_ip, String).contains(device_ip),
+            cast(OSPFNeighbor.neighbor_ip, String).contains(device_ip),
         )
     )).all()
 
     results = [
         {
-            "neighbour_ip":      str(r.neighbor_ip) if r.neighbor_ip else None,
+            "neighbor_ip":      str(r.neighbor_ip) if r.neighbor_ip else None,
             "router_id":         str(r.neighbor_router_id) if r.neighbor_router_id else None,
             "state":             r.state,
             "area":              r.area,
@@ -768,7 +768,7 @@ async def get_ospf_neighbours(
     )).scalars().all()
     arp_by_mac = {str(a.mac_address): str(a.ip_address) for a in local_arp}
 
-    seen_ips = {r["neighbour_ip"] for r in results}
+    seen_ips = {r["neighbor_ip"] for r in results}
     for row, peer_device in inferred:
         # Try to find the peer's OSPF IP from this device's ARP table
         ospf_ip = None
@@ -780,7 +780,7 @@ async def get_ospf_neighbours(
 
         if peer_ip not in seen_ips:
             results.append({
-                "neighbour_ip":      peer_ip,
+                "neighbor_ip":      peer_ip,
                 "router_id":         peer_ip,
                 "display_name":      str(peer_device.fqdn or peer_device.hostname),
                 "state":             row.state,
@@ -795,10 +795,10 @@ async def get_ospf_neighbours(
     return results
 
 
-# ── Neighbours ────────────────────────────────────────────────────────────────
+# ── Neighbors ────────────────────────────────────────────────────────────────
 
-@router.get("/{device_id}/neighbours", summary="List LLDP and CDP neighbours")
-async def list_neighbours(
+@router.get("/{device_id}/neighbors", summary="List LLDP and CDP neighbors")
+async def list_neighbors(
     device_id: uuid.UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

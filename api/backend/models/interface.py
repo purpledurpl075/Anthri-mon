@@ -89,7 +89,7 @@ class RouteEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
 
-class OSPFNeighbour(Base):
+class OSPFNeighbor(Base):
     __tablename__ = "ospf_neighbors"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

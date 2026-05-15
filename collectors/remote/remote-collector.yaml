@@ -1,0 +1,29 @@
+hub_url: "https://10.0.2.109"
+token: ""                              # set via ANTHRIMON_TOKEN env var at first run
+ca_cert: "/etc/anthrimon/ca.crt"
+state_file: "/etc/anthrimon/collector-state.json"
+
+snmp:
+  polling_interval_s: 60
+  max_concurrent: 20
+  timeout_seconds: 10
+  retries: 2
+
+flow:
+  netflow_addr: ":2055"
+  sflow_addr: ":6343"
+  buffer_size: 65535
+
+syslog:
+  udp_addr: ":514"
+  tcp_addr: ":514"
+
+forward:
+  batch_size: 500
+  flush_interval_s: 10
+
+server:
+  addr: ""    # empty = bind to WireGuard IP automatically
+
+log:
+  level: info

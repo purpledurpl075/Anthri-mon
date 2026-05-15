@@ -24,7 +24,7 @@ _ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
 
 async def _compute_edges(devices: list, db: AsyncSession) -> list[dict]:
-    """Build edge list from LLDP/CDP neighbour tables."""
+    """Build edge list from LLDP/CDP neighbor tables."""
     dev_by_ip   = {str(d.mgmt_ip).split("/")[0]: str(d.id) for d in devices}
     dev_by_host: dict[str, str] = {}
     for d in devices:
@@ -173,7 +173,7 @@ async def _persist_topology_links(tenant_id: str, edges: list[dict]) -> None:
 
 
 async def _refresh_topology(tenant_id: str) -> None:
-    """Recompute topology from neighbour tables and update topology_links."""
+    """Recompute topology from neighbor tables and update topology_links."""
     try:
         async with AsyncSessionLocal() as db:
             devices = (await db.execute(
@@ -282,7 +282,7 @@ async def get_link_utilisation_batch(
     }
 
 
-@router.get("", summary="Network topology graph derived from LLDP/CDP neighbour data")
+@router.get("", summary="Network topology graph derived from LLDP/CDP neighbor data")
 async def get_topology(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),

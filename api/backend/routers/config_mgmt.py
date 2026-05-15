@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -10,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..configmgmt.collector import collect_device
+from ..configmgmt.collector import collect_device, _deploy_ssh, _vendor_key
 from ..configmgmt.compliance import run_compliance_for_device, evaluate_policy
 from ..dependencies import get_current_user, get_db, require_role
 from ..models.config import (
@@ -404,3 +406,240 @@ async def compliance_results(
             "findings":    result.findings,
         })
     return out
+
+
+# ── Config deploy ─────────────────────────────────────────────────────────────
+
+class DeployRequest(BaseModel):
+    commands: list[str]        # config lines to push
+    save:     bool = True      # write memory / commit after deploy
+
+
+@router.post("/deploy/{device_id}", summary="Push config commands to a device via SSH")
+async def deploy_config(
+    device_id:    str,
+    body:         DeployRequest,
+    current_user: User          = Depends(require_role("operator", "admin", "superadmin")),
+    db:           AsyncSession  = Depends(get_db),
+) -> dict:
+    import asyncio, json as _json
+    from .. import crypto
+    from ..models.credential import Credential, DeviceCredential
+
+    dev = await _assert_device(device_id, current_user.tenant_id, db)
+
+    # Require at least one non-empty command
+    commands = [c for c in body.commands if c.strip()]
+    if not commands:
+        raise HTTPException(status_code=400, detail="No commands provided")
+    if len(commands) > 200:
+        raise HTTPException(status_code=400, detail="Too many commands (max 200)")
+
+    # Load SSH credential
+    cred_row = (await db.execute(
+        select(DeviceCredential, Credential)
+        .join(Credential, Credential.id == DeviceCredential.credential_id)
+        .where(DeviceCredential.device_id == device_id, Credential.type == "ssh")
+        .order_by(DeviceCredential.priority)
+    )).first()
+    if cred_row is None:
+        raise HTTPException(status_code=400, detail="No SSH credential assigned to this device")
+
+    _, cred = cred_row
+    cred_data = cred.data if isinstance(cred.data, dict) else _json.loads(cred.data)
+    if cred_data.get("password") and crypto.is_configured():
+        try:
+            cred_data["password"] = crypto.decrypt(cred_data["password"])
+        except Exception:
+            pass
+
+    host   = str(dev.mgmt_ip).split("/")[0]
+    vendor = _vendor_key(dev)
+
+    loop = asyncio.get_running_loop()
+    try:
+        output = await loop.run_in_executor(
+            None, _deploy_ssh, host, 22, vendor, cred_data, commands, body.save
+        )
+    except Exception as exc:
+        logger.error("config_deploy_failed", device=dev.hostname, error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Deploy failed: {exc}")
+
+    logger.info("config_deployed", device=dev.hostname, commands=len(commands), save=body.save)
+
+    # Trigger a backup in the background to capture the new state
+    async def _backup():
+        from ..database import AsyncSessionLocal
+        async with AsyncSessionLocal() as s:
+            await collect_device(device_id, s)
+
+    asyncio.create_task(_backup())
+
+    return {
+        "device_id": device_id,
+        "hostname":  dev.fqdn or dev.hostname,
+        "commands":  len(commands),
+        "saved":     body.save,
+        "output":    output,
+    }
+
+
+# ── Template variable substitution ───────────────────────────────────────────
+
+def _substitute(commands: list[str], variables: dict) -> list[str]:
+    """Replace {{var}} placeholders in commands with values from the variables dict."""
+    result = []
+    for cmd in commands:
+        for k, v in variables.items():
+            cmd = cmd.replace(f"{{{{{k}}}}}", str(v))
+        result.append(cmd)
+    return result
+
+
+def _device_vars(dev: Device) -> dict:
+    """Built-in per-device template variables."""
+    return {
+        "hostname":    dev.fqdn or dev.hostname,
+        "mgmt_ip":     str(dev.mgmt_ip).split("/")[0],
+        "vendor":      dev.vendor or "",
+        "device_type": dev.device_type or "",
+        "fqdn":        dev.fqdn or dev.hostname,
+    }
+
+
+# ── Multi-device deploy ───────────────────────────────────────────────────────
+
+class MultiDeployRequest(BaseModel):
+    commands:        list[str]
+    device_selector: Optional[dict] = None   # None = all tenant devices
+    variables:       dict = {}               # user-defined template vars
+    save:            bool = True
+    max_concurrent:  int  = 5               # max parallel SSH connections
+
+
+@router.post("/deploy/multi", summary="Push config commands to multiple devices")
+async def deploy_config_multi(
+    body:         MultiDeployRequest,
+    current_user: User          = Depends(require_role("operator", "admin", "superadmin")),
+    db:           AsyncSession  = Depends(get_db),
+) -> dict:
+    import json as _json
+    from .. import crypto
+    from ..models.credential import Credential, DeviceCredential
+    from ..alerting.evaluators import resolve_devices
+
+    commands = [c for c in body.commands if c.strip()]
+    if not commands:
+        raise HTTPException(status_code=400, detail="No commands provided")
+
+    # Resolve target devices
+    devices = await resolve_devices(db, str(current_user.tenant_id), body.device_selector)
+    if not devices:
+        return {"results": [], "total": 0, "succeeded": 0, "failed": 0}
+
+    # Pre-load SSH credentials for all devices
+    cred_map: dict[str, dict] = {}
+    for dev_row in devices:
+        did = dev_row["id"]
+        cred_row = (await db.execute(
+            select(DeviceCredential, Credential)
+            .join(Credential, Credential.id == DeviceCredential.credential_id)
+            .where(DeviceCredential.device_id == did, Credential.type == "ssh")
+            .order_by(DeviceCredential.priority)
+        )).first()
+        if cred_row is None:
+            continue
+        _, cred = cred_row
+        cred_data = cred.data if isinstance(cred.data, dict) else _json.loads(cred.data)
+        if cred_data.get("password") and crypto.is_configured():
+            try:
+                cred_data["password"] = crypto.decrypt(cred_data["password"])
+            except Exception:
+                pass
+        cred_map[did] = cred_data
+
+    # Load full Device objects for template variable resolution
+    dev_objs: dict[str, Device] = {}
+    for did in cred_map:
+        dev_obj = (await db.execute(select(Device).where(Device.id == did))).scalar_one_or_none()
+        if dev_obj:
+            dev_objs[did] = dev_obj
+
+    sem = asyncio.Semaphore(min(body.max_concurrent, 10))
+
+    async def _deploy_one(did: str) -> dict:
+        dev_obj = dev_objs.get(did)
+        if not dev_obj:
+            return {"device_id": did, "hostname": did[:8], "success": False,
+                    "error": "Device not found", "output": ""}
+        cred_data = cred_map.get(did)
+        if not cred_data:
+            return {"device_id": did, "hostname": dev_obj.fqdn or dev_obj.hostname,
+                    "success": False, "error": "No SSH credential", "output": ""}
+
+        # Merge built-in device vars with user vars (user vars take precedence)
+        merged_vars = {**_device_vars(dev_obj), **body.variables}
+        resolved_cmds = _substitute(commands, merged_vars)
+        # Filter out empty commands after substitution
+        resolved_cmds = [c for c in resolved_cmds if c.strip()]
+
+        host   = str(dev_obj.mgmt_ip).split("/")[0]
+        vendor = _vendor_key(dev_obj)
+
+        async with sem:
+            loop = asyncio.get_running_loop()
+            try:
+                output = await loop.run_in_executor(
+                    None, _deploy_ssh, host, 22, vendor, cred_data, resolved_cmds, body.save
+                )
+                # Trigger backup
+                async def _bk():
+                    from ..database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as s:
+                        await collect_device(did, s)
+                asyncio.create_task(_bk())
+                return {"device_id": did, "hostname": dev_obj.fqdn or dev_obj.hostname,
+                        "success": True, "error": None, "output": output}
+            except Exception as exc:
+                return {"device_id": did, "hostname": dev_obj.fqdn or dev_obj.hostname,
+                        "success": False, "error": str(exc), "output": ""}
+
+    results = await asyncio.gather(*[_deploy_one(d["id"]) for d in devices])
+    succeeded = sum(1 for r in results if r["success"])
+    logger.info("multi_deploy_complete", total=len(results), succeeded=succeeded,
+                user=current_user.username)
+
+    return {
+        "results":   list(results),
+        "total":     len(results),
+        "succeeded": succeeded,
+        "failed":    len(results) - succeeded,
+    }
+
+
+@router.get("/deploy/preview", summary="Preview devices matching a selector")
+async def deploy_preview(
+    vendor:       Optional[str] = None,
+    tag:          Optional[str] = None,
+    current_user: User          = Depends(get_current_user),
+    db:           AsyncSession  = Depends(get_db),
+) -> list[dict]:
+    """Return devices that would be targeted by a given selector."""
+    from ..alerting.evaluators import resolve_devices
+
+    selector: Optional[dict] = None
+    if vendor:
+        selector = {"vendors": [vendor]}
+    elif tag:
+        selector = {"tags": [tag]}
+
+    devices = await resolve_devices(db, str(current_user.tenant_id), selector)
+    return [
+        {
+            "id":          d["id"],
+            "hostname":    d.get("hostname", ""),
+            "mgmt_ip":     d.get("mgmt_ip", ""),
+            "vendor":      d.get("vendor", ""),
+        }
+        for d in devices
+    ]

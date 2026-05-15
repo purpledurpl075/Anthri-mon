@@ -1,0 +1,8 @@
+<svg width="300" height="320" viewBox="0 0 300 320" xmlns="http://www.w3.org/2000/svg">
+<rect width="300" height="320" fill="#f2f2f2"/>
+<circle cx="150" cy="120" r="100" fill="none" stroke="#5cb85c" stroke-width="5"/>
+    <polygon points="95,186.0 110.4,186.0 154.62,61.7 145.38,61.7" fill="#0d1b24"/>
+    
+    <polygon points="205,186.0 189.6,186.0 145.38,61.7 154.62,61.7" fill="#0d1b24"/>
+    <rect x="121.4" y="130.56" width="57.19999999999999" height="9.24" fill="#0d1b24"/><circle cx="150" cy="149.04" r="5.852000000000001" fill="#5cb85c"/><text x="150" y="255" font-family="'Arial Black', Arial, sans-serif" font-weight="900" font-size="34" fill="#0d1b24" text-anchor="middle" letter-spacing="1">Anthrimon</text>
+</svg>
