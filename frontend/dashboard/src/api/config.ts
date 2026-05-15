@@ -114,3 +114,41 @@ export const fetchComplianceResults = (deviceId?: string) =>
   api.get<ComplianceResult[]>('/config/compliance/results', {
     params: deviceId ? { device_id: deviceId } : {},
   }).then(r => r.data)
+
+export interface DeployResult {
+  device_id: string
+  hostname:  string
+  commands:  number
+  saved:     boolean
+  output:    string
+}
+
+export const deployConfig = (deviceId: string, commands: string[], save = true) =>
+  api.post<DeployResult>(`/config/deploy/${deviceId}`, { commands, save }).then(r => r.data)
+
+export interface MultiDeployDeviceResult {
+  device_id: string
+  hostname:  string
+  success:   boolean
+  error:     string | null
+  output:    string
+}
+
+export interface MultiDeployResult {
+  results:   MultiDeployDeviceResult[]
+  total:     number
+  succeeded: number
+  failed:    number
+}
+
+export const deployConfigMulti = (body: {
+  commands: string[]
+  device_selector?: Record<string, unknown> | null
+  variables?: Record<string, string>
+  save?: boolean
+}) => api.post<MultiDeployResult>('/config/deploy/multi', body).then(r => r.data)
+
+export const previewDeployTargets = (params: { vendor?: string; tag?: string }) =>
+  api.get<{ id: string; hostname: string; mgmt_ip: string; vendor: string }[]>(
+    '/config/deploy/preview', { params }
+  ).then(r => r.data)

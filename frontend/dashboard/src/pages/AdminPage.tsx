@@ -845,7 +845,7 @@ const TEMPLATE_VARS = [
   { name: 'threshold',      desc: 'Rule threshold' },
   { name: 'interface_name', desc: 'Interface name (interface alerts)' },
   { name: 'prefix',         desc: 'Route prefix (route_missing)' },
-  { name: 'neighbour',      desc: 'OSPF neighbour (ospf_state)' },
+  { name: 'neighbor',      desc: 'OSPF neighbor (ospf_state)' },
   { name: 'triggered_at',   desc: 'Time alert fired' },
   { name: 'resolved_at',    desc: 'Time alert resolved' },
   { name: 'alert_url',      desc: 'Deep-link to alert detail' },
@@ -863,18 +863,18 @@ const PREVIEW_CTX_BASE: Record<string, string> = {
 
 const PREVIEW_CTX_BY_METRIC: Record<string, Record<string, string>> = {
   default:          { ...PREVIEW_CTX_BASE, metric: '', title: 'coresw: CPU 94.2%', value: '94.2', threshold: '90' },
-  cpu_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'cpu_util_pct', title: 'coresw: CPU 94.2%', value: '94.2', threshold: '90', interface_name: '', prefix: '', neighbour: '' },
-  mem_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'mem_util_pct', title: 'coresw: Memory 88%', value: '88', threshold: '85', interface_name: '', prefix: '', neighbour: '' },
-  device_down:      { ...PREVIEW_CTX_BASE, metric: 'device_down', title: 'coresw.lab.local: device unreachable', value: '—', threshold: '—', interface_name: '', prefix: '', neighbour: '' },
-  interface_down:   { ...PREVIEW_CTX_BASE, metric: 'interface_down', title: 'coresw: Gi0/1 down', value: '—', threshold: '—', interface_name: 'GigabitEthernet0/1', prefix: '', neighbour: '' },
-  interface_flap:   { ...PREVIEW_CTX_BASE, metric: 'interface_flap', title: 'coresw: Gi0/1 flapping', value: '5', threshold: '3', interface_name: 'GigabitEthernet0/1', prefix: '', neighbour: '' },
-  route_missing:    { ...PREVIEW_CTX_BASE, metric: 'route_missing', title: 'route 10.0.0.0/8 missing', value: '—', threshold: '—', interface_name: '', prefix: '10.0.0.0/8', neighbour: '' },
-  ospf_state:       { ...PREVIEW_CTX_BASE, metric: 'ospf_state', title: 'OSPF neighbour 192.168.1.2 not full', value: '—', threshold: '—', interface_name: '', prefix: '', neighbour: '192.168.1.2' },
-  temperature:      { ...PREVIEW_CTX_BASE, metric: 'temperature', title: 'coresw: temperature 78°C', value: '78', threshold: '70', interface_name: '', prefix: '', neighbour: '' },
-  interface_errors: { ...PREVIEW_CTX_BASE, metric: 'interface_errors', title: 'coresw: interface errors (342)', value: '342', threshold: '100', interface_name: 'GigabitEthernet0/2', prefix: '', neighbour: '' },
-  interface_util_pct: { ...PREVIEW_CTX_BASE, metric: 'interface_util_pct', title: 'coresw: bandwidth 92%', value: '92', threshold: '80', interface_name: 'GigabitEthernet0/0', prefix: '', neighbour: '' },
-  uptime:           { ...PREVIEW_CTX_BASE, metric: 'uptime', title: 'coresw rebooted (uptime 45s)', value: '45', threshold: '300', interface_name: '', prefix: '', neighbour: '' },
-  custom_oid:       { ...PREVIEW_CTX_BASE, metric: 'custom_oid', title: 'Custom OID alert', value: '42', threshold: '10', interface_name: '', prefix: '', neighbour: '' },
+  cpu_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'cpu_util_pct', title: 'coresw: CPU 94.2%', value: '94.2', threshold: '90', interface_name: '', prefix: '', neighbor: '' },
+  mem_util_pct:     { ...PREVIEW_CTX_BASE, metric: 'mem_util_pct', title: 'coresw: Memory 88%', value: '88', threshold: '85', interface_name: '', prefix: '', neighbor: '' },
+  device_down:      { ...PREVIEW_CTX_BASE, metric: 'device_down', title: 'coresw.lab.local: device unreachable', value: '—', threshold: '—', interface_name: '', prefix: '', neighbor: '' },
+  interface_down:   { ...PREVIEW_CTX_BASE, metric: 'interface_down', title: 'coresw: Gi0/1 down', value: '—', threshold: '—', interface_name: 'GigabitEthernet0/1', prefix: '', neighbor: '' },
+  interface_flap:   { ...PREVIEW_CTX_BASE, metric: 'interface_flap', title: 'coresw: Gi0/1 flapping', value: '5', threshold: '3', interface_name: 'GigabitEthernet0/1', prefix: '', neighbor: '' },
+  route_missing:    { ...PREVIEW_CTX_BASE, metric: 'route_missing', title: 'route 10.0.0.0/8 missing', value: '—', threshold: '—', interface_name: '', prefix: '10.0.0.0/8', neighbor: '' },
+  ospf_state:       { ...PREVIEW_CTX_BASE, metric: 'ospf_state', title: 'OSPF neighbor 192.168.1.2 not full', value: '—', threshold: '—', interface_name: '', prefix: '', neighbor: '192.168.1.2' },
+  temperature:      { ...PREVIEW_CTX_BASE, metric: 'temperature', title: 'coresw: temperature 78°C', value: '78', threshold: '70', interface_name: '', prefix: '', neighbor: '' },
+  interface_errors: { ...PREVIEW_CTX_BASE, metric: 'interface_errors', title: 'coresw: interface errors (342)', value: '342', threshold: '100', interface_name: 'GigabitEthernet0/2', prefix: '', neighbor: '' },
+  interface_util_pct: { ...PREVIEW_CTX_BASE, metric: 'interface_util_pct', title: 'coresw: bandwidth 92%', value: '92', threshold: '80', interface_name: 'GigabitEthernet0/0', prefix: '', neighbor: '' },
+  uptime:           { ...PREVIEW_CTX_BASE, metric: 'uptime', title: 'coresw rebooted (uptime 45s)', value: '45', threshold: '300', interface_name: '', prefix: '', neighbor: '' },
+  custom_oid:       { ...PREVIEW_CTX_BASE, metric: 'custom_oid', title: 'Custom OID alert', value: '42', threshold: '10', interface_name: '', prefix: '', neighbor: '' },
 }
 
 function renderPreview(template: string, metric: string): string {
@@ -893,7 +893,7 @@ const METRIC_LABELS: Record<string, string> = {
   mem_util_pct:     'Memory utilisation',
   interface_errors: 'Interface errors',
   interface_util_pct: 'Interface utilisation',
-  ospf_state:       'OSPF neighbour issue',
+  ospf_state:       'OSPF neighbor issue',
   route_missing:    'Route missing',
   custom_oid:       'Custom OID',
 }

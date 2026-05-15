@@ -27,7 +27,8 @@ const I = {
   calendar: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>,
   flow:     <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
   syslog:   <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M4 6h16M4 10h16M4 14h10M4 18h6"/></svg>,
-  config:   <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>,
+  config:     <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>,
+  collectors: <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
   logout:   <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>,
   chevronDown: <svg className="w-3 h-3 shrink-0" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>,
   chevronLeft: <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></svg>,
@@ -170,26 +171,14 @@ export default function Sidebar() {
         {/* Brand + toggle */}
         <div className={`flex items-center border-b border-slate-800 ${collapsed ? 'justify-center py-4 px-0' : 'px-4 py-4 justify-between'}`}>
           {!collapsed && (
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center shrink-0">
-                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-                </svg>
-              </div>
-              <div className="min-w-0">
-                <div className="text-white font-bold text-sm leading-none tracking-tight">Anthrimon</div>
-                <div className="text-slate-500 text-[10px] mt-0.5">v0.1</div>
-              </div>
+            <div className="flex items-center min-w-0">
+              <img src="/logo-reversed.svg" alt="Anthrimon" className="h-8 w-auto" />
             </div>
           )}
 
           {collapsed && (
             <div className="flex flex-col items-center gap-2">
-              <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center">
-                <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24">
-                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-                </svg>
-              </div>
+              <img src="/logo-icon.svg" alt="Anthrimon" className="w-8 h-8 rounded-lg" />
               <button onClick={toggle} title="Expand sidebar"
                 className="p-1 rounded-lg text-slate-600 hover:text-slate-400 hover:bg-white/5 transition-colors">
                 {I.chevronRight}
@@ -227,7 +216,8 @@ export default function Sidebar() {
           </Section>
 
           <Section label="Configuration">
-            <Item to="/credentials" label="Credentials"    icon={I.key} />
+            <Item to="/credentials"  label="Credentials"   icon={I.key} />
+            <Item to="/collectors"   label="Collectors"    icon={I.collectors} />
             {hasRole(me?.role ?? 'readonly', 'admin') && (
               <Item to="/admin" label="Administration" icon={I.settings} />
             )}

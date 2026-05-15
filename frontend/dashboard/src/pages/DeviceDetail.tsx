@@ -8,10 +8,11 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbours, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbors, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort } from '../api/devices'
 import TimeSeriesChart from '../components/TimeSeriesChart'
 import { fetchCredentials } from '../api/credentials'
-import { fetchConfigStatus, fetchBackups, fetchDiffs, fetchBackup, fetchDiff, triggerCollect, fetchComplianceResults, type ConfigBackupMeta, type ConfigDiffMeta } from '../api/config'
+import { fetchConfigStatus, fetchBackups, fetchDiffs, fetchBackup, fetchDiff, triggerCollect, fetchComplianceResults, deployConfig, type ConfigBackupMeta, type ConfigDiffMeta } from '../api/config'
+import { fetchCollectors } from '../api/collectors'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
@@ -118,7 +119,7 @@ function PlaceholderSection({ title, description }: { title: string; description
   )
 }
 
-// ── Neighbours ────────────────────────────────────────────────────────────────
+// ── Neighbors ────────────────────────────────────────────────────────────────
 
 const isSwitch  = (c: string[]) => c.includes('bridge') || c.includes('switch') || c.includes('repeater')
 const isRouter  = (c: string[]) => c.includes('router')
@@ -219,7 +220,7 @@ function CenterNode({ data }: NodeProps) {
   )
 }
 
-function NeighbourNode({ data }: NodeProps) {
+function NeighborNode({ data }: NodeProps) {
   const n = data as unknown as TopoNode
   const color = nodeColor(n.caps)
   // Use a friendly label — don't show raw MAC addresses as the name
@@ -247,11 +248,11 @@ function NeighbourNode({ data }: NodeProps) {
   )
 }
 
-const NODE_TYPES = { center: CenterNode, neighbour: NeighbourNode }
+const NODE_TYPES = { center: CenterNode, neighbor: NeighborNode }
 
 // ── Topology map ──────────────────────────────────────────────────────────────
 
-function NeighbourMap({ deviceName, nodes: topoNodes }: { deviceName: string; nodes: TopoNode[] }) {
+function NeighborMap({ deviceName, nodes: topoNodes }: { deviceName: string; nodes: TopoNode[] }) {
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set())
   const [hideProtocol, setHideProtocol] = useState<Set<string>>(new Set())
   const [hideCaps, setHideCaps] = useState<Set<string>>(new Set())
@@ -277,7 +278,7 @@ function NeighbourMap({ deviceName, nodes: topoNodes }: { deviceName: string; no
       const angle = (i / topoNodes.length) * 2 * Math.PI - Math.PI / 2
       return {
         id: n.key,
-        type: 'neighbour',
+        type: 'neighbor',
         position: { x: Math.round(radius * Math.cos(angle)), y: Math.round(radius * Math.sin(angle)) },
         data: n as unknown as Record<string, unknown>,
         hidden: !isVisible(n),
@@ -302,7 +303,7 @@ function NeighbourMap({ deviceName, nodes: topoNodes }: { deviceName: string; no
   if (topoNodes.length === 0) {
     return (
       <div className="flex items-center justify-center h-64 text-slate-400 text-sm">
-        No neighbour data yet — waiting for a poll cycle.
+        No neighbor data yet — waiting for a poll cycle.
       </div>
     )
   }
@@ -382,12 +383,12 @@ function NeighbourMap({ deviceName, nodes: topoNodes }: { deviceName: string; no
   )
 }
 
-function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
+function NeighborsSection({ deviceId, deviceName }: { deviceId: string; deviceName: string }) {
   const [view, setView] = useState<'list' | 'map'>('list')
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['neighbours', deviceId],
-    queryFn: () => fetchDeviceNeighbours(deviceId),
+    queryKey: ['neighbors', deviceId],
+    queryFn: () => fetchDeviceNeighbors(deviceId),
     staleTime: 60_000,
   })
 
@@ -449,7 +450,7 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
 
       {view === 'list' && (
         <div className="space-y-3">
-          {total === 0 && <p className="text-xs text-slate-400">No neighbours discovered yet.</p>}
+          {total === 0 && <p className="text-xs text-slate-400">No neighbors discovered yet.</p>}
 
           {lldp.length > 0 && (
             <div>
@@ -512,11 +513,11 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
                         <span className={`font-semibold px-1.5 py-0.5 rounded text-white text-[10px] ${isFull ? 'bg-green-600' : 'bg-amber-500'}`}>
                           {n.state.toUpperCase().replace('_', '-')}
                         </span>
-                        <span className="font-mono text-slate-700 truncate">{n.neighbour_ip ?? n.router_id ?? '—'}</span>
+                        <span className="font-mono text-slate-700 truncate">{n.neighbor_ip ?? n.router_id ?? '—'}</span>
                         {n.display_name && (
                           <span className="text-slate-500 shrink-0">{n.display_name}</span>
                         )}
-                        {!n.display_name && n.router_id && n.router_id !== n.neighbour_ip && (
+                        {!n.display_name && n.router_id && n.router_id !== n.neighbor_ip && (
                           <span className="font-mono text-slate-400 shrink-0">{n.router_id}</span>
                         )}
                       </div>
@@ -536,7 +537,7 @@ function NeighboursSection({ deviceId, deviceName }: { deviceId: string; deviceN
       )}
 
       {view === 'map' && (
-        <NeighbourMap deviceName={deviceName} nodes={topoNodes} />
+        <NeighborMap deviceName={deviceName} nodes={topoNodes} />
       )}
     </div>
   )
@@ -1397,7 +1398,7 @@ export default function DeviceDetail() {
   const canAdmin   = hasRole(role, 'admin')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [tab, setTab] = useState<'interfaces' | 'neighbours' | 'addresses' | 'routes' | 'vlans' | 'stp' | 'health' | 'config'>('interfaces')
+  const [tab, setTab] = useState<'interfaces' | 'neighbors' | 'addresses' | 'routes' | 'vlans' | 'stp' | 'health' | 'config'>('interfaces')
 
   const deleteMutation = useMutation({
     mutationFn: () => deleteDevice(id!),
@@ -1706,6 +1707,8 @@ export default function DeviceDetail() {
                 {patchMutation.isError && <p className="text-xs text-red-600 mt-1">Save failed.</p>}
               </Section>
 
+              <CollectorSection deviceId={id!} currentCollectorId={(device as any).collector_id ?? null} onSave={(cid) => patchMutation.mutate({ collector_id: cid })} />
+
               <Section title="Tags">
                 <div className="flex flex-wrap gap-1.5 mb-2 min-h-[24px]">
                   {(device.tags ?? []).length === 0 && (
@@ -1895,7 +1898,7 @@ export default function DeviceDetail() {
             style={{ WebkitOverflowScrolling: 'touch' }}>
             {([
               { id: 'interfaces',  label: 'Interfaces', badge: totalIfaces || undefined },
-              { id: 'neighbours',  label: 'Neighbours' },
+              { id: 'neighbors',  label: 'Neighbors' },
               { id: 'addresses',   label: 'Addresses' },
               { id: 'routes',      label: 'Routes' },
               { id: 'vlans',       label: 'VLANs' },
@@ -1970,9 +1973,9 @@ export default function DeviceDetail() {
             )
           )}
 
-          {tab === 'neighbours' && (
+          {tab === 'neighbors' && (
             <div className="p-5">
-              <NeighboursSection deviceId={id!} deviceName={device?.fqdn ?? device?.hostname ?? ''} />
+              <NeighborsSection deviceId={id!} deviceName={device?.fqdn ?? device?.hostname ?? ''} />
             </div>
           )}
 
@@ -2004,7 +2007,7 @@ export default function DeviceDetail() {
           )}
           {tab === 'config' && id && (
             <div className="p-5">
-              <DeviceConfigTab deviceId={id} />
+              <DeviceConfigTab deviceId={id} vendor={device?.vendor} />
             </div>
           )}
         </div>
@@ -2014,11 +2017,58 @@ export default function DeviceDetail() {
   )
 }
 
+// ── Collector assignment (inside settings panel) ──────────────────────────────
+
+function CollectorSection({ deviceId, currentCollectorId, onSave }: {
+  deviceId: string
+  currentCollectorId: string | null
+  onSave: (collectorId: string | null) => void
+}) {
+  const { data: collectors = [] } = useQuery({
+    queryKey: ['collectors'],
+    queryFn:  fetchCollectors,
+  })
+  const [selected, setSelected] = React.useState(currentCollectorId ?? '')
+
+  React.useEffect(() => { setSelected(currentCollectorId ?? '') }, [currentCollectorId])
+
+  const hasChanged = selected !== (currentCollectorId ?? '')
+
+  return (
+    <Section title="Collection">
+      <p className="text-xs text-slate-400 mb-2">
+        Assign this device to a remote collector. Leave blank to poll from the hub directly.
+      </p>
+      <Select
+        value={selected}
+        onChange={setSelected}
+        options={[
+          { value: '', label: 'Hub (local)' },
+          ...collectors
+            .filter(c => c.is_active)
+            .map(c => ({
+              value: c.id,
+              label: `${c.name}${c.wg_ip ? ` (${c.wg_ip})` : ''}${c.status === 'online' ? ' ●' : c.status === 'offline' ? ' ○' : ''}`,
+            })),
+        ]}
+      />
+      {hasChanged && (
+        <button
+          onClick={() => onSave(selected || null)}
+          className="w-full mt-2 bg-blue-600 text-white text-sm rounded-lg py-2 hover:bg-blue-700 transition-colors"
+        >
+          Save
+        </button>
+      )}
+    </Section>
+  )
+}
+
 // ── Device Config Tab ─────────────────────────────────────────────────────────
 
-function DeviceConfigTab({ deviceId }: { deviceId: string }) {
+function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: string }) {
   const qc = useQueryClient()
-  const [view, setView] = useState<'history' | 'diff' | 'compliance'>('history')
+  const [view, setView] = useState<'history' | 'compliance' | 'deploy'>('history')
   const [selectedDiffId, setSelectedDiffId] = useState<string | null>(null)
   const [selectedBackupId, setSelectedBackupId] = useState<string | null>(null)
   const [collecting, setCollecting] = useState(false)
@@ -2116,7 +2166,7 @@ function DeviceConfigTab({ deviceId }: { deviceId: string }) {
 
       {/* Sub-tabs */}
       <div className="flex gap-0 border-b border-slate-100">
-        {(['history', 'compliance'] as const).map(v => (
+        {(['history', 'compliance', 'deploy'] as const).map(v => (
           <button key={v} onClick={() => setView(v)}
             className={`px-4 py-2 text-xs font-medium capitalize border-b-2 transition-colors ${
               view === v ? 'border-blue-500 text-blue-600' : 'border-transparent text-slate-500 hover:text-slate-700'
@@ -2240,6 +2290,191 @@ function DeviceConfigTab({ deviceId }: { deviceId: string }) {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {view === 'deploy' && (
+        <DeployPanel deviceId={deviceId} vendor={vendor} />
+      )}
+    </div>
+  )
+}
+
+// ── Deploy panel ──────────────────────────────────────────────────────────────
+
+// Vendor-specific snippet library (mirrored from ConfigPage)
+const DEVICE_SNIPPETS: Record<string, { label: string; text: string }[]> = {
+  arista:    [
+    { label: 'NTP server',     text: 'ntp server {{ntp_server}}' },
+    { label: 'Syslog',         text: 'logging host {{syslog_server}}' },
+    { label: 'SSH timeout',    text: 'management ssh\n   idle-timeout 120' },
+    { label: 'Banner',         text: 'banner login\nAuthorized access only.\nEOF' },
+    { label: 'SNMP community', text: 'snmp-server community {{community}} ro' },
+    { label: 'DNS',            text: 'ip name-server {{dns_server}}' },
+  ],
+  cisco:     [
+    { label: 'NTP server',     text: 'ntp server {{ntp_server}}' },
+    { label: 'Syslog',         text: 'logging host {{syslog_server}}' },
+    { label: 'SSH v2',         text: 'ip ssh version 2' },
+    { label: 'Banner',         text: 'banner login #\nAuthorized access only.\n#' },
+    { label: 'SNMP community', text: 'snmp-server community {{community}} RO' },
+    { label: 'DNS',            text: 'ip name-server {{dns_server}}' },
+  ],
+  procurve:  [
+    { label: 'NTP server',     text: 'timesync ntp\nntp server {{ntp_server}}' },
+    { label: 'Syslog',         text: 'logging {{syslog_server}}' },
+    { label: 'Banner',         text: 'banner motd "Authorized access only"' },
+    { label: 'SNMP community', text: 'snmp-server community "{{community}}" operator' },
+    { label: 'DNS',            text: 'ip dns server-address priority 1 {{dns_server}}' },
+  ],
+  juniper:   [
+    { label: 'NTP server',     text: 'set system ntp server {{ntp_server}}' },
+    { label: 'Syslog',         text: 'set system syslog host {{syslog_server}} any any' },
+    { label: 'SSH',            text: 'set system services ssh' },
+    { label: 'Banner',         text: 'set system login message "Authorized access only"' },
+    { label: 'SNMP',           text: 'set snmp community {{community}} authorization read-only' },
+  ],
+  fortios:   [
+    { label: 'NTP',            text: 'config system ntp\n  set ntpserver1 {{ntp_server}}\n  set status enable\nend' },
+    { label: 'Syslog',         text: 'config log syslogd setting\n  set status enable\n  set server {{syslog_server}}\nend' },
+  ],
+  generic:   [
+    { label: 'NTP server',     text: 'ntp server {{ntp_server}}' },
+    { label: 'Syslog server',  text: 'logging host {{syslog_server}}' },
+    { label: 'Iface shutdown', text: 'interface {{interface}}\n  shutdown' },
+    { label: 'SNMP community', text: 'snmp-server community {{community}} ro' },
+  ],
+}
+
+function deviceSnippets(vendor?: string) {
+  if (!vendor) return DEVICE_SNIPPETS.generic
+  const v = vendor.toLowerCase()
+  for (const [key, snips] of Object.entries(DEVICE_SNIPPETS)) {
+    if (v.includes(key) || key.includes(v)) return snips
+  }
+  return DEVICE_SNIPPETS.generic
+}
+
+function DeployPanel({ deviceId, vendor }: { deviceId: string; vendor?: string }) {
+  const snippets = deviceSnippets(vendor)
+  const [commands, setCommands]   = useState('')
+  const [variables, setVariables] = useState<{ key: string; value: string }[]>([
+    { key: 'ntp_server',    value: '' },
+    { key: 'syslog_server', value: '' },
+  ])
+  const [save, setSave]           = useState(true)
+  const [output, setOutput]       = useState<string | null>(null)
+  const [error, setError]         = useState<string | null>(null)
+  const [deploying, setDeploying] = useState(false)
+
+  const varMap = Object.fromEntries(variables.filter(v => v.key && v.value).map(v => [v.key, v.value]))
+
+  const handleDeploy = async () => {
+    const lines = commands.split('\n').filter(l => l.trim())
+    if (!lines.length) return
+    setDeploying(true); setOutput(null); setError(null)
+    try {
+      const result = await deployConfig(deviceId, lines, save)
+      setOutput(result.output || '(no output)')
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? String(e))
+    } finally {
+      setDeploying(false)
+    }
+  }
+
+  const inputCls = "border border-slate-200 rounded-lg px-3 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+        <svg className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+        </svg>
+        <p className="text-xs text-amber-700">
+          Commands are pushed via SSH in config mode. Supports <code className="bg-amber-100 px-0.5 rounded">{'{{variable}}'}</code> substitution.
+          A backup is taken automatically after deploy.
+        </p>
+      </div>
+
+      {/* Vendor-aware quick insert */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-medium text-slate-500">
+            Quick insert
+            {vendor && <span className="ml-1.5 text-slate-300 capitalize">· {vendor}</span>}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {snippets.map(s => (
+            <button key={s.label} type="button"
+              onClick={() => setCommands(c => c ? c + '\n' + s.text : s.text)}
+              className="px-2 py-0.5 rounded-md text-[11px] border border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-400 hover:text-blue-600 transition-colors">
+              + {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Template variables */}
+      <div className="border border-slate-200 rounded-xl p-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-medium text-slate-500">Variables <span className="font-normal text-slate-400">— use <code className="bg-slate-100 px-0.5 rounded text-[10px]">{'{{var}}'}</code> in commands</span></p>
+          <button onClick={() => setVariables(v => [...v, { key: '', value: '' }])} className="text-[10px] text-blue-600 hover:underline">+ Add</button>
+        </div>
+        {variables.map((v, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <input value={v.key} onChange={e => setVariables(vs => vs.map((x,j) => j===i ? {...x,key:e.target.value} : x))}
+              placeholder="name" className={`${inputCls} w-28 font-mono`} />
+            <span className="text-slate-400 text-xs">=</span>
+            <input value={v.value} onChange={e => setVariables(vs => vs.map((x,j) => j===i ? {...x,value:e.target.value} : x))}
+              placeholder="value" className={`${inputCls} flex-1`} />
+            <button onClick={() => setVariables(vs => vs.filter((_,j) => j!==i))} className="text-slate-300 hover:text-red-400 text-xs">✕</button>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">
+          Commands <span className="text-slate-400 font-normal">— one per line, no configure/end needed</span>
+        </label>
+        <textarea
+          value={commands}
+          onChange={e => setCommands(e.target.value)}
+          spellCheck={false}
+          rows={7}
+          placeholder={'ntp server {{ntp_server}}\nlogging host {{syslog_server}}'}
+          className="w-full border border-slate-200 rounded-xl px-4 py-3 font-mono text-xs bg-slate-950 text-green-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y leading-relaxed"
+        />
+      </div>
+
+      <div className="flex items-center gap-4">
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" checked={save} onChange={e => setSave(e.target.checked)}
+            className="rounded border-slate-300 text-blue-600" />
+          <span className="text-xs text-slate-600">Save to startup config after deploy</span>
+        </label>
+        <button onClick={handleDeploy} disabled={deploying || !commands.trim()}
+          className="ml-auto flex items-center gap-1.5 px-4 py-2 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors disabled:opacity-50">
+          {deploying ? (
+            <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Deploying…</>
+          ) : (
+            <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>Deploy</>
+          )}
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-xs text-red-700 font-mono whitespace-pre-wrap">{error}</div>
+      )}
+
+      {output !== null && !error && (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-green-500" />
+            <span className="text-xs font-semibold text-slate-600">Deploy output</span>
+          </div>
+          <pre className="p-4 text-[11px] font-mono bg-slate-950 text-green-400 overflow-auto max-h-72 leading-relaxed whitespace-pre-wrap">{output}</pre>
         </div>
       )}
     </div>

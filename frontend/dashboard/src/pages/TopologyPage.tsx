@@ -1178,7 +1178,7 @@ function TopologyPageInner() {
           <div className="flex items-center justify-center h-full">
             <div className="text-center">
               <p className="text-slate-400 text-sm mb-1">No topology data yet.</p>
-              <p className="text-slate-300 text-xs">LLDP/CDP neighbours are collected on each poll cycle.</p>
+              <p className="text-slate-300 text-xs">LLDP/CDP neighbors are collected on each poll cycle.</p>
             </div>
           </div>
         ) : (

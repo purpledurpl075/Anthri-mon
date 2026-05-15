@@ -1,13 +1,76 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
   fetchPolicies, createPolicy, updatePolicy, deletePolicy, runPolicy,
-  fetchComplianceResults,
-  type CompliancePolicy, type ComplianceRule,
+  fetchComplianceResults, deployConfigMulti, previewDeployTargets,
+  type CompliancePolicy, type ComplianceRule, type MultiDeployDeviceResult,
 } from '../api/config'
+import { fetchDevices } from '../api/devices'
 import { useRole, hasRole } from '../hooks/useCurrentUser'
 import { DEVICE_TYPE_COLOR, DeviceTypeIcon } from '../components/DeviceTypeIcon'
+
+// ── Vendor-aware snippets ─────────────────────────────────────────────────────
+
+const VENDOR_SNIPPETS: Record<string, { label: string; text: string }[]> = {
+  arista: [
+    { label: 'NTP server',      text: 'ntp server {{ntp_server}}' },
+    { label: 'Syslog',          text: 'logging host {{syslog_server}}' },
+    { label: 'SSH timeout',     text: 'management ssh\n   idle-timeout 120' },
+    { label: 'Banner',          text: 'banner login\nAuthorized access only.\nEOF' },
+    { label: 'SNMP community',  text: 'snmp-server community {{community}} ro' },
+    { label: 'DNS',             text: 'ip name-server {{dns_server}}' },
+    { label: 'Domain name',     text: 'ip domain-name {{domain}}' },
+  ],
+  cisco_ios: [
+    { label: 'NTP server',      text: 'ntp server {{ntp_server}}' },
+    { label: 'Syslog',          text: 'logging host {{syslog_server}}' },
+    { label: 'SSH v2',          text: 'ip ssh version 2' },
+    { label: 'Banner',          text: 'banner login #\nAuthorized access only.\n#' },
+    { label: 'SNMP community',  text: 'snmp-server community {{community}} RO' },
+    { label: 'DNS',             text: 'ip name-server {{dns_server}}' },
+    { label: 'Domain name',     text: 'ip domain-name {{domain}}' },
+    { label: 'Disable CDP',     text: 'no cdp run' },
+  ],
+  procurve: [
+    { label: 'NTP server',      text: 'timesync ntp\nntp server {{ntp_server}}' },
+    { label: 'Syslog',          text: 'logging {{syslog_server}}' },
+    { label: 'Banner',          text: 'banner motd "Authorized access only"' },
+    { label: 'SNMP community',  text: 'snmp-server community "{{community}}" operator' },
+    { label: 'DNS',             text: 'ip dns server-address priority 1 {{dns_server}}' },
+    { label: 'Timezone',        text: 'time timezone -300' },
+  ],
+  juniper: [
+    { label: 'NTP server',      text: 'set system ntp server {{ntp_server}}' },
+    { label: 'Syslog',          text: 'set system syslog host {{syslog_server}} any any' },
+    { label: 'SSH',             text: 'set system services ssh' },
+    { label: 'Banner',          text: 'set system login message "Authorized access only"' },
+    { label: 'SNMP community',  text: 'set snmp community {{community}} authorization read-only' },
+    { label: 'DNS',             text: 'set system name-server {{dns_server}}' },
+  ],
+  fortios: [
+    { label: 'NTP server',      text: 'config system ntp\n  set ntpserver1 {{ntp_server}}\n  set status enable\nend' },
+    { label: 'Syslog',          text: 'config log syslogd setting\n  set status enable\n  set server {{syslog_server}}\nend' },
+    { label: 'DNS',             text: 'config system dns\n  set primary {{dns_server}}\nend' },
+  ],
+  generic: [
+    { label: 'NTP server',      text: 'ntp server {{ntp_server}}' },
+    { label: 'Syslog server',   text: 'logging host {{syslog_server}}' },
+    { label: 'Interface desc',  text: 'interface {{interface}}\n  description {{description}}' },
+    { label: 'Disable iface',   text: 'interface {{interface}}\n  shutdown' },
+    { label: 'SNMP community',  text: 'snmp-server community {{community}} ro' },
+  ],
+}
+
+function getSnippets(vendors: string[]) {
+  if (vendors.length === 1) {
+    const v = vendors[0].toLowerCase()
+    for (const [key, snips] of Object.entries(VENDOR_SNIPPETS)) {
+      if (v.includes(key) || key.includes(v)) return snips
+    }
+  }
+  return VENDOR_SNIPPETS.generic
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -202,7 +265,7 @@ function PolicyForm({ initial, onSave, onCancel, saving }: PolicyFormProps) {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type View = 'compliance' | 'policies'
+type View = 'compliance' | 'policies' | 'deploy'
 
 export default function ConfigPage() {
   const qc = useQueryClient()
@@ -267,11 +330,11 @@ export default function ConfigPage() {
             </div>
           )}
           <div className="flex rounded-lg overflow-hidden border border-slate-200">
-            {(['compliance', 'policies'] as const).map(v => (
+            {(['compliance', 'policies', 'deploy'] as const).map(v => (
               <button key={v} onClick={() => setView(v)}
                 className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
                   view === v ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
-                } ${v === 'policies' ? 'border-l border-slate-200' : ''}`}>
+                } ${v !== 'compliance' ? 'border-l border-slate-200' : ''}`}>
                 {v}
                 {v === 'compliance' && failCount > 0 && (
                   <span className="ml-1.5 bg-red-500 text-white text-[9px] font-bold rounded-full px-1.5">{failCount}</span>
@@ -414,7 +477,233 @@ export default function ConfigPage() {
             </div>
           </>
         )}
+
+        {view === 'deploy' && <MultiDeployTab />}
       </div>
+    </div>
+  )
+}
+
+// ── Multi-device deploy tab ───────────────────────────────────────────────────
+
+function MultiDeployTab() {
+  const [scopeType, setScopeType]   = useState<'all' | 'vendor' | 'tag' | 'devices'>('all')
+  const [scopeValue, setScopeValue] = useState('')
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [commands, setCommands]     = useState('')
+  const [variables, setVariables]   = useState<{ key: string; value: string }[]>([
+    { key: 'ntp_server',    value: '' },
+    { key: 'syslog_server', value: '' },
+  ])
+  const [save, setSave]             = useState(true)
+  const [result, setResult]         = useState<{ results: MultiDeployDeviceResult[]; succeeded: number; failed: number } | null>(null)
+  const [deploying, setDeploying]   = useState(false)
+  const [error, setError]           = useState<string | null>(null)
+
+  // Fetch devices for preview and vendor detection
+  const { data: devicesResp } = useQuery({ queryKey: ['devices-all'], queryFn: () => fetchDevices({ limit: 500 }) })
+  const allDevices: any[] = (devicesResp as any)?.items ?? devicesResp ?? []
+
+  // Compute targeted devices for preview
+  const targetedDevices = useMemo(() => {
+    if (scopeType === 'all') return allDevices
+    if (scopeType === 'vendor') return allDevices.filter((d: any) => d.vendor?.toLowerCase().includes(scopeValue.toLowerCase()) && scopeValue)
+    if (scopeType === 'tag') return allDevices.filter((d: any) => (d.tags || []).includes(scopeValue) && scopeValue)
+    if (scopeType === 'devices') return allDevices.filter((d: any) => selectedIds.includes(d.id))
+    return []
+  }, [allDevices, scopeType, scopeValue, selectedIds])
+
+  // Get unique vendors for smart snippets
+  const vendors = useMemo(() => [...new Set(targetedDevices.map((d: any) => d.vendor).filter(Boolean))], [targetedDevices])
+  const snippets = getSnippets(vendors as string[])
+
+  const buildSelector = (): Record<string, unknown> | null => {
+    if (scopeType === 'all') return null
+    if (scopeType === 'vendor' && scopeValue) return { vendors: [scopeValue] }
+    if (scopeType === 'tag'    && scopeValue) return { tags:    [scopeValue]  }
+    if (scopeType === 'devices' && selectedIds.length) return { device_ids: selectedIds }
+    return null
+  }
+
+  const varMap = Object.fromEntries(variables.filter(v => v.key && v.value).map(v => [v.key, v.value]))
+
+  const handleDeploy = async () => {
+    const lines = commands.split('\n').filter(l => l.trim())
+    if (!lines.length) return
+    if (!targetedDevices.length && scopeType !== 'all') { setError('No devices match the selector'); return }
+    setDeploying(true); setResult(null); setError(null)
+    try {
+      const res = await deployConfigMulti({
+        commands: lines,
+        device_selector: buildSelector(),
+        variables: varMap,
+        save,
+      })
+      setResult(res)
+    } catch (e: any) {
+      setError(e?.response?.data?.detail ?? String(e))
+    } finally {
+      setDeploying(false)
+    }
+  }
+
+  const inputCls = "border border-slate-200 rounded-lg px-3 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+
+  return (
+    <div className="max-w-4xl space-y-5">
+      {/* Warning */}
+      <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+        <svg className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+        </svg>
+        <p className="text-xs text-amber-700">Commands are pushed directly to all matching devices. Test in a lab first. Vendor-specific config mode entry/exit is handled automatically.</p>
+      </div>
+
+      {/* Scope selector */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-slate-800">Target devices</h3>
+        <div className="flex gap-2 flex-wrap">
+          {(['all','vendor','tag','devices'] as const).map(t => (
+            <button key={t} onClick={() => { setScopeType(t); setScopeValue(''); setSelectedIds([]) }}
+              className={`px-3 py-1.5 text-xs rounded-lg border capitalize transition-colors ${scopeType === t ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-600 hover:border-slate-400'}`}>
+              {t === 'all' ? 'All devices' : `By ${t}`}
+            </button>
+          ))}
+        </div>
+
+        {scopeType === 'vendor' && (
+          <div className="flex gap-2 flex-wrap">
+            {[...new Set(allDevices.map((d: any) => d.vendor).filter(Boolean))].map(v => (
+              <button key={v as string} onClick={() => setScopeValue(v as string)}
+                className={`px-2.5 py-1 text-xs rounded-lg border transition-colors ${scopeValue === v ? 'bg-slate-800 text-white border-slate-800' : 'border-slate-200 text-slate-600 hover:border-slate-400'}`}>
+                {v as string}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {scopeType === 'tag' && (
+          <input value={scopeValue} onChange={e => setScopeValue(e.target.value)}
+            placeholder="Enter tag name" className={`${inputCls} w-48`} />
+        )}
+
+        {scopeType === 'devices' && (
+          <div className="space-y-1 max-h-40 overflow-y-auto">
+            {allDevices.map((d: any) => (
+              <label key={d.id} className="flex items-center gap-2 cursor-pointer hover:bg-slate-50 px-2 py-1 rounded">
+                <input type="checkbox" checked={selectedIds.includes(d.id)}
+                  onChange={e => setSelectedIds(ids => e.target.checked ? [...ids, d.id] : ids.filter(i => i !== d.id))}
+                  className="rounded border-slate-300" />
+                <span className="text-xs text-slate-700">{d.fqdn ?? d.hostname}</span>
+                <span className="text-[10px] text-slate-400">{d.vendor}</span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        {/* Preview count */}
+        <p className="text-xs text-slate-500">
+          <span className="font-semibold text-slate-700">{targetedDevices.length}</span> device{targetedDevices.length !== 1 ? 's' : ''} targeted
+          {vendors.length > 0 && <span className="ml-1 text-slate-400">· {vendors.join(', ')}</span>}
+        </p>
+      </div>
+
+      {/* Template variables */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800">Template variables</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Use <code className="bg-slate-100 px-1 rounded">{'{{var}}'}</code> in commands. Built-ins: hostname, mgmt_ip, vendor, device_type</p>
+          </div>
+          <button onClick={() => setVariables(v => [...v, { key: '', value: '' }])}
+            className="text-xs text-blue-600 hover:underline">+ Add</button>
+        </div>
+        <div className="space-y-2">
+          {variables.map((v, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input value={v.key} onChange={e => setVariables(vs => vs.map((x,j) => j===i ? {...x,key:e.target.value} : x))}
+                placeholder="variable_name" className={`${inputCls} w-36 font-mono`} />
+              <span className="text-slate-400 text-xs">=</span>
+              <input value={v.value} onChange={e => setVariables(vs => vs.map((x,j) => j===i ? {...x,value:e.target.value} : x))}
+                placeholder="value" className={`${inputCls} flex-1`} />
+              <button onClick={() => setVariables(vs => vs.filter((_,j) => j!==i))}
+                className="text-slate-300 hover:text-red-400 transition-colors text-xs">✕</button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Command editor */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-slate-800">
+          Commands
+          {vendors.length === 1 && <span className="ml-2 text-[10px] font-normal text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full capitalize">{vendors[0]} syntax</span>}
+          {vendors.length > 1  && <span className="ml-2 text-[10px] font-normal text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">generic syntax (mixed vendors)</span>}
+        </h3>
+
+        <div className="flex flex-wrap gap-1.5">
+          {snippets.map(s => (
+            <button key={s.label} type="button"
+              onClick={() => setCommands(c => c ? c + '\n' + s.text : s.text)}
+              className="px-2 py-0.5 rounded-md text-[11px] border border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-400 hover:text-blue-600 transition-colors">
+              + {s.label}
+            </button>
+          ))}
+        </div>
+
+        <textarea value={commands} onChange={e => setCommands(e.target.value)}
+          spellCheck={false} rows={8}
+          placeholder={'ntp server {{ntp_server}}\nlogging host {{syslog_server}}'}
+          className="w-full border border-slate-200 rounded-xl px-4 py-3 font-mono text-xs bg-slate-950 text-green-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y leading-relaxed" />
+      </div>
+
+      {/* Deploy controls */}
+      <div className="flex items-center gap-4">
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" checked={save} onChange={e => setSave(e.target.checked)} className="rounded border-slate-300 text-blue-600" />
+          <span className="text-xs text-slate-600">Save to startup config</span>
+        </label>
+        <button onClick={handleDeploy} disabled={deploying || !commands.trim() || targetedDevices.length === 0}
+          className="ml-auto flex items-center gap-1.5 px-5 py-2 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors disabled:opacity-50">
+          {deploying ? (
+            <><span className="w-3 h-3 rounded-full border-2 border-white border-t-transparent animate-spin" />Deploying to {targetedDevices.length} device{targetedDevices.length !== 1 ? 's' : ''}…</>
+          ) : (
+            <><svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>Deploy to {targetedDevices.length} device{targetedDevices.length !== 1 ? 's' : ''}</>
+          )}
+        </button>
+      </div>
+
+      {error && <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 text-xs text-red-700">{error}</div>}
+
+      {/* Results table */}
+      {result && (
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center gap-3">
+            <h3 className="text-sm font-semibold text-slate-800">Deploy results</h3>
+            <span className="text-xs text-green-600 font-medium">{result.succeeded} succeeded</span>
+            {result.failed > 0 && <span className="text-xs text-red-500 font-medium">{result.failed} failed</span>}
+          </div>
+          <div className="divide-y divide-slate-50">
+            {result.results.map((r, i) => (
+              <details key={i} className="group">
+                <summary className={`flex items-center gap-3 px-5 py-3 cursor-pointer hover:bg-slate-50 transition-colors list-none ${r.success ? '' : 'bg-red-50/40'}`}>
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${r.success ? 'bg-green-500' : 'bg-red-500'}`} />
+                  <span className="text-sm font-medium text-slate-700 flex-1">{r.hostname}</span>
+                  {r.error && <span className="text-xs text-red-500 truncate max-w-xs">{r.error}</span>}
+                  <svg className="w-3.5 h-3.5 text-slate-300 shrink-0 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+                </summary>
+                {(r.output || r.error) && (
+                  <div className="px-5 pb-3">
+                    <pre className="text-[11px] font-mono bg-slate-950 text-green-400 p-3 rounded-lg overflow-auto max-h-48 leading-relaxed whitespace-pre-wrap">
+                      {r.error || r.output || '(no output)'}
+                    </pre>
+                  </div>
+                )}
+              </details>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
