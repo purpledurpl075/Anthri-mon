@@ -4,7 +4,10 @@ import { fetchAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } fr
 import { useRole, hasRole } from '../hooks/useCurrentUser'
 import { fetchChannels } from '../api/channels'
 import { fetchMaintenanceWindows } from '../api/maintenance'
+<<<<<<< HEAD
 import { fetchDevices, fetchDeviceRoutes } from '../api/devices'
+=======
+>>>>>>> origin/main
 import type { AlertRule } from '../api/types'
 
 const METRICS = [
@@ -19,8 +22,11 @@ const METRICS = [
   { value: 'interface_util_pct', label: 'Interface utilisation',    hasThreshold: true,  conditions: ['gt'],        unit: '%',    thresholdLabel: 'Utilisation % (5 min)', simple: true },
   { value: 'ospf_state',        label: 'OSPF neighbour not full',    hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
   { value: 'route_missing',     label: 'Route prefix missing',       hasThreshold: false, conditions: [],            unit: '',     thresholdLabel: '',                   simple: true },
+<<<<<<< HEAD
   { value: 'flow_bandwidth',   label: 'Flow bandwidth',              hasThreshold: true,  conditions: ['gt'],           unit: 'B/s', thresholdLabel: 'Threshold (bytes/s)', simple: true },
   { value: 'syslog_match',     label: 'Syslog pattern match',        hasThreshold: true,  conditions: ['gt'],           unit: 'matches', thresholdLabel: 'Min occurrences', simple: true },
+=======
+>>>>>>> origin/main
   { value: 'custom_oid',        label: 'Custom OID',                 hasThreshold: true,  conditions: ['gt','lt','eq'], unit: '', thresholdLabel: 'Threshold value',   simple: false },
 ]
 
@@ -34,6 +40,7 @@ const SEVERITY_STYLE: Record<string, string> = {
   info:     'bg-blue-50 text-blue-600',
 }
 
+<<<<<<< HEAD
 // ── Route prefix input ────────────────────────────────────────────────────────
 
 const COMMON_PREFIXES = [
@@ -292,6 +299,8 @@ function SyslogMatchFilter({ value, onChange }: { value: string; onChange: (v: s
   )
 }
 
+=======
+>>>>>>> origin/main
 function SelectorSummary({ sel }: { sel: Record<string, unknown> | null }) {
   if (!sel || Object.keys(sel).length === 0) return <span className="text-slate-400">All devices</span>
   const parts = []
@@ -428,8 +437,12 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
           </div>
         </div>
 
+<<<<<<< HEAD
         <div className="flex-1 min-h-0 overflow-y-auto p-6">
         <div className="space-y-4">
+=======
+        <div className="p-6 overflow-y-auto space-y-4">
+>>>>>>> origin/main
           {/* Name */}
           <div>
             <label className="block text-xs font-medium text-slate-600 mb-1">Rule name <span className="text-red-500">*</span></label>
@@ -461,6 +474,7 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
             </div>
           )}
           {f.metric === 'route_missing' && (
+<<<<<<< HEAD
             <RoutePrefixInput value={f.custom_oid} onChange={v => set('custom_oid', v)} />
           )}
           {f.metric === 'flow_bandwidth' && (
@@ -468,6 +482,16 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
           )}
           {f.metric === 'syslog_match' && (
             <SyslogMatchFilter value={f.custom_oid} onChange={v => set('custom_oid', v)} />
+=======
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">
+                Prefix to monitor <span className="text-slate-400 font-normal">exact match on destination</span>
+              </label>
+              <input value={f.custom_oid} onChange={e => set('custom_oid', e.target.value)}
+                placeholder="0.0.0.0/0"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+>>>>>>> origin/main
           )}
 
           {/* Threshold + condition */}
@@ -634,7 +658,10 @@ function RuleModal({ editing, onClose }: { editing: AlertRule | null; onClose: (
 
           {error && <p className="text-xs text-red-600">{error}</p>}
         </div>
+<<<<<<< HEAD
         </div>
+=======
+>>>>>>> origin/main
 
         <div className="px-6 py-4 border-t border-slate-100 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 hover:text-slate-800">Cancel</button>

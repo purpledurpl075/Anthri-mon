@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
+<<<<<<< HEAD
 # Anthrimon — full-stack installer
+=======
+# Anthrimon — developer environment installer
+>>>>>>> origin/main
 # Targets Ubuntu 22.04 / 24.04 LTS (bare metal or VM)
 # Usage: sudo bash infra/scripts/install-dev.sh
 #
 # What this script does:
+<<<<<<< HEAD
 #   1.  Installs system packages (nginx, build tools, etc.)
 #   2.  Installs Go 1.22.3
 #   3.  Installs Node.js 20.x (via NodeSource)
@@ -22,6 +27,22 @@
 set -euo pipefail
 
 # ── Fixed constants ───────────────────────────────────────────────────────────
+=======
+#   1. Installs system packages
+#   2. Installs Go 1.22.3
+#   3. Installs Node.js 20.x (via NodeSource)
+#   4. Installs Python 3.10 packages (pip, venv) + project requirements
+#   5. Installs PostgreSQL 14 and creates the anthrimon role + database
+#   6. Runs all PostgreSQL migrations
+#   7. Installs ClickHouse 26.5 and runs the ClickHouse migration
+#   8. Installs VictoriaMetrics 1.96 as a systemd service
+#   9. Installs npm dependencies for the frontend
+#  10. Prints access URLs and next steps
+
+set -euo pipefail
+
+# ── Constants ─────────────────────────────────────────────────────────────────
+>>>>>>> origin/main
 
 GO_VERSION="1.22.3"
 GO_ARCHIVE="go${GO_VERSION}.linux-amd64.tar.gz"
@@ -34,7 +55,13 @@ VM_URL="https://github.com/VictoriaMetrics/VictoriaMetrics/releases/download/v${
 VM_INSTALL="/usr/local/bin/victoria-metrics-prod"
 VM_DATA="/var/lib/victoria-metrics"
 
+<<<<<<< HEAD
 API_PORT="8001"
+=======
+DB_NAME="anthrimon"
+DB_USER="anthrimon"
+DB_PASS="changeme"
+>>>>>>> origin/main
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -50,6 +77,7 @@ err()  { echo -e "  ${RED}✘${RESET}  $*" >&2; }
 hdr()  { echo -e "\n${BOLD}━━━  $*  ━━━${RESET}"; }
 die()  { err "$*"; exit 1; }
 
+<<<<<<< HEAD
 # ── Prompt helpers ────────────────────────────────────────────────────────────
 
 # ask VAR "Prompt text" "default"  — shows default, uses it on empty input
@@ -80,16 +108,23 @@ ask_yn() {
     printf -v "${_var}" '%s' "${_input,,}"
 }
 
+=======
+>>>>>>> origin/main
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
 hdr "Preflight"
 
 [[ $EUID -eq 0 ]] || die "Run with sudo: sudo bash $0"
 
+<<<<<<< HEAD
+=======
+# Identify the real user who invoked sudo (we install user-scoped things as them)
+>>>>>>> origin/main
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME=$(eval echo "~${REAL_USER}")
 info "Installing for user: ${REAL_USER} (home: ${REAL_HOME})"
 
+<<<<<<< HEAD
 if ! grep -qE 'Ubuntu (22|24)\.04' /etc/os-release 2>/dev/null; then
     warn "This script targets Ubuntu 22.04 / 24.04 LTS. Continuing anyway."
 fi
@@ -133,16 +168,32 @@ echo ""
 ask_yn _CONFIRM "Proceed with installation?"
 [[ "${_CONFIRM}" == "y" ]] || die "Aborted."
 
+=======
+# Ubuntu version check (22.04 and 24.04 supported)
+if ! grep -qE 'Ubuntu (22|24)\.04' /etc/os-release 2>/dev/null; then
+    warn "This script targets Ubuntu 22.04 / 24.04 LTS. Detected:"
+    grep PRETTY_NAME /etc/os-release || true
+    warn "Continuing anyway — things may break."
+fi
+ok "Preflight passed"
+
+>>>>>>> origin/main
 # ── 1. System packages ────────────────────────────────────────────────────────
 
 hdr "System packages"
 apt-get update -qq
 apt-get install -y -qq \
     curl wget gnupg2 ca-certificates lsb-release apt-transport-https \
+<<<<<<< HEAD
     git build-essential openssl \
     python3 python3-pip python3-venv python3-dev \
     libpq-dev \
     nginx \
+=======
+    git build-essential \
+    python3 python3-pip python3-venv python3-dev \
+    libpq-dev \
+>>>>>>> origin/main
     net-tools iproute2 \
     jq unzip
 ok "System packages installed"
@@ -150,7 +201,10 @@ ok "System packages installed"
 # ── 2. Go ─────────────────────────────────────────────────────────────────────
 
 hdr "Go ${GO_VERSION}"
+<<<<<<< HEAD
 export PATH="$PATH:/usr/local/go/bin"
+=======
+>>>>>>> origin/main
 if go version 2>/dev/null | grep -q "${GO_VERSION}"; then
     ok "Go ${GO_VERSION} already installed"
 else
@@ -160,11 +214,23 @@ else
     rm -rf "${GO_INSTALL_DIR}/go"
     tar -C "${GO_INSTALL_DIR}" -xzf "${TMP_GO}/${GO_ARCHIVE}"
     rm -rf "${TMP_GO}"
+<<<<<<< HEAD
     cat > /etc/profile.d/go.sh <<'EOF'
 export PATH=$PATH:/usr/local/go/bin
 EOF
     chmod 644 /etc/profile.d/go.sh
     ok "Go ${GO_VERSION} installed"
+=======
+
+    # Add to system-wide profile if not already there
+    GO_PROFILE=/etc/profile.d/go.sh
+    cat > "${GO_PROFILE}" <<'EOF'
+export PATH=$PATH:/usr/local/go/bin
+EOF
+    chmod 644 "${GO_PROFILE}"
+    export PATH="$PATH:/usr/local/go/bin"
+    ok "Go ${GO_VERSION} installed (${GO_INSTALL_DIR}/go)"
+>>>>>>> origin/main
 fi
 
 # ── 3. Node.js 20.x ──────────────────────────────────────────────────────────
@@ -192,8 +258,12 @@ fi
 
 info "Installing Python requirements..."
 sudo -u "${REAL_USER}" "${VENV_DIR}/bin/pip" install --quiet --upgrade pip
+<<<<<<< HEAD
 sudo -u "${REAL_USER}" "${VENV_DIR}/bin/pip" install --quiet \
     -r "${API_DIR}/backend/requirements.txt"
+=======
+sudo -u "${REAL_USER}" "${VENV_DIR}/bin/pip" install --quiet -r "${API_DIR}/backend/requirements.txt"
+>>>>>>> origin/main
 ok "Python requirements installed"
 
 # ── 5. PostgreSQL 14 ─────────────────────────────────────────────────────────
@@ -240,6 +310,10 @@ fi
 hdr "PostgreSQL migrations"
 PG_MIGRATIONS="${REPO_DIR}/storage/migrations/postgres"
 
+<<<<<<< HEAD
+=======
+# Tracking table (idempotent)
+>>>>>>> origin/main
 pg_su -d "${DB_NAME}" -c "
     CREATE TABLE IF NOT EXISTS schema_migrations (
         filename TEXT PRIMARY KEY,
@@ -248,7 +322,10 @@ pg_su -d "${DB_NAME}" -c "
 " 2>/dev/null
 
 for f in "${PG_MIGRATIONS}"/*.sql; do
+<<<<<<< HEAD
     [[ -f "$f" ]] || continue
+=======
+>>>>>>> origin/main
     fname=$(basename "$f")
     if pg_su -d "${DB_NAME}" -tAc \
         "SELECT 1 FROM schema_migrations WHERE filename='${fname}'" 2>/dev/null | grep -q 1; then
@@ -258,8 +335,14 @@ for f in "${PG_MIGRATIONS}"/*.sql; do
         pg_su -d "${DB_NAME}" < "$f"
         pg_su -d "${DB_NAME}" -c \
             "INSERT INTO schema_migrations(filename) VALUES ('${fname}');"
+<<<<<<< HEAD
         pg_su -d "${DB_NAME}" -c "
             GRANT ALL PRIVILEGES ON ALL TABLES    IN SCHEMA public TO ${DB_USER};
+=======
+        # Grant privileges to the anthrimon role after each migration
+        pg_su -d "${DB_NAME}" -c "
+            GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${DB_USER};
+>>>>>>> origin/main
             GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${DB_USER};
             GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO ${DB_USER};
         " 2>/dev/null || true
@@ -272,14 +355,26 @@ done
 hdr "ClickHouse"
 if ! dpkg -l clickhouse-server 2>/dev/null | grep -q '^ii'; then
     info "Adding ClickHouse apt repo..."
+<<<<<<< HEAD
     curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' \
         | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
+=======
+    # The RPM repodata key is the correct signing key for both RPM and DEB repos
+    curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' \
+        | gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg
+    # ClickHouse's deb repo doesn't publish per-codename suites; use 'stable'
+>>>>>>> origin/main
     echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg arch=amd64] \
 https://packages.clickhouse.com/deb stable main" \
         > /etc/apt/sources.list.d/clickhouse.list
     apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
+<<<<<<< HEAD
         clickhouse-server clickhouse-client
+=======
+        clickhouse-server \
+        clickhouse-client
+>>>>>>> origin/main
     ok "ClickHouse installed"
 else
     ok "ClickHouse already installed"
@@ -287,6 +382,7 @@ fi
 
 systemctl enable clickhouse-server
 systemctl start clickhouse-server
+<<<<<<< HEAD
 # Wait for ClickHouse to be ready
 for i in $(seq 1 10); do
     clickhouse-client --query "SELECT 1" &>/dev/null && break || sleep 2
@@ -302,6 +398,18 @@ for f in "${CH_MIGRATIONS}"/*.sql; do
         && ok "${fname} applied (or already exists)" \
         || warn "${fname} returned errors (tables may already exist)"
 done
+=======
+sleep 3
+
+# ClickHouse migration
+CH_MIGRATION="${REPO_DIR}/storage/migrations/clickhouse/001_flow_records.sql"
+if [[ -f "${CH_MIGRATION}" ]]; then
+    info "Applying ClickHouse migration 001_flow_records.sql..."
+    clickhouse-client --multiquery < "${CH_MIGRATION}" 2>/dev/null \
+        && ok "001_flow_records.sql applied (or already exists)" \
+        || warn "ClickHouse migration returned errors (tables may already exist — check manually)"
+fi
+>>>>>>> origin/main
 
 # ── 8. VictoriaMetrics ────────────────────────────────────────────────────────
 
@@ -315,12 +423,22 @@ else
     tar -xzf "${TMP_VM}/${VM_BINARY}" -C "${TMP_VM}"
     install -m 755 "${TMP_VM}/victoria-metrics-prod" "${VM_INSTALL}"
     rm -rf "${TMP_VM}"
+<<<<<<< HEAD
     ok "VictoriaMetrics installed at ${VM_INSTALL}"
 fi
 
 mkdir -p "${VM_DATA}"
 chown -R "${REAL_USER}":"${REAL_USER}" "${VM_DATA}"
 
+=======
+    ok "VictoriaMetrics binary installed at ${VM_INSTALL}"
+fi
+
+mkdir -p "${VM_DATA}"
+chown -R "$REAL_USER":"$REAL_USER" "${VM_DATA}"
+
+# Install systemd unit for VictoriaMetrics
+>>>>>>> origin/main
 cat > /etc/systemd/system/victoria-metrics.service <<EOF
 [Unit]
 Description=VictoriaMetrics time-series database
@@ -341,6 +459,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable victoria-metrics
+<<<<<<< HEAD
 systemctl restart victoria-metrics
 ok "VictoriaMetrics service running"
 
@@ -550,6 +669,27 @@ else
     ok "Generated new encryption and JWT secrets"
 fi
 
+=======
+systemctl start victoria-metrics
+ok "VictoriaMetrics service running"
+
+# ── 9. Frontend npm install ───────────────────────────────────────────────────
+
+hdr "Frontend — npm install"
+FRONTEND_DIR="${REPO_DIR}/frontend/dashboard"
+if [[ -f "${FRONTEND_DIR}/package.json" ]]; then
+    sudo -u "${REAL_USER}" bash -c "cd '${FRONTEND_DIR}' && npm install --silent"
+    ok "npm packages installed"
+else
+    warn "frontend/dashboard/package.json not found — skipping"
+fi
+
+# ── 10. Systemd units for API + Frontend (dev) ────────────────────────────────
+
+hdr "Systemd units (dev)"
+
+# API unit — uses the virtualenv
+>>>>>>> origin/main
 cat > /etc/systemd/system/anthrimon-api.service <<EOF
 [Unit]
 Description=Anthrimon FastAPI backend
@@ -558,15 +698,23 @@ After=network.target postgresql.service
 [Service]
 User=${REAL_USER}
 WorkingDirectory=${REPO_DIR}/api
+<<<<<<< HEAD
 Environment="ANTHRIMON_ENCRYPTION_KEY=${ENCRYPTION_KEY}"
 Environment="JWT_SECRET_KEY=${JWT_SECRET}"
+=======
+>>>>>>> origin/main
 Environment="DB_HOST=127.0.0.1"
 Environment="DB_USER=${DB_USER}"
 Environment="DB_PASSWORD=${DB_PASS}"
 Environment="DB_NAME=${DB_NAME}"
+<<<<<<< HEAD
 ExecStart=${VENV_DIR}/bin/python3 -m uvicorn backend.main:app --host 127.0.0.1 --port ${API_PORT}
 Restart=on-failure
 RestartSec=5
+=======
+ExecStart=${VENV_DIR}/bin/python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+>>>>>>> origin/main
 
 [Install]
 WantedBy=multi-user.target
@@ -574,6 +722,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable anthrimon-api
+<<<<<<< HEAD
 systemctl restart anthrimon-api
 ok "anthrimon-api service running"
 
@@ -585,6 +734,10 @@ pg_su -d "${DB_NAME}" -c "
     ON CONFLICT (key) DO UPDATE
         SET value = system_settings.value || jsonb_build_object('base_url', '${BASE_URL}');
 " 2>/dev/null && ok "Platform base_url set" || warn "Could not set platform base_url (run manually later)"
+=======
+systemctl start anthrimon-api
+ok "anthrimon-api service started"
+>>>>>>> origin/main
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 
@@ -592,6 +745,7 @@ IP=$(hostname -I | awk '{print $1}')
 
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+<<<<<<< HEAD
 echo -e "${GREEN}${BOLD}  Anthrimon is live${RESET}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
 echo -e "  Dashboard   ${CYAN}${BASE_URL}/${RESET}"
@@ -602,13 +756,32 @@ echo -e "    ${BOLD}systemctl status anthrimon-api${RESET}"
 echo -e "    ${BOLD}systemctl status snmp-collector${RESET}"
 echo -e "    ${BOLD}systemctl status flow-collector${RESET}"
 echo -e "    ${BOLD}systemctl status nginx${RESET}"
+=======
+echo -e "${GREEN}${BOLD}  Anthrimon dev environment ready${RESET}"
+echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+echo -e "  API         ${CYAN}http://${IP}:8000${RESET}"
+echo -e "  API docs    ${CYAN}http://${IP}:8000/api/docs${RESET}"
+echo -e "  Metrics     ${CYAN}http://${IP}:8428${RESET}"
+echo ""
+echo -e "  Start frontend (in a terminal as ${REAL_USER}):"
+echo -e "    ${BOLD}cd ${REPO_DIR}/frontend/dashboard && npm run dev${RESET}"
+echo ""
+echo -e "  Python venv for API dev:"
+echo -e "    ${BOLD}source ${VENV_DIR}/bin/activate${RESET}"
+echo ""
+echo -e "  Services managed by systemd:"
+echo -e "    ${BOLD}systemctl status anthrimon-api${RESET}"
+>>>>>>> origin/main
 echo -e "    ${BOLD}systemctl status victoria-metrics${RESET}"
 echo -e "    ${BOLD}systemctl status clickhouse-server${RESET}"
 echo -e "    ${BOLD}systemctl status postgresql${RESET}"
 echo ""
+<<<<<<< HEAD
 echo -e "  Flow export targets:"
 echo -e "    NetFlow / IPFIX  ${BOLD}${IP}:${NETFLOW_PORT}${RESET} (UDP)"
 echo -e "    sFlow            ${BOLD}${IP}:${SFLOW_PORT}${RESET} (UDP)"
 echo ""
 echo -e "  Encryption key stored in /etc/systemd/system/anthrimon-api.service"
 echo ""
+=======
+>>>>>>> origin/main
