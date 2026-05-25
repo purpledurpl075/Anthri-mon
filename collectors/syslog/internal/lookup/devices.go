@@ -1,10 +1,11 @@
 // Package lookup provides a periodic-refresh device lookup from PostgreSQL.
 // It maps management IP addresses to device UUIDs and also exposes the local
-// collector's IP address.
+// collector's IP address and the platform-configured syslog timezone.
 package lookup
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"sync"
 	"time"
@@ -21,8 +22,9 @@ type DeviceLookup struct {
 	refreshSeconds int
 	log            zerolog.Logger
 
-	mu   sync.RWMutex
-	byIP map[string]uuid.UUID // mgmt_ip_string → device UUID
+	mu       sync.RWMutex
+	byIP     map[string]uuid.UUID // mgmt_ip_string → device UUID
+	timezone string               // platform-level IANA timezone for RFC 3164 parsing
 
 	collectorIP net.IP // first non-loopback IPv4 of this host
 }
@@ -45,13 +47,14 @@ func NewDeviceLookup(ctx context.Context, pgDSN string, refreshSeconds int, log 
 		refreshSeconds: refreshSeconds,
 		log:            log.With().Str("component", "device_lookup").Logger(),
 		byIP:           make(map[string]uuid.UUID),
+		timezone:       "UTC",
 		collectorIP:    localIPv4(),
 	}
 
 	if err := dl.load(ctx); err != nil {
 		dl.log.Warn().Err(err).Msg("initial device load failed; will retry on next tick")
 	} else {
-		dl.log.Info().Int("count", dl.count()).Msg("device cache loaded")
+		dl.log.Info().Int("count", dl.count()).Str("timezone", dl.timezone).Msg("device cache loaded")
 	}
 
 	go dl.refreshLoop(ctx)
@@ -71,6 +74,14 @@ func (dl *DeviceLookup) Lookup(ip net.IP) uuid.UUID {
 		return uuid.Nil
 	}
 	return id
+}
+
+// Timezone returns the platform IANA timezone for RFC 3164 timestamp parsing.
+func (dl *DeviceLookup) Timezone() string {
+	dl.mu.RLock()
+	tz := dl.timezone
+	dl.mu.RUnlock()
+	return tz
 }
 
 // CollectorIP returns the local machine's first non-loopback IPv4 address.
@@ -103,6 +114,7 @@ func (dl *DeviceLookup) refreshLoop(ctx context.Context) {
 }
 
 func (dl *DeviceLookup) load(ctx context.Context) error {
+	// Load device IP → UUID map.
 	rows, err := dl.pool.Query(ctx,
 		`SELECT id::text, host(mgmt_ip) FROM devices WHERE is_active = true`)
 	if err != nil {
@@ -126,8 +138,24 @@ func (dl *DeviceLookup) load(ctx context.Context) error {
 		return err
 	}
 
+	// Load platform timezone from system_settings.
+	// The platform key stores a JSON object; we extract the "timezone" field.
+	tz := "UTC"
+	var raw []byte
+	err = dl.pool.QueryRow(ctx,
+		`SELECT value FROM system_settings WHERE key = 'platform'`).Scan(&raw)
+	if err == nil && raw != nil {
+		var settings map[string]any
+		if json.Unmarshal(raw, &settings) == nil {
+			if v, ok := settings["timezone"].(string); ok && v != "" {
+				tz = v
+			}
+		}
+	}
+
 	dl.mu.Lock()
 	dl.byIP = m
+	dl.timezone = tz
 	dl.mu.Unlock()
 	return nil
 }

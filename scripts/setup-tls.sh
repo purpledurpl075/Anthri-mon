@@ -28,7 +28,10 @@ info "Hostname: $HUB_HOST"
 info "Output:   $TLS_DIR"
 
 mkdir -p "$TLS_DIR"
-chmod 700 "$TLS_DIR"
+# Private keys stay root-only (set per-file below).
+# The directory itself must be traversable by the API process (runs as non-root)
+# so it can read ca.crt to bundle into collector deployment packages.
+chmod 755 "$TLS_DIR"
 
 # ── 1. Certificate Authority ──────────────────────────────────────────────────
 if [[ -f "$TLS_DIR/ca.crt" ]]; then
@@ -43,8 +46,13 @@ else
         -key "$TLS_DIR/ca.key" \
         -out "$TLS_DIR/ca.crt" \
         -subj "/CN=Anthrimon CA/O=Anthrimon/C=US"
+    # CA cert is public — readable by the API user for collector package bundling
+    chmod 644 "$TLS_DIR/ca.crt"
     ok "CA certificate generated"
 fi
+
+# Ensure ca.crt is readable even if this script is re-run on an existing install
+chmod 644 "$TLS_DIR/ca.crt" 2>/dev/null || true
 
 # ── 2. Server certificate ─────────────────────────────────────────────────────
 info "Generating server key (EC P-384)..."
@@ -68,6 +76,7 @@ subjectAltName=@alt_names
 [alt_names]
 IP.1 = $HUB_IP
 IP.2 = 127.0.0.1
+IP.3 = 10.100.0.1
 DNS.1 = $HUB_HOST
 DNS.2 = localhost
 EOF

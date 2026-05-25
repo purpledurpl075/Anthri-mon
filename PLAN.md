@@ -212,6 +212,11 @@ Distributed polling with a central aggregation hub.
 
 ## Longer-term / Deferred
 
+- Proper TLS certificate support — Let's Encrypt / enterprise CA / custom cert instead of self-signed:
+  - Installer option to supply existing cert + key (skip self-signed CA generation)
+  - `_ca_cert_pem()` auto-detects self-signed vs public CA; omits CA bundle when public CA is in use
+  - `collector.yaml` sets `ca_cert: ""` when hub uses a public CA so collector falls back to system trust store
+  - Collector binary handles empty `ca_cert` gracefully (system trust store)
 - Baseline-aware alerting — alert when a metric deviates from learned normal
 - Multi-condition alert rules — CPU > 80% AND memory > 85%
 - Per-device alert threshold overrides UI (two-tier policy model)

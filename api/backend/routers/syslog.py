@@ -322,3 +322,27 @@ async def top_devices(
         }
         for r in rows
     ]
+
+
+@router.get("/heatmap", summary="Message count by hour-of-day × day-of-week (last 7 days)")
+async def syslog_heatmap(
+    current_user: User          = Depends(get_current_user),
+    db:           AsyncSession  = Depends(get_db),
+) -> list[dict]:
+    device_ids = await _tenant_device_ids(current_user.tenant_id, db)
+    if not device_ids:
+        return []
+
+    dev_filter = _device_filter(device_ids)
+    rows = await _ch(f"""
+        SELECT
+            toDayOfWeek(ts) - 1      AS dow,
+            toHour(ts)               AS hr,
+            count()                  AS cnt
+        FROM syslog_messages
+        WHERE {dev_filter}
+          AND ts >= now() - INTERVAL 7 DAY
+        GROUP BY dow, hr
+        ORDER BY dow, hr
+    """)
+    return [{"dow": int(r["dow"]), "hr": int(r["hr"]), "count": int(r["cnt"])} for r in rows]

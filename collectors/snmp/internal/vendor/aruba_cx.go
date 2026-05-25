@@ -48,5 +48,12 @@ func init() {
 
 		// CX uses Q-BRIDGE-MIB, not HP-ICF-VLAN-MIB.
 		HpicfVlan: false,
+
+		// ArubaOS-CX does not implement OSPF-MIB (RFC 1850) or BGP4-MIB
+		// (RFC 1657) via SNMP. These protocols are only exposed through
+		// vendor-specific MIBs or the REST API. Skip the standard polls
+		// to avoid repeated "No Such Object" responses.
+		SkipOSPF: true,
+		SkipBGP:  true,
 	})
 }

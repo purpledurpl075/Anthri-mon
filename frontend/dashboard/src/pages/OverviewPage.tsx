@@ -1,24 +1,13 @@
 import React, { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import {
-  DndContext,
-  DragOverlay,
-  closestCenter,
-  PointerSensor,
-  useSensor,
-  useSensors,
-  type DragEndEvent,
-  type DragStartEvent,
-} from '@dnd-kit/core'
-import {
-  SortableContext,
-  useSortable,
-  rectSortingStrategy,
-} from '@dnd-kit/sortable'
-import { fetchOverview, fetchTopBandwidth } from '../api/overview'
-import { fetchBGPSummary } from '../api/bgp'
-import { useDashboardLayout, WIDGET_DEFS, type WidgetSize } from '../hooks/useDashboardLayout'
+import { ReactGridLayout as GridLayout } from 'react-grid-layout/legacy'
+import 'react-grid-layout/css/styles.css'
+import 'react-resizable/css/styles.css'
+import { fetchOverview, fetchTopBandwidth, fetchTopResources, fetchWidgetData } from '../api/overview'
+import { fetchBGPSummary, fetchBGPPrefixTotals, fetchBGPFlapLog, fetchOSPFAreas } from '../api/bgp'
+import { fetchSyslogHeatmap, fetchSyslogMessages } from '../api/overview'
+import { useDashboardLayout, WIDGET_DEFS } from '../hooks/useDashboardLayout'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
 import { DeviceTypeIcon, DEVICE_TYPE_COLOR, DEVICE_TYPE_LABEL } from '../components/DeviceTypeIcon'
@@ -662,99 +651,520 @@ function OpenAlerts({ alerts, total }: {
 
 // ── Sortable widget wrapper ────────────────────────────────────────────────────
 
-function SortableWidget({ id, size, isEditing, onToggleSize, onHide, children }: {
-  id: string
-  size: WidgetSize
-  isEditing: boolean
-  onToggleSize: () => void
-  onHide: () => void
-  children: React.ReactNode
-}) {
-  const { attributes, listeners, setNodeRef, isDragging } = useSortable({ id })
+// ── New widgets ───────────────────────────────────────────────────────────────
 
-  const colClass = size === 'full' ? 'col-span-1 lg:col-span-2' : 'col-span-1'
+function useWidgetData() {
+  return useQuery({ queryKey: ['widget-data'], queryFn: fetchWidgetData, refetchInterval: 60_000, staleTime: 30_000 })
+}
 
-  // When this item is being dragged, leave a drop-zone placeholder in its slot.
-  // The actual widget content travels with DragOverlay in the parent.
-  // We intentionally do NOT apply CSS transforms to non-dragging items —
-  // CSS grid items don't reflow when transformed, causing layout chaos.
-  if (isDragging) {
-    return (
-      <div ref={setNodeRef} className={colClass}>
-        <div
-          className="border-2 border-dashed border-blue-300 rounded-2xl bg-blue-50/30"
-          style={{ minHeight: 80 }}
-        />
-      </div>
-    )
-  }
-
+// 1. Interface health ring
+function InterfaceHealthWidget() {
+  const { data } = useWidgetData()
+  const d = data?.interface_health
+  if (!d) return <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full flex items-center justify-center text-xs text-slate-400">Loading…</div>
+  const total = d.total || 1
+  const segments = [
+    { label: 'Up',         value: d.up,         color: '#16a34a' },
+    { label: 'Down',       value: d.down,        color: '#dc2626' },
+    { label: 'Admin down', value: d.admin_down,  color: '#94a3b8' },
+  ]
   return (
-    <div ref={setNodeRef} className={colClass}>
-      {isEditing ? (
-        <div className="relative group/widget">
-          {/* Edit toolbar */}
-          <div className="absolute top-2 right-2 z-20 flex items-center gap-0.5 bg-white border border-slate-200 rounded-lg shadow-md px-1 py-1 opacity-0 group-hover/widget:opacity-100 transition-opacity">
-            <button
-              onClick={onToggleSize}
-              title={size === 'full' ? 'Make half-width' : 'Make full-width'}
-              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition-colors"
-            >
-              {size === 'full' ? <Icons.Compress /> : <Icons.Expand />}
-            </button>
-            <button
-              onClick={onHide}
-              title="Hide widget"
-              className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
-            >
-              <Icons.EyeOff />
-            </button>
-            <div
-              {...attributes}
-              {...listeners}
-              title="Drag to reorder"
-              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded cursor-grab active:cursor-grabbing transition-colors"
-            >
-              <Icons.Grip />
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-4">Interface health</h3>
+      <div className="flex items-center gap-6">
+        <svg viewBox="0 0 80 80" className="w-20 h-20 shrink-0 -rotate-90">
+          {segments.reduce((acc, seg, i) => {
+            const pct = seg.value / total
+            const prev = acc.offset
+            const dash = pct * 251.2
+            acc.offset += pct
+            acc.els.push(
+              <circle key={i} cx="40" cy="40" r="32" fill="none" stroke={seg.color}
+                strokeWidth="14" strokeDasharray={`${dash} ${251.2 - dash}`}
+                strokeDashoffset={-prev * 251.2} />
+            )
+            return acc
+          }, { offset: 0, els: [] as React.ReactNode[] }).els}
+          <circle cx="40" cy="40" r="25" fill="white" />
+        </svg>
+        <div className="space-y-2 flex-1">
+          {segments.map(s => (
+            <div key={s.label} className="flex items-center justify-between text-xs">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: s.color }} />
+                {s.label}
+              </span>
+              <span className="font-semibold tabular-nums" style={{ color: s.color }}>{s.value}</span>
             </div>
-          </div>
-          {/* Highlight ring */}
-          <div className="ring-2 ring-blue-400/50 ring-offset-2 rounded-2xl">
-            {children}
+          ))}
+          <div className="pt-1 border-t border-slate-100 flex items-center justify-between text-xs text-slate-400">
+            <span>Total</span><span className="font-semibold text-slate-700">{d.total}</span>
           </div>
         </div>
-      ) : children}
+      </div>
     </div>
   )
 }
 
-// ── Add widget panel ──────────────────────────────────────────────────────────
-
-function AddWidgetPanel({ hidden, onAdd }: {
-  hidden: { id: string; label: string; description: string }[]
-  onAdd: (id: string) => void
-}) {
-  if (hidden.length === 0) return null
+// 2. Top CPU devices
+function TopCpuWidget() {
+  const { data, isLoading } = useQuery({ queryKey: ['top-resources'], queryFn: () => fetchTopResources(5), refetchInterval: 60_000, staleTime: 30_000 })
   return (
-    <div className="col-span-1 lg:col-span-2">
-      <div className="border-2 border-dashed border-slate-200 rounded-2xl p-5">
-        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Add widget</p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
-          {hidden.map(w => (
-            <button
-              key={w.id}
-              onClick={() => onAdd(w.id)}
-              className="flex items-start gap-2.5 px-3.5 py-3 bg-white border border-slate-200 rounded-xl text-left hover:border-blue-300 hover:bg-blue-50/40 transition-all group"
-            >
-              <span className="text-blue-500 mt-0.5 shrink-0 group-hover:scale-110 transition-transform"><Icons.Plus /></span>
-              <div className="min-w-0">
-                <p className="text-sm font-medium text-slate-700 truncate">{w.label}</p>
-                <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{w.description}</p>
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-4">Top CPU</h3>
+      {isLoading ? <p className="text-xs text-slate-400">Loading…</p> : !data?.cpu.length ? <p className="text-xs text-slate-400">No CPU data</p> : (
+        <div className="space-y-2.5">
+          {data.cpu.map(d => (
+            <div key={d.device_id}>
+              <div className="flex items-center justify-between text-xs mb-0.5">
+                <span className="text-slate-700 font-medium truncate">{d.hostname}</span>
+                <span className={`font-bold tabular-nums ${d.cpu_pct >= 90 ? 'text-red-600' : d.cpu_pct >= 70 ? 'text-amber-600' : 'text-slate-600'}`}>{d.cpu_pct}%</span>
               </div>
-            </button>
+              <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                <div className="h-full rounded-full transition-all" style={{ width: `${d.cpu_pct}%`, backgroundColor: d.cpu_pct >= 90 ? '#dc2626' : d.cpu_pct >= 70 ? '#f59e0b' : '#3b82f6' }} />
+              </div>
+            </div>
           ))}
         </div>
+      )}
+    </div>
+  )
+}
+
+// 3. Top Memory devices
+function TopMemoryWidget() {
+  const { data, isLoading } = useQuery({ queryKey: ['top-resources'], queryFn: () => fetchTopResources(5), refetchInterval: 60_000, staleTime: 30_000 })
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-4">Top memory</h3>
+      {isLoading ? <p className="text-xs text-slate-400">Loading…</p> : !data?.memory.length ? <p className="text-xs text-slate-400">No memory data</p> : (
+        <div className="space-y-2.5">
+          {data.memory.map(d => (
+            <div key={d.device_id}>
+              <div className="flex items-center justify-between text-xs mb-0.5">
+                <span className="text-slate-700 font-medium truncate">{d.hostname}</span>
+                <span className={`font-bold tabular-nums ${d.mem_pct >= 90 ? 'text-red-600' : d.mem_pct >= 70 ? 'text-amber-600' : 'text-slate-600'}`}>{d.mem_pct}%</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                <div className="h-full rounded-full transition-all" style={{ width: `${d.mem_pct}%`, backgroundColor: d.mem_pct >= 90 ? '#dc2626' : d.mem_pct >= 70 ? '#f59e0b' : '#8b5cf6' }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 4. Routing health (BGP + OSPF combined)
+function RoutingHealthWidget() {
+  const { data } = useWidgetData()
+  const r = data?.routing_health
+  if (!r?.bgp || !r?.ospf) return <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full flex items-center justify-center text-xs text-slate-400">Loading…</div>
+  const bgpDown  = r.bgp.total  - r.bgp.established
+  const ospfDown = r.ospf.total - r.ospf.full
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-4">Routing protocols</h3>
+      <div className="grid grid-cols-2 gap-3">
+        {[
+          { label: 'BGP sessions', total: r.bgp.total, ok: r.bgp.established, bad: bgpDown, okLabel: 'Established', badLabel: 'Down', okColor: '#16a34a', badColor: '#dc2626' },
+          { label: 'OSPF neighbors', total: r.ospf.total, ok: r.ospf.full, bad: ospfDown, okLabel: 'Full', badLabel: 'Not full', okColor: '#16a34a', badColor: '#f59e0b' },
+        ].map(p => (
+          <div key={p.label} className={`rounded-xl p-3 ${p.bad > 0 ? 'bg-red-50 border border-red-100' : 'bg-green-50 border border-green-100'}`}>
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">{p.label}</p>
+            <div className="flex items-end gap-2">
+              <span className="text-2xl font-bold" style={{ color: p.bad > 0 ? '#dc2626' : '#16a34a' }}>{p.ok}</span>
+              <span className="text-xs text-slate-400 pb-0.5">/ {p.total}</span>
+            </div>
+            {p.bad > 0 && <p className="text-[10px] text-red-600 mt-1 font-medium">{p.bad} {p.badLabel.toLowerCase()}</p>}
+          </div>
+        ))}
       </div>
+    </div>
+  )
+}
+
+// 5. Config changes (last 24h)
+function ConfigChangesWidget() {
+  const { data } = useWidgetData()
+  const changes = data?.config_changes ?? []
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden h-full flex flex-col">
+      <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between shrink-0">
+        <h3 className="text-sm font-semibold text-slate-800">Config changes</h3>
+        <span className="text-[10px] text-slate-400">last 24 h</span>
+      </div>
+      {changes.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-xs text-slate-400">No changes in last 24h</div>
+      ) : (
+        <div className="overflow-y-auto flex-1 divide-y divide-slate-50">
+          {changes.map(c => (
+            <div key={c.device_id} className="flex items-center gap-3 px-5 py-2.5">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-slate-700 truncate">{c.hostname}</p>
+                <p className="text-[10px] text-slate-400">{new Date(c.collected_at).toLocaleTimeString()}</p>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {c.lines_added > 0 && <span className="text-[10px] font-semibold text-green-600 bg-green-50 px-1.5 py-0.5 rounded">+{c.lines_added}</span>}
+                {c.lines_removed > 0 && <span className="text-[10px] font-semibold text-red-600 bg-red-50 px-1.5 py-0.5 rounded">−{c.lines_removed}</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 6. Collector status
+function CollectorStatusWidget() {
+  const { data } = useWidgetData()
+  const collectors = data?.collector_status ?? []
+  const DOT: Record<string, string> = { online: '#16a34a', offline: '#dc2626', pending: '#f59e0b' }
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-4">Collector status</h3>
+      {collectors.length === 0 ? (
+        <p className="text-xs text-slate-400">No remote collectors</p>
+      ) : (
+        <div className="space-y-2">
+          {collectors.map(c => (
+            <div key={c.name} className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: DOT[c.status] ?? '#94a3b8' }} />
+              <span className="text-xs text-slate-700 flex-1 truncate">{c.name}</span>
+              <span className="text-[10px] font-semibold capitalize" style={{ color: DOT[c.status] ?? '#94a3b8' }}>{c.status}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 7. Syslog rate (messages/hr sparkline)
+function SyslogRateWidget() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['syslog-rate'],
+    queryFn:  () => import('../api/client').then(m => m.default.get('/syslog/summary?hours=24').then(r => r.data)),
+    refetchInterval: 120_000, staleTime: 60_000,
+  })
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-1">Syslog activity</h3>
+      <p className="text-[10px] text-slate-400 mb-4">Messages in last 24 h</p>
+      {isLoading ? <p className="text-xs text-slate-400">Loading…</p> : !data ? <p className="text-xs text-slate-400">No syslog data</p> : (
+        <div className="grid grid-cols-3 gap-2">
+          {['critical','warning','notice','info','error','debug'].map(sev => {
+            const count = (data as any)?.[sev] ?? 0
+            const colors: Record<string, string> = { critical: '#dc2626', error: '#f97316', warning: '#f59e0b', notice: '#6366f1', info: '#06b6d4', debug: '#94a3b8' }
+            return count > 0 ? (
+              <div key={sev} className="rounded-lg px-2 py-1.5 text-center" style={{ backgroundColor: `${colors[sev]}15` }}>
+                <p className="text-lg font-bold tabular-nums" style={{ color: colors[sev] }}>{count > 9999 ? '9k+' : count}</p>
+                <p className="text-[9px] font-medium capitalize" style={{ color: colors[sev] }}>{sev}</p>
+              </div>
+            ) : null
+          }).filter(Boolean)}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// 8. Alert timeline (hourly trend from overview data)
+function AlertTimelineWidget({ alertTrend }: { alertTrend?: [number, number][] }) {
+  const series = alertTrend ?? []
+  const max = Math.max(...series.map(p => p[1]), 1)
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-1">Alert timeline</h3>
+      <p className="text-[10px] text-slate-400 mb-4">Alerts triggered per hour — last 24 h</p>
+      {series.length < 2 ? (
+        <p className="text-xs text-slate-400">Not enough data yet</p>
+      ) : (
+        <div className="flex items-end gap-0.5 h-16">
+          {series.map(([ts, n], i) => (
+            <div key={i} className="flex-1 rounded-t" title={`${new Date(ts).toLocaleTimeString()}: ${n} alerts`}
+              style={{ height: `${Math.max(2, (n / max) * 100)}%`, backgroundColor: n === 0 ? '#e2e8f0' : n > max * 0.8 ? '#dc2626' : '#f59e0b' }} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Syslog live feed ──────────────────────────────────────────────────────────
+
+const SEV_LABEL: Record<number, string> = { 0: 'EMERG', 1: 'ALERT', 2: 'CRIT', 3: 'ERROR' }
+const SEV_FEED_COLOR: Record<number, string> = { 0: '#7f1d1d', 1: '#991b1b', 2: '#dc2626', 3: '#f97316' }
+
+function SyslogFeedWidget() {
+  const { data, isLoading } = useQuery({
+    queryKey:        ['syslog-feed'],
+    queryFn:         () => fetchSyslogMessages(3, 10),
+    refetchInterval: 15_000,
+    staleTime:       10_000,
+  })
+  const messages: any[] = (data as any)?.messages ?? []
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden h-full flex flex-col">
+      <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          <h3 className="text-sm font-semibold text-slate-800">Syslog — critical &amp; above</h3>
+        </div>
+        <span className="text-[10px] text-slate-400">live · 15 s</span>
+      </div>
+      {isLoading ? (
+        <div className="flex-1 flex items-center justify-center text-xs text-slate-400">Loading…</div>
+      ) : messages.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-xs text-green-600 font-medium">✓ No critical messages</p>
+        </div>
+      ) : (
+        <div className="overflow-y-auto flex-1 divide-y divide-slate-50">
+          {messages.map((m: any, i: number) => (
+            <div key={i} className="px-4 py-2.5 hover:bg-slate-50">
+              <div className="flex items-start gap-2">
+                <span
+                  className="text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 mt-0.5 text-white"
+                  style={{ backgroundColor: SEV_FEED_COLOR[m.severity] ?? '#dc2626' }}
+                >
+                  {SEV_LABEL[m.severity] ?? 'CRIT'}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[10px] text-slate-400 font-mono">{m.hostname || m.device_name} · {m.program}</p>
+                  <p className="text-xs text-slate-700 truncate mt-0.5">{m.message}</p>
+                </div>
+                <span className="text-[9px] text-slate-300 shrink-0 tabular-nums">
+                  {new Date(m.ts).toLocaleTimeString()}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Syslog heatmap ────────────────────────────────────────────────────────────
+
+function SyslogHeatmapWidget() {
+  const { data = [], isLoading } = useQuery({
+    queryKey:        ['syslog-heatmap'],
+    queryFn:         fetchSyslogHeatmap,
+    refetchInterval: 300_000,
+    staleTime:       120_000,
+  })
+
+  const cellMap: Record<string, number> = {}
+  let maxCount = 0
+  for (const c of data) {
+    const key = `${c.dow}-${c.hr}`
+    cellMap[key] = c.count
+    if (c.count > maxCount) maxCount = c.count
+  }
+
+  const days   = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+  const hours  = Array.from({ length: 24 }, (_, i) => i)
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-1">Syslog heatmap</h3>
+      <p className="text-[10px] text-slate-400 mb-4">Messages per hour — last 7 days</p>
+      {isLoading ? <p className="text-xs text-slate-400">Loading…</p> : (
+        <div className="overflow-x-auto">
+          <div className="flex gap-0.5 min-w-max">
+            {/* Day labels */}
+            <div className="flex flex-col gap-0.5 mr-1">
+              <div className="w-7 h-3" /> {/* spacer for hour labels */}
+              {days.map(d => (
+                <div key={d} className="w-7 h-3 flex items-center justify-end">
+                  <span className="text-[8px] text-slate-400">{d}</span>
+                </div>
+              ))}
+            </div>
+            {/* Hour columns */}
+            {hours.map(hr => (
+              <div key={hr} className="flex flex-col gap-0.5">
+                <div className="w-3 h-3 flex items-center justify-center">
+                  {hr % 6 === 0 && <span className="text-[8px] text-slate-400">{hr}</span>}
+                </div>
+                {days.map((_, dow) => {
+                  const count = cellMap[`${dow}-${hr}`] ?? 0
+                  const intensity = maxCount > 0 ? count / maxCount : 0
+                  const alpha = intensity < 0.05 ? 0 : 0.1 + intensity * 0.9
+                  return (
+                    <div
+                      key={dow}
+                      className="w-3 h-3 rounded-sm"
+                      title={`${days[dow]} ${hr}:00 — ${count} messages`}
+                      style={{ backgroundColor: count === 0 ? '#f1f5f9' : `rgba(220,38,38,${alpha.toFixed(2)})` }}
+                    />
+                  )
+                })}
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 mt-3">
+            <span className="text-[9px] text-slate-400">Low</span>
+            {[0.1, 0.3, 0.5, 0.7, 0.9, 1].map(v => (
+              <div key={v} className="w-3 h-3 rounded-sm" style={{ backgroundColor: `rgba(220,38,38,${v})` }} />
+            ))}
+            <span className="text-[9px] text-slate-400">High</span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── BGP prefix totals ─────────────────────────────────────────────────────────
+
+function BGPPrefixTotalsWidget() {
+  const { data, isLoading } = useQuery({
+    queryKey:        ['bgp-prefix-totals'],
+    queryFn:         fetchBGPPrefixTotals,
+    refetchInterval: 60_000,
+    staleTime:       30_000,
+  })
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-4">BGP prefix totals</h3>
+      {isLoading ? <p className="text-xs text-slate-400">Loading…</p> : !data ? null : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl bg-indigo-50 border border-indigo-100 px-4 py-3 text-center">
+              <p className="text-2xl font-bold text-indigo-700 tabular-nums">{data.total_rx.toLocaleString()}</p>
+              <p className="text-[10px] text-indigo-400 mt-0.5">Prefixes received</p>
+            </div>
+            <div className="rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 text-center">
+              <p className="text-2xl font-bold text-slate-700 tabular-nums">{data.total_tx.toLocaleString()}</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Prefixes advertised</p>
+            </div>
+          </div>
+          {data.top_receivers.length > 0 && (
+            <div>
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Top receivers</p>
+              <div className="space-y-1.5">
+                {data.top_receivers.map((r, i) => (
+                  <div key={i} className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-500 truncate flex-1">{r.device}</span>
+                    <span className="font-mono text-slate-400 text-[10px]">{r.peer_ip}</span>
+                    <span className="font-bold tabular-nums text-indigo-600 w-12 text-right">{r.prefixes_rx?.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── BGP flap log ──────────────────────────────────────────────────────────────
+
+const BGP_STATE_COLOR: Record<string, string> = {
+  established: '#16a34a', active: '#d97706', idle: '#94a3b8',
+  connect: '#2563eb', opensent: '#7c3aed', openconfirm: '#7c3aed', unknown: '#94a3b8',
+}
+
+function BGPFlapLogWidget() {
+  const { data = [], isLoading } = useQuery({
+    queryKey:        ['bgp-flap-log'],
+    queryFn:         () => fetchBGPFlapLog(15),
+    refetchInterval: 30_000,
+    staleTime:       20_000,
+  })
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden h-full flex flex-col">
+      <div className="px-5 py-3.5 border-b border-slate-100 shrink-0">
+        <h3 className="text-sm font-semibold text-slate-800">BGP state transitions</h3>
+        <p className="text-[10px] text-slate-400 mt-0.5">Recent changes observed during polling</p>
+      </div>
+      {isLoading ? (
+        <div className="flex-1 flex items-center justify-center text-xs text-slate-400">Loading…</div>
+      ) : data.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-xs text-green-600 font-medium">✓ No transitions recorded</p>
+        </div>
+      ) : (
+        <div className="overflow-y-auto flex-1 divide-y divide-slate-50">
+          {data.map((e, i) => (
+            <div key={i} className="px-4 py-2.5 hover:bg-slate-50">
+              <div className="flex items-center gap-2 text-xs">
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-slate-700 truncate">{e.device}</p>
+                  <p className="font-mono text-[10px] text-slate-400">{e.peer_ip}{e.peer_asn ? ` · AS${e.peer_asn}` : ''}</p>
+                </div>
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="text-[10px] font-semibold capitalize px-1.5 py-0.5 rounded"
+                    style={{ color: BGP_STATE_COLOR[e.prev_state], backgroundColor: `${BGP_STATE_COLOR[e.prev_state]}18` }}>
+                    {e.prev_state}
+                  </span>
+                  <span className="text-slate-300">→</span>
+                  <span className="text-[10px] font-semibold capitalize px-1.5 py-0.5 rounded"
+                    style={{ color: BGP_STATE_COLOR[e.new_state], backgroundColor: `${BGP_STATE_COLOR[e.new_state]}18` }}>
+                    {e.new_state}
+                  </span>
+                </div>
+              </div>
+              <p className="text-[9px] text-slate-300 mt-0.5">{new Date(e.recorded_at).toLocaleString()}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── OSPF area breakdown ───────────────────────────────────────────────────────
+
+function OSPFAreasWidget() {
+  const { data = [], isLoading } = useQuery({
+    queryKey:        ['ospf-areas'],
+    queryFn:         fetchOSPFAreas,
+    refetchInterval: 60_000,
+    staleTime:       30_000,
+  })
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200 p-5 h-full">
+      <h3 className="text-sm font-semibold text-slate-800 mb-4">OSPF areas</h3>
+      {isLoading ? <p className="text-xs text-slate-400">Loading…</p>
+        : data.length === 0 ? <p className="text-xs text-slate-400">No OSPF neighbors</p>
+        : (
+          <div className="space-y-2.5">
+            {data.map((a, i) => {
+              const pct = a.total > 0 ? Math.round((a.full / a.total) * 100) : 0
+              return (
+                <div key={i}>
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <div>
+                      <span className="font-semibold text-slate-700">Area {a.area}</span>
+                      {a.vrf !== 'default' && <span className="ml-1.5 text-[10px] text-slate-400 font-mono">{a.vrf}</span>}
+                    </div>
+                    <span className={`font-semibold tabular-nums ${a.not_full > 0 ? 'text-amber-600' : 'text-green-600'}`}>
+                      {a.full}/{a.total} full
+                    </span>
+                  </div>
+                  <div className="h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                    <div className="h-full rounded-full transition-all"
+                      style={{ width: `${pct}%`, backgroundColor: a.not_full > 0 ? '#f59e0b' : '#16a34a' }} />
+                  </div>
+                  {a.not_full > 0 && (
+                    <p className="text-[10px] text-amber-600 mt-0.5">{a.not_full} neighbor{a.not_full !== 1 ? 's' : ''} not full</p>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
     </div>
   )
 }
@@ -763,28 +1173,22 @@ function AddWidgetPanel({ hidden, onAdd }: {
 
 export default function OverviewPage() {
   const [isEditing, setIsEditing] = useState(false)
-  const [activeId, setActiveId]   = useState<string | null>(null)
-  const { layout, reorder, setVisible, toggleSize, reset } = useDashboardLayout()
+  const [containerWidth, setContainerWidth] = useState(1200)
+  const { layout, updateFromRGL, setVisible, reset } = useDashboardLayout()
+
+  const containerRef = React.useCallback((node: HTMLDivElement | null) => {
+    if (!node) return
+    const ro = new ResizeObserver(entries => {
+      setContainerWidth(entries[0].contentRect.width)
+    })
+    ro.observe(node)
+  }, [])
 
   const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey:        ['overview'],
     queryFn:         fetchOverview,
     refetchInterval: 30_000,
   })
-
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 12 } })
-  )
-
-  const handleDragStart = (event: DragStartEvent) => setActiveId(String(event.active.id))
-
-  const handleDragEnd = (event: DragEndEvent) => {
-    setActiveId(null)
-    const { active, over } = event
-    if (over && active.id !== over.id) {
-      reorder(String(active.id), String(over.id))
-    }
-  }
 
   const lastRefresh = dataUpdatedAt ? formatAge(new Date(dataUpdatedAt).toISOString()) : '—'
   const pollPct = data
@@ -793,7 +1197,7 @@ export default function OverviewPage() {
       : 100
     : null
 
-  const visibleWidgets = layout.filter(w => w.visible)
+  const visibleWidgets = layout.filter(w => w.visible).sort((a, b) => a.y - b.y || a.x - b.x)
   const hiddenWidgets  = layout
     .filter(w => !w.visible)
     .map(w => WIDGET_DEFS.find(d => d.id === w.id)!)
@@ -876,6 +1280,32 @@ export default function OverviewPage() {
         return <RecentlyResolved alerts={data.recently_resolved} />
       case 'bgp_summary':
         return <BGPSummaryWidget />
+      case 'interface_health':
+        return <InterfaceHealthWidget />
+      case 'top_cpu':
+        return <TopCpuWidget />
+      case 'top_memory':
+        return <TopMemoryWidget />
+      case 'routing_health':
+        return <RoutingHealthWidget />
+      case 'config_changes':
+        return <ConfigChangesWidget />
+      case 'collector_status':
+        return <CollectorStatusWidget />
+      case 'syslog_activity':
+        return <SyslogRateWidget />
+      case 'alert_timeline':
+        return <AlertTimelineWidget alertTrend={data.alert_trend} />
+      case 'syslog_feed':
+        return <SyslogFeedWidget />
+      case 'syslog_heatmap':
+        return <SyslogHeatmapWidget />
+      case 'bgp_prefix_totals':
+        return <BGPPrefixTotalsWidget />
+      case 'bgp_flap_log':
+        return <BGPFlapLogWidget />
+      case 'ospf_areas':
+        return <OSPFAreasWidget />
       default:
         return null
     }
@@ -908,7 +1338,7 @@ export default function OverviewPage() {
           )}
           <button
             onClick={() => setIsEditing(e => !e)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
+            className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
               isEditing
                 ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
                 : 'text-slate-600 border-slate-200 hover:bg-slate-50'
@@ -923,6 +1353,11 @@ export default function OverviewPage() {
               <>
                 <Icons.Settings />
                 Customize
+                {hiddenWidgets.length > 0 && (
+                  <span className="ml-0.5 min-w-[16px] h-4 px-1 rounded-full bg-blue-600 text-white text-[9px] font-bold flex items-center justify-center leading-none">
+                    {hiddenWidgets.length}
+                  </span>
+                )}
               </>
             )}
           </button>
@@ -932,58 +1367,96 @@ export default function OverviewPage() {
       {isLoading || !data ? (
         <div className="p-8 text-slate-400 text-sm">Loading…</div>
       ) : (
-        <div className="flex-1 overflow-y-auto p-3 md:p-6">
+        <div className="flex-1 overflow-y-auto p-3 md:p-6" ref={containerRef}>
           {isEditing && (
-            <div className="mb-4 flex items-center gap-2 px-1">
-              <svg viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 text-blue-500 shrink-0"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM6.92 6.085h.001a.75.75 0 1 1-1.342-.67c.169-.339.436-.701.849-.977C6.845 4.16 7.369 4 8 4a2.756 2.756 0 0 1 1.637.525c.503.377.863.965.863 1.725 0 .448-.115.83-.329 1.15-.205.307-.47.513-.692.662-.109.073-.203.13-.27.173l-.021.013-.003.002H9.186a.75.75 0 0 1-.75-.75.755.755 0 0 1 .364-.645l.007-.005.022-.014.082-.054c.072-.048.167-.117.252-.205.172-.176.257-.382.257-.677 0-.296-.145-.508-.35-.66A1.255 1.255 0 0 0 8 5.5c-.369 0-.609.097-.75.189-.139.092-.194.189-.247.288l-.083.108zM8 12a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg>
-              <p className="text-xs text-slate-500">Hover a widget to drag, resize, or hide it. Changes are saved automatically.</p>
+            <div className="mb-4 flex items-center gap-2 px-3 py-2.5 bg-blue-50 border border-blue-100 rounded-xl">
+              <svg className="w-4 h-4 text-blue-500 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              <p className="text-xs text-slate-600">
+                <span className="font-medium">Edit mode</span> — drag anywhere on a widget to move it, drag the
+                bottom-right corner <span className="font-mono bg-white border border-slate-200 px-1 rounded text-[10px]">⤡</span> to resize freely.
+              </p>
             </div>
           )}
 
-          <DndContext
-            sensors={sensors}
-            collisionDetection={closestCenter}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
+          {/* react-grid-layout — free-form drag + resize */}
+          <GridLayout
+            className="layout"
+            layout={visibleWidgets.map(w => ({
+              i: w.id, x: w.x, y: w.y, w: w.w, h: w.h,
+              minW: WIDGET_DEFS.find(d => d.id === w.id)?.minW ?? 3,
+              minH: WIDGET_DEFS.find(d => d.id === w.id)?.minH ?? 2,
+            }))}
+            cols={12}
+            rowHeight={120}
+            width={containerWidth}
+            margin={[16, 16]}
+            containerPadding={[0, 0]}
+            isDraggable={isEditing}
+            isResizable={isEditing}
+            onLayoutChange={(l) => updateFromRGL(l as Array<{ i: string; x: number; y: number; w: number; h: number }>)}
+            draggableHandle=".widget-drag-handle"
+            resizeHandles={['se']}
+            useCSSTransforms
           >
-            <SortableContext items={visibleWidgets.map(w => w.id)} strategy={rectSortingStrategy}>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {visibleWidgets.map(w => (
-                  <SortableWidget
-                    key={w.id}
-                    id={w.id}
-                    size={w.size}
-                    isEditing={isEditing}
-                    onToggleSize={() => toggleSize(w.id)}
-                    onHide={() => setVisible(w.id, false)}
-                  >
-                    {renderWidget(w.id)}
-                  </SortableWidget>
-                ))}
-
+            {visibleWidgets.map(w => (
+              <div key={w.id} className="relative">
                 {isEditing && (
-                  <AddWidgetPanel
-                    hidden={hiddenWidgets}
-                    onAdd={id => setVisible(id, true)}
-                  />
-                )}
-              </div>
-            </SortableContext>
-
-            {/* Floating card that follows the cursor while dragging */}
-            <DragOverlay dropAnimation={null}>
-              {activeId ? (() => {
-                const def = WIDGET_DEFS.find(d => d.id === activeId)
-                const cfg = layout.find(w => w.id === activeId)
-                return (
-                  <div className="bg-white border-2 border-blue-400 rounded-2xl shadow-2xl px-5 py-4 opacity-95 cursor-grabbing">
-                    <p className="text-sm font-semibold text-slate-700">{def?.label}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{cfg?.size === 'full' ? 'Full width' : 'Half width'}</p>
+                  <div className="absolute top-2 right-2 z-20 flex items-center gap-1 bg-white/95 backdrop-blur-sm border border-slate-200 rounded-xl shadow-md px-2 py-1.5">
+                    {/* Drag handle — only this area initiates drag */}
+                    <div
+                      className="widget-drag-handle flex items-center gap-1 px-2 py-1 text-[10px] font-medium text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-grab active:cursor-grabbing transition-colors select-none"
+                      title="Drag to move"
+                    >
+                      <Icons.Grip />
+                      <span className="hidden sm:inline text-[10px]">Move</span>
+                    </div>
+                    <div className="w-px h-4 bg-slate-200" />
+                    <button
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={() => setVisible(w.id, false)}
+                      title="Hide widget"
+                      className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                    >
+                      <Icons.EyeOff />
+                    </button>
                   </div>
-                )
-              })() : null}
-            </DragOverlay>
-          </DndContext>
+                )}
+                <div
+                  className={`h-full overflow-auto rounded-2xl ${isEditing ? 'ring-2 ring-blue-200 ring-offset-1' : ''}`}
+                  style={{ cursor: isEditing ? 'default' : undefined }}
+                >
+                  {renderWidget(w.id)}
+                </div>
+              </div>
+            ))}
+          </GridLayout>
+
+          {/* Widget library — shown when editing and there are hidden widgets */}
+          {isEditing && hiddenWidgets.length > 0 && (
+            <div className="mt-4 border-2 border-dashed border-slate-200 rounded-2xl p-5">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                  Widget library
+                </p>
+                <span className="text-[10px] text-slate-400">{hiddenWidgets.length} available — click to add</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                {hiddenWidgets.map(w => (
+                  <button
+                    key={w.id}
+                    onClick={() => setVisible(w.id, true)}
+                    className="flex items-start gap-2.5 px-3.5 py-3 bg-white border border-slate-200 rounded-xl text-left hover:border-blue-300 hover:bg-blue-50/40 transition-all group"
+                  >
+                    <span className="text-blue-500 mt-0.5 shrink-0 group-hover:scale-110 transition-transform"><Icons.Plus /></span>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-slate-700 truncate">{w.label}</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">{w.description}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

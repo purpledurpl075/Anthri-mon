@@ -10,19 +10,28 @@ Bootstrap is unauthenticated — one-time registration token validates the reque
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import io
 import ipaddress
 import json
+import os
+import re
 import secrets
 import subprocess
+import uuid
+import zipfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import cast, select, update
+from sqlalchemy.dialects.postgresql import INET as PG_INET
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_current_user, get_db, require_role
@@ -30,14 +39,28 @@ from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
 from ..models.site import RemoteCollector, WgIpPool
 from ..models.tenant import User
+from .admin import load_platform_settings
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/collectors", tags=["collectors"])
 
-_CH_URL    = "http://localhost:8123"
-_VM_URL    = "http://localhost:8428"
-_WG_IF     = "wg0"
-_WG_SUBNET = ipaddress.ip_network("10.100.0.0/24")
+_CH_URL          = "http://localhost:8123"
+_VM_URL          = "http://localhost:8428"
+_WG_IF           = "wg0"
+_WG_SUBNET       = ipaddress.ip_network("10.100.0.0/24")
+_COLLECTOR_DIST  = Path("/var/lib/anthrimon/downloads")
+_VALID_ARCHES    = {"amd64", "arm64"}
+
+# Go toolchain + source root (resolved relative to this file at import time)
+_GO_BIN     = Path("/usr/local/go/bin/go")
+_REPO_ROOT  = Path(__file__).resolve().parents[3]   # .../api/backend/routers/ → repo root
+_REMOTE_SRC = _REPO_ROOT / "collectors" / "remote"
+
+# Architectures to build: (arch_label, extra_env_overrides)
+_BUILD_TARGETS: list[tuple[str, dict]] = [
+    ("amd64", {"GOOS": "linux", "GOARCH": "amd64", "CGO_ENABLED": "0"}),
+    ("arm64", {"GOOS": "linux", "GOARCH": "arm64", "CGO_ENABLED": "0"}),
+]
 
 TOKEN_TTL_HOURS = 24
 
@@ -89,21 +112,39 @@ async def _require_collector(request: Request, db: AsyncSession) -> RemoteCollec
 def _wg_hub_pubkey() -> Optional[str]:
     """Return the hub's WireGuard public key, or None if wg0 is not configured."""
     try:
-        out = subprocess.check_output(["wg", "show", _WG_IF, "public-key"],
+        out = subprocess.check_output(["sudo", "wg", "show", _WG_IF, "public-key"],
                                        stderr=subprocess.DEVNULL, timeout=5)
         return out.decode().strip()
     except Exception:
         return None
 
 
-def _wg_hub_endpoint() -> Optional[str]:
-    """Return the hub's public IP:port for WireGuard (reads from wg0 listen-port)."""
+def _wg_hub_endpoint(override: str = "") -> Optional[str]:
+    """Return the hub's WireGuard endpoint (ip:port) for remote collectors.
+
+    If *override* is non-empty (configured via Administration → Platform →
+    "WireGuard public endpoint") it is used instead of auto-detection.  This
+    is required when the hub sits behind NAT — the socket trick below would
+    return the private LAN address, which an off-site collector cannot reach.
+
+    The override may be:
+      • bare IP  (203.0.113.5)       — the WireGuard listen-port is appended
+      • IP:port  (203.0.113.5:51820) — used as-is
+    """
     import socket
     try:
-        out = subprocess.check_output(["wg", "show", _WG_IF, "listen-port"],
+        out = subprocess.check_output(["sudo", "wg", "show", _WG_IF, "listen-port"],
                                        stderr=subprocess.DEVNULL, timeout=5)
         port = int(out.decode().strip())
-        # Best-effort public IP detection
+
+        if override.strip():
+            host = override.strip()
+            # If the caller already included a port, honour it verbatim.
+            if ":" in host:
+                return host
+            return f"{host}:{port}"
+
+        # Best-effort public IP detection (works on non-NAT hosts).
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
         pub_ip = s.getsockname()[0]
@@ -116,7 +157,7 @@ def _wg_hub_endpoint() -> Optional[str]:
 def _wg_add_peer(pubkey: str, allowed_ip: str) -> None:
     """Add a WireGuard peer (live + persistent config)."""
     subprocess.run(
-        ["wg", "set", _WG_IF, "peer", pubkey, "allowed-ips", f"{allowed_ip}/32"],
+        ["sudo", "wg", "set", _WG_IF, "peer", pubkey, "allowed-ips", f"{allowed_ip}/32"],
         check=True, timeout=10,
     )
     # Persist to wg0.conf for reboots
@@ -126,7 +167,7 @@ def _wg_add_peer(pubkey: str, allowed_ip: str) -> None:
 def _wg_remove_peer(pubkey: str) -> None:
     """Remove a WireGuard peer."""
     try:
-        subprocess.run(["wg", "set", _WG_IF, "peer", pubkey, "remove"],
+        subprocess.run(["sudo", "wg", "set", _WG_IF, "peer", pubkey, "remove"],
                        check=True, timeout=10)
         _wg_save_config()
     except Exception as exc:
@@ -136,7 +177,7 @@ def _wg_remove_peer(pubkey: str) -> None:
 def _wg_save_config() -> None:
     """Persist the current wg0 state to /etc/wireguard/wg0.conf."""
     try:
-        subprocess.run(["wg-quick", "save", _WG_IF], check=True, timeout=10)
+        subprocess.run(["sudo", "wg-quick", "save", _WG_IF], check=True, timeout=10)
     except Exception as exc:
         logger.warning("wg_save_config_failed", error=str(exc))
 
@@ -161,7 +202,7 @@ async def _allocate_wg_ip(db: AsyncSession) -> Optional[str]:
 async def _free_wg_ip(db: AsyncSession, ip: str) -> None:
     await db.execute(
         update(WgIpPool)
-        .where(WgIpPool.ip == ip)
+        .where(WgIpPool.ip == cast(ip, PG_INET))
         .values(allocated=False, allocated_at=None, assigned_to=None)
     )
 
@@ -190,6 +231,7 @@ def _collector_out(c: RemoteCollector, token: Optional[str] = None) -> dict:
         "hostname":      c.hostname,
         "site_id":       str(c.site_id) if c.site_id else None,
         "status":        c.status,
+        "timezone":      c.timezone or "UTC",
         "wg_ip":         str(c.wg_ip) if c.wg_ip else None,
         "wg_public_key": c.wg_public_key,
         "ip_address":    str(c.ip_address) if c.ip_address else None,
@@ -253,180 +295,104 @@ async def create_collector(
     return _collector_out(c, token=token)
 
 
-@router.get("/{collector_id}", summary="Get collector details")
-async def get_collector(
-    collector_id: str,
-    current_user: User         = Depends(get_current_user),
-    db:           AsyncSession = Depends(get_db),
+# ── Binary build management ───────────────────────────────────────────────────
+# These routes MUST be registered before /{collector_id} so FastAPI doesn't
+# swallow "builds" or "builds/status" as a collector UUID lookup.
+
+def _binary_info(arch: str) -> dict:
+    """Return existence + metadata for a built binary."""
+    p = _COLLECTOR_DIST / f"anthrimon-collector-linux-{arch}"
+    if p.exists():
+        st = p.stat()
+        return {
+            "built":      True,
+            "size_bytes": st.st_size,
+            "built_at":   datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+        }
+    return {"built": False, "size_bytes": None, "built_at": None}
+
+
+@router.get("/builds/status", summary="Check whether collector binaries have been built")
+async def collector_build_status(
+    _: User = Depends(require_role("admin", "superadmin")),
 ) -> dict:
-    c = (await db.execute(
-        select(RemoteCollector).where(
-            RemoteCollector.id == collector_id,
-            RemoteCollector.tenant_id == current_user.tenant_id,
-        )
-    )).scalar_one_or_none()
-    if c is None:
-        raise HTTPException(status_code=404, detail="Collector not found")
-    return _collector_out(c)
-
-
-@router.delete("/{collector_id}", status_code=204, response_model=None,
-               summary="Revoke a collector")
-async def delete_collector(
-    collector_id: str,
-    current_user: User         = Depends(require_role("admin", "superadmin")),
-    db:           AsyncSession = Depends(get_db),
-) -> None:
-    c = (await db.execute(
-        select(RemoteCollector).where(
-            RemoteCollector.id == collector_id,
-            RemoteCollector.tenant_id == current_user.tenant_id,
-        )
-    )).scalar_one_or_none()
-    if c is None:
-        return
-    # Remove WireGuard peer if registered
-    if c.wg_public_key:
-        _wg_remove_peer(c.wg_public_key)
-    if c.wg_ip:
-        await _free_wg_ip(db, str(c.wg_ip))
-    c.is_active   = False
-    c.status      = "revoked"
-    c.api_key_hash = None
-    await db.commit()
-    logger.info("collector_revoked", collector=c.name)
-
-
-@router.post("/{collector_id}/token", summary="Regenerate registration token")
-async def regenerate_token(
-    collector_id: str,
-    current_user: User         = Depends(require_role("admin", "superadmin")),
-    db:           AsyncSession = Depends(get_db),
-) -> dict:
-    c = (await db.execute(
-        select(RemoteCollector).where(
-            RemoteCollector.id == collector_id,
-            RemoteCollector.tenant_id == current_user.tenant_id,
-        )
-    )).scalar_one_or_none()
-    if c is None:
-        raise HTTPException(status_code=404, detail="Collector not found")
-    token, token_hash = _generate_token()
-    c.token_hash       = token_hash
-    c.token_expires_at = datetime.utcnow() + timedelta(hours=TOKEN_TTL_HOURS)
-    await db.commit()
-    return {"registration_token": token, "ca_cert": _ca_cert_pem(),
-            "expires_at": c.token_expires_at.isoformat()}
-
-
-# ── Bootstrap (public, no auth) ───────────────────────────────────────────────
-
-class BootstrapRequest(BaseModel):
-    token:         str
-    wg_public_key: str
-    hostname:      Optional[str] = None
-    version:       Optional[str] = None
-    capabilities:  list = ["snmp", "flow", "syslog"]
-
-
-@router.post("/bootstrap", summary="Bootstrap a new collector (one-time token)")
-async def bootstrap(
-    body:    BootstrapRequest,
-    request: Request,
-    db:      AsyncSession = Depends(get_db),
-) -> dict:
-    token_hash = _sha256(body.token)
-    now        = datetime.now(timezone.utc)
-
-    c = (await db.execute(
-        select(RemoteCollector).where(RemoteCollector.token_hash == token_hash)
-    )).scalar_one_or_none()
-
-    if c is None:
-        raise HTTPException(status_code=401, detail="Invalid registration token")
-    if not c.is_active:
-        raise HTTPException(status_code=401, detail="Collector has been revoked")
-    if c.token_expires_at and now > c.token_expires_at.replace(tzinfo=timezone.utc):
-        raise HTTPException(status_code=401, detail="Registration token has expired")
-
-    # Check WireGuard is available on the hub
-    hub_pubkey = _wg_hub_pubkey()
-    if hub_pubkey is None:
-        raise HTTPException(
-            status_code=503,
-            detail="WireGuard (wg0) is not configured on the hub. "
-                   "Run: sudo bash scripts/setup-wireguard.sh",
-        )
-
-    # Allocate WireGuard IP
-    wg_ip = await _allocate_wg_ip(db)
-    if wg_ip is None:
-        raise HTTPException(status_code=503, detail="WireGuard IP pool exhausted")
-
-    # Generate API key
-    api_key, api_key_hash = _generate_token()
-
-    # Add WireGuard peer
-    try:
-        _wg_add_peer(body.wg_public_key, wg_ip)
-    except Exception as exc:
-        await _free_wg_ip(db, wg_ip)
-        raise HTTPException(status_code=502, detail=f"Failed to add WireGuard peer: {exc}")
-
-    # Update collector record
-    c.wg_public_key  = body.wg_public_key
-    c.wg_ip          = wg_ip
-    c.api_key_hash   = api_key_hash
-    c.hostname       = body.hostname
-    c.version        = body.version
-    c.capabilities   = body.capabilities
-    c.ip_address     = request.client.host
-    c.status         = "offline"   # will flip to online on first heartbeat
-    c.registered_at  = now
-    c.token_hash     = _sha256(secrets.token_hex(32))  # invalidate token
-    c.token_expires_at = None
-
-    # Update wg_ip_pool assigned_to
-    await db.execute(
-        update(WgIpPool).where(WgIpPool.ip == wg_ip).values(assigned_to=c.id)
-    )
-    await db.commit()
-
-    logger.info("collector_bootstrapped", collector=c.name, wg_ip=wg_ip,
-                hostname=body.hostname)
-
+    """Return build state for every supported architecture plus toolchain availability."""
     return {
-        "collector_id":    str(c.id),
-        "api_key":         api_key,          # shown once — collector must store this
-        "wg_assigned_ip":  wg_ip,
-        "wg_hub_pubkey":   hub_pubkey,
-        "wg_hub_endpoint": _wg_hub_endpoint(),
-        "wg_subnet":       "10.100.0.0/24",
-        "ca_cert":         _ca_cert_pem(),   # for verifying hub's TLS cert
+        "arches":         {arch: _binary_info(arch) for arch, _ in _BUILD_TARGETS},
+        "go_available":   _GO_BIN.exists(),
+        "source_exists":  _REMOTE_SRC.exists(),
     }
 
 
-# ── Collector operational endpoints (API key + WireGuard IP required) ─────────
-
-class HeartbeatRequest(BaseModel):
-    version:     Optional[str] = None
-    stats:       dict = {}     # arbitrary collector stats (devices polled, errors, etc.)
-
-
-@router.post("/heartbeat", summary="Collector heartbeat")
-async def heartbeat(
-    body:    HeartbeatRequest,
-    request: Request,
-    db:      AsyncSession = Depends(get_db),
+@router.post("/builds", summary="Build collector binaries for all supported architectures")
+async def build_collector_binaries(
+    _: User = Depends(require_role("admin", "superadmin")),
 ) -> dict:
-    collector = await _require_collector(request, db)
-    collector.last_seen  = datetime.now(timezone.utc)
-    collector.status     = "online"
-    if body.version:
-        collector.version = body.version
-    await db.commit()
-    return {"status": "ok", "server_time": datetime.now(timezone.utc).isoformat()}
+    """Compile linux/amd64 and linux/arm64 collector binaries on the hub.
 
+    Each arch is compiled sequentially (Go parallelises internally).  Returns
+    per-arch results; ``all_ok`` is True only when every arch succeeded.
+    Typical build time: 20–40 s total.
+    """
+    if not _GO_BIN.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Go toolchain not found at {_GO_BIN}. "
+                   "Install Go 1.22+ to enable on-hub builds.",
+        )
+    if not _REMOTE_SRC.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Collector source not found at {_REMOTE_SRC}. "
+                   "Ensure the Anthrimon repository is intact.",
+        )
+
+    _COLLECTOR_DIST.mkdir(parents=True, exist_ok=True)
+    loop   = asyncio.get_running_loop()
+    results: dict[str, dict] = {}
+
+    for arch, extra_env in _BUILD_TARGETS:
+        out_path = _COLLECTOR_DIST / f"anthrimon-collector-linux-{arch}"
+        env = {**os.environ, **extra_env}
+
+        def _run(src=str(_REMOTE_SRC), out=str(out_path), e=env):
+            return subprocess.run(
+                [
+                    str(_GO_BIN), "build",
+                    "-trimpath", "-ldflags=-s -w",
+                    "-o", out,
+                    "./cmd/remote-collector/",
+                ],
+                cwd=src, env=e,
+                capture_output=True, text=True,
+                timeout=300,
+            )
+
+        logger.info("collector_build_start", arch=arch)
+        try:
+            proc = await loop.run_in_executor(None, _run)
+            if proc.returncode == 0:
+                out_path.chmod(0o755)
+                size = out_path.stat().st_size
+                results[arch] = {"success": True, "size_bytes": size}
+                logger.info("collector_build_ok", arch=arch, size=size)
+            else:
+                error = (proc.stderr or proc.stdout or "unknown error").strip()
+                results[arch] = {"success": False, "error": error}
+                logger.error("collector_build_failed", arch=arch, error=error)
+        except subprocess.TimeoutExpired:
+            results[arch] = {"success": False, "error": "Build timed out after 300 s"}
+            logger.error("collector_build_timeout", arch=arch)
+        except Exception as exc:
+            results[arch] = {"success": False, "error": str(exc)}
+            logger.error("collector_build_exception", arch=arch, exc=str(exc))
+
+    all_ok = all(r["success"] for r in results.values())
+    return {"all_ok": all_ok, "arches": results}
+
+
+# ── Collector-facing routes (no JWT — use API key from WireGuard tunnel) ──────
+# These MUST be defined before /{collector_id} to avoid path-param shadowing.
 
 @router.get("/config", summary="Fetch device list and credentials for this collector")
 async def collector_config(
@@ -485,10 +451,527 @@ async def collector_config(
 
     return {
         "collector_id": str(collector.id),
+        "timezone":     collector.timezone or "UTC",
         "devices":      devices_out,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
+
+@router.get("/{collector_id}", summary="Get collector details")
+async def get_collector(
+    collector_id: str,
+    current_user: User         = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+    return _collector_out(c)
+
+
+class CollectorUpdate(BaseModel):
+    timezone: Optional[str] = None
+    name:     Optional[str] = None
+
+
+@router.patch("/{collector_id}", summary="Update collector settings (timezone, name)")
+async def patch_collector(
+    collector_id: str,
+    body:         CollectorUpdate,
+    current_user: User         = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+    if body.timezone is not None:
+        c.timezone = body.timezone
+    if body.name is not None:
+        c.name = body.name
+    await db.commit()
+    await db.refresh(c)
+    return _collector_out(c)
+
+
+_CH_URL = "http://localhost:8123"
+
+
+async def _ch_query(query: str) -> list[dict]:
+    """Execute a ClickHouse query and return rows as dicts (same pattern as syslog router)."""
+    flat = " ".join(query.split()) + " FORMAT JSON"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(_CH_URL, content=flat,
+                                     headers={"Content-Type": "text/plain"})
+        resp.raise_for_status()
+        return resp.json().get("data", [])
+    except Exception as exc:
+        logger.warning("ch_query_failed", error=str(exc))
+        return []
+
+
+@router.get("/{collector_id}/details", summary="Collector details + assigned devices")
+async def collector_details(
+    collector_id: str,
+    current_user: User         = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+
+    devices = (await db.execute(
+        select(Device).where(
+            Device.collector_id == c.id,
+            Device.is_active == True,  # noqa: E712
+        )
+    )).scalars().all()
+
+    return {
+        **_collector_out(c),
+        "devices": [
+            {
+                "id":          str(d.id),
+                "hostname":    d.hostname,
+                "mgmt_ip":     str(d.mgmt_ip) if d.mgmt_ip else None,
+                "vendor":      d.vendor,
+                "device_type": d.device_type,
+                "last_polled": d.last_polled.isoformat() if d.last_polled else None,
+            }
+            for d in devices
+        ],
+    }
+
+
+@router.get("/{collector_id}/logs", summary="Recent syslog from collector's assigned devices")
+async def collector_logs(
+    collector_id: str,
+    limit:   int = Query(default=100, ge=1, le=500),
+    minutes: int = Query(default=120, ge=1, le=10080),
+    current_user: User         = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+
+    device_ids = (await db.execute(
+        select(Device.id).where(
+            Device.collector_id == c.id,
+            Device.is_active == True,  # noqa: E712
+        )
+    )).scalars().all()
+
+    if not device_ids:
+        return {"messages": [], "device_count": 0}
+
+    ids_str = ", ".join(f"toUUID('{str(d)}')" for d in device_ids)
+    rows = await _ch_query(
+        f"SELECT toString(device_id) AS device_id, toString(device_ip) AS device_ip,"
+        f" facility, severity, toString(ts) AS ts, hostname, program, message,"
+        f" toString(received_at) AS received_at"
+        f" FROM syslog_messages"
+        f" WHERE device_id IN ({ids_str})"
+        f"   AND received_at >= now() - INTERVAL {minutes} MINUTE"
+        f" ORDER BY received_at DESC"
+        f" LIMIT {limit}"
+    )
+    return {"messages": rows, "device_count": len(device_ids)}
+
+
+@router.delete("/{collector_id}", status_code=204, response_model=None,
+               summary="Revoke (active) or permanently delete (revoked) a collector")
+async def delete_collector(
+    collector_id: str,
+    current_user: User         = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> None:
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        return
+
+    if not c.is_active:
+        # Already revoked — permanently purge the DB record.
+        # FK constraints on devices.collector_id and wg_ip_pool.assigned_to
+        # are both ON DELETE SET NULL so this is safe.
+        await db.delete(c)
+        await db.commit()
+        logger.info("collector_purged", collector=c.name)
+        return
+
+    # Active collector — revoke it first.
+    if c.wg_public_key:
+        _wg_remove_peer(c.wg_public_key)
+    if c.wg_ip:
+        await _free_wg_ip(db, str(c.wg_ip))
+    # Unassign devices — they fall back to hub polling
+    await db.execute(
+        update(Device).where(Device.collector_id == c.id).values(collector_id=None)
+    )
+    c.is_active     = False
+    c.status        = "revoked"
+    c.api_key_hash  = None
+    c.wg_public_key = None
+    c.wg_ip         = None
+    await db.commit()
+    logger.info("collector_revoked", collector=c.name)
+
+
+@router.post("/{collector_id}/token", summary="Regenerate registration token")
+async def regenerate_token(
+    collector_id: str,
+    current_user: User         = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+    token, token_hash = _generate_token()
+    c.token_hash       = token_hash
+    c.token_expires_at = datetime.utcnow() + timedelta(hours=TOKEN_TTL_HOURS)
+    await db.commit()
+    return {"registration_token": token, "ca_cert": _ca_cert_pem(),
+            "expires_at": c.token_expires_at.isoformat()}
+
+
+# ── Deployment package download ───────────────────────────────────────────────
+
+_COLLECTOR_YAML_TEMPLATE = """\
+# Anthrimon remote collector configuration
+# Generated by hub at {hub_url}
+hub_url: "{hub_url}"
+token: "{token}"
+ca_cert: "/etc/anthrimon/ca.crt"
+state_file: "/etc/anthrimon/collector-state.json"
+
+snmp:
+  polling_interval_s: 60
+  max_concurrent: 20
+  timeout_seconds: 10
+  retries: 2
+
+flow:
+  netflow_addr: ":2055"
+  sflow_addr: ":6343"
+  buffer_size: 65535
+
+syslog:
+  udp_addr: ":514"
+  tcp_addr: ":514"
+
+forward:
+  batch_size: 500
+  flush_interval_s: 10
+
+log:
+  level: info
+"""
+
+_INSTALL_SH_TEMPLATE = """\
+#!/usr/bin/env bash
+# Anthrimon remote collector — one-shot installer
+# Generated by hub at {hub_url}
+set -euo pipefail
+
+BINARY="anthrimon-collector"
+BIN_DST="/usr/local/bin/anthrimon-collector"
+CONF_DIR="/etc/anthrimon"
+SERVICE_FILE="/etc/systemd/system/anthrimon-collector.service"
+
+if [[ $EUID -ne 0 ]]; then
+  echo "Run as root (sudo bash install.sh)"
+  exit 1
+fi
+
+echo "→ Installing dependencies (wireguard-tools)..."
+if command -v apt-get &>/dev/null; then
+  apt-get install -y --no-install-recommends wireguard-tools
+elif command -v yum &>/dev/null; then
+  yum install -y wireguard-tools
+elif command -v dnf &>/dev/null; then
+  dnf install -y wireguard-tools
+else
+  echo "WARNING: could not detect package manager — install wireguard-tools manually"
+fi
+
+echo "→ Installing binary..."
+install -m 755 "${{BINARY}}" "${{BIN_DST}}"
+
+echo "→ Installing config and CA cert..."
+mkdir -p "${{CONF_DIR}}"
+install -m 640 ca.crt         "${{CONF_DIR}}/ca.crt"
+install -m 640 collector.yaml "${{CONF_DIR}}/collector.yaml"
+
+echo "→ Writing systemd unit..."
+cat > "${{SERVICE_FILE}}" <<'EOF'
+[Unit]
+Description=Anthrimon Remote Collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={bin_dst} --config /etc/anthrimon/collector.yaml
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo "→ Enabling and starting service..."
+systemctl daemon-reload
+systemctl enable --now anthrimon-collector
+
+echo ""
+echo "✓ anthrimon-collector installed and running."
+echo "  Check status: systemctl status anthrimon-collector"
+echo "  Logs:         journalctl -u anthrimon-collector -f"
+"""
+
+
+@router.get("/{collector_id}/download",
+            summary="Download a ready-to-run deployment package (binary + config + CA cert + installer)")
+async def download_collector_package(
+    collector_id: str,
+    arch:         str = "amd64",
+    token:        str = "",
+    current_user: User = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Return a zip containing the collector binary, pre-filled collector.yaml,
+    the hub CA cert, and an install.sh — everything needed to deploy on a
+    remote server in a single command::
+
+        unzip anthrimon-collector-linux-amd64.zip
+        sudo bash install.sh
+    """
+    if arch not in _VALID_ARCHES:
+        raise HTTPException(status_code=400,
+                            detail=f"arch must be one of: {', '.join(sorted(_VALID_ARCHES))}")
+
+    binary_path = _COLLECTOR_DIST / f"anthrimon-collector-linux-{arch}"
+    if not binary_path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Binary for linux/{arch} not found on this hub. "
+                   "Run the installer to build cross-compiled binaries.",
+        )
+
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+
+    platform = await load_platform_settings(db)
+    hub_url   = (platform.get("base_url") or "").rstrip("/")
+    ca_cert   = _ca_cert_pem() or ""
+
+    yaml_content = _COLLECTOR_YAML_TEMPLATE.format(
+        hub_url=hub_url,
+        token=token,
+    )
+    install_sh = _INSTALL_SH_TEMPLATE.format(
+        hub_url=hub_url,
+        bin_dst="/usr/local/bin/anthrimon-collector",
+    )
+
+    # Build zip in memory.
+    # The binary is already a stripped Go executable — high entropy, barely
+    # compressible.  Use ZIP_STORED for it to avoid burning several seconds on
+    # DEFLATE for ~2% gain.  Text files (config, cert, script) are tiny so
+    # DEFLATE them normally.
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        # Binary — store without compression
+        binary_data = binary_path.read_bytes()
+        info = zipfile.ZipInfo("anthrimon-collector")
+        info.external_attr = 0o755 << 16   # rwxr-xr-x
+        info.compress_type = zipfile.ZIP_STORED
+        zf.writestr(info, binary_data)
+
+        # Config
+        zf.writestr("collector.yaml", yaml_content)
+
+        # CA cert
+        zf.writestr("ca.crt", ca_cert)
+
+        # Installer script
+        inst_info = zipfile.ZipInfo("install.sh")
+        inst_info.external_attr = 0o755 << 16
+        zf.writestr(inst_info, install_sh)
+
+    buf.seek(0)
+    zip_name = f"anthrimon-collector-linux-{arch}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_name}"'},
+    )
+
+
+# ── Bootstrap (public, no auth) ───────────────────────────────────────────────
+
+class BootstrapRequest(BaseModel):
+    token:         str
+    wg_public_key: str
+    hostname:      Optional[str] = None
+    version:       Optional[str] = None
+    capabilities:  list = ["snmp", "flow", "syslog"]
+
+
+@router.post("/bootstrap", summary="Bootstrap a new collector (one-time token)")
+async def bootstrap(
+    body:    BootstrapRequest,
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    token_hash = _sha256(body.token)
+    now        = datetime.now(timezone.utc)
+
+    c = (await db.execute(
+        select(RemoteCollector).where(RemoteCollector.token_hash == token_hash)
+    )).scalar_one_or_none()
+
+    if c is None:
+        raise HTTPException(status_code=401, detail="Invalid registration token")
+    if c.status == "revoked":
+        raise HTTPException(status_code=401, detail="Collector has been revoked")
+    if c.token_expires_at and now > c.token_expires_at.replace(tzinfo=timezone.utc):
+        raise HTTPException(status_code=401, detail="Registration token has expired")
+
+    # Check WireGuard is available on the hub
+    hub_pubkey = _wg_hub_pubkey()
+    if hub_pubkey is None:
+        raise HTTPException(
+            status_code=503,
+            detail="WireGuard (wg0) is not configured on the hub. "
+                   "Run: sudo bash scripts/setup-wireguard.sh",
+        )
+
+    # If re-bootstrapping (collector already has WG state), clean up old resources.
+    # Null out wg_ip on the ORM object and flush it to DB *before* allocating a
+    # new IP — otherwise the old non-NULL value stays in the unique partial index
+    # and causes a duplicate-key error when the new value is written via autoflush.
+    if c.wg_public_key:
+        _wg_remove_peer(c.wg_public_key)
+        c.wg_public_key = None
+    if c.wg_ip:
+        await _free_wg_ip(db, str(c.wg_ip))
+        c.wg_ip = None
+    await db.flush()  # push NULLs before allocation to clear the unique index
+
+    # Allocate WireGuard IP
+    wg_ip = await _allocate_wg_ip(db)
+    if wg_ip is None:
+        raise HTTPException(status_code=503, detail="WireGuard IP pool exhausted")
+
+    # Generate API key
+    api_key, api_key_hash = _generate_token()
+
+    # Add WireGuard peer
+    try:
+        _wg_add_peer(body.wg_public_key, wg_ip)
+    except Exception as exc:
+        await _free_wg_ip(db, wg_ip)
+        raise HTTPException(status_code=502, detail=f"Failed to add WireGuard peer: {exc}")
+
+    # Update collector record
+    c.wg_public_key  = body.wg_public_key
+    c.wg_ip          = wg_ip
+    c.api_key_hash   = api_key_hash
+    c.is_active      = True
+    c.hostname       = body.hostname
+    c.version        = body.version
+    c.capabilities   = body.capabilities
+    c.ip_address     = request.client.host
+    c.status         = "offline"   # will flip to online on first heartbeat
+    c.registered_at  = now
+    c.token_hash     = _sha256(secrets.token_hex(32))  # invalidate token
+    c.token_expires_at = None
+
+    # Update wg_ip_pool assigned_to
+    await db.execute(
+        update(WgIpPool).where(WgIpPool.ip == cast(wg_ip, PG_INET)).values(assigned_to=c.id)
+    )
+    await db.commit()
+
+    logger.info("collector_bootstrapped", collector=c.name, wg_ip=wg_ip,
+                hostname=body.hostname)
+
+    platform = await load_platform_settings(db)
+    wg_endpoint = _wg_hub_endpoint(platform.get("wg_public_endpoint", ""))
+
+    return {
+        "collector_id":    str(c.id),
+        "api_key":         api_key,          # shown once — collector must store this
+        "wg_assigned_ip":  wg_ip,
+        "wg_hub_pubkey":   hub_pubkey,
+        "wg_hub_endpoint": wg_endpoint,
+        "wg_subnet":       "10.100.0.0/24",
+        "ca_cert":         _ca_cert_pem(),   # for verifying hub's TLS cert
+    }
+
+
+# ── Collector operational endpoints (API key + WireGuard IP required) ─────────
+
+class HeartbeatRequest(BaseModel):
+    version:     Optional[str] = None
+    stats:       dict = {}     # arbitrary collector stats (devices polled, errors, etc.)
+
+
+@router.post("/heartbeat", summary="Collector heartbeat")
+async def heartbeat(
+    body:    HeartbeatRequest,
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    collector = await _require_collector(request, db)
+    collector.last_seen  = datetime.now(timezone.utc)
+    collector.status     = "online"
+    if body.version:
+        collector.version = body.version
+    await db.commit()
+    return {"status": "ok", "server_time": datetime.now(timezone.utc).isoformat()}
+
+
+_DEVICE_ID_RE = re.compile(rb'device_id="([0-9a-f-]{36})"')
 
 @router.post("/metrics", summary="Ingest Prometheus metrics from collector → VictoriaMetrics")
 async def ingest_metrics(
@@ -499,6 +982,8 @@ async def ingest_metrics(
     body = await request.body()
     if not body:
         return {"written": 0}
+
+    # Forward to VictoriaMetrics
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(
             f"{_VM_URL}/api/v1/import/prometheus",
@@ -508,10 +993,63 @@ async def ingest_metrics(
     if resp.status_code not in (200, 204):
         logger.warning("collector_metrics_ingest_failed",
                        collector=collector.name, status=resp.status_code)
+
+    # Stamp last_polled + status='up' for every device_id seen in the payload.
+    # The remote collector emits device_id="<uuid>" on every metric line.
+    device_ids = {m.group(1).decode() for m in _DEVICE_ID_RE.finditer(body)}
+    if device_ids:
+        valid_ids = []
+        for did in device_ids:
+            try:
+                valid_ids.append(uuid.UUID(did))
+            except ValueError:
+                pass
+        if valid_ids:
+            now = datetime.utcnow()  # naive UTC — matches TIMESTAMP WITHOUT TIME ZONE columns
+            await db.execute(
+                update(Device)
+                .where(
+                    Device.id.in_(valid_ids),
+                    Device.tenant_id == collector.tenant_id,
+                )
+                .values(status="up", last_polled=now, last_seen=now)
+            )
+            await db.commit()
+
     lines = body.count(b"\n")
     logger.debug("collector_metrics_ingested", collector=collector.name, lines=lines)
     return {"written": lines}
 
+
+def _fix_ts(ts: str) -> str:
+    """Normalise an RFC3339/ISO8601 timestamp to ClickHouse DateTime64 format.
+
+    ClickHouse TabSeparated DateTime64 expects 'YYYY-MM-DD HH:MM:SS[.mmm]'.
+    Strips the 'T' separator, 'Z' suffix, and any '+HH:MM'/'-HH:MM' offset.
+    Truncates fractional seconds to 3 digits (milliseconds).
+    """
+    ts = ts.replace("T", " ")
+    # Strip timezone suffix: look past the date portion (10 chars)
+    for sep in ("Z", "+", "-"):
+        idx = ts.find(sep, 10)
+        if idx >= 0:
+            ts = ts[:idx]
+    # Truncate fractional seconds to 3 digits for DateTime64(3,...)
+    if "." in ts:
+        dot = ts.index(".")
+        ts = ts[: dot + 4]
+    return ts.strip()
+
+
+_FLOWS_INSERT = (
+    "INSERT INTO flow_records "
+    "(collector_device_id,exporter_ip,flow_type,flow_start,flow_end,"
+    "src_ip,dst_ip,src_ip6,dst_ip6,next_hop,"
+    "src_port,dst_port,ip_protocol,tcp_flags,"
+    "bytes,packets,input_if_index,output_if_index,"
+    "src_asn,dst_asn,src_prefix_len,dst_prefix_len,tos,dscp,sampling_rate) "
+    "FORMAT TabSeparated"
+)
 
 @router.post("/flows", summary="Ingest flow records from collector → ClickHouse")
 async def ingest_flows(
@@ -523,29 +1061,36 @@ async def ingest_flows(
     if not records:
         return {"written": 0}
 
-    # Batch insert into flow_records via ClickHouse HTTP
     rows = []
     for r in records:
         rows.append(
-            f"{r.get('collector_device_id','00000000-0000-0000-0000-000000000000')}\t"
-            f"{r.get('exporter_ip','0.0.0.0')}\t{r.get('flow_type','unknown')}\t"
-            f"{r.get('flow_start','')}\t{r.get('flow_end','')}\t"
-            f"{r.get('src_ip','0.0.0.0')}\t{r.get('dst_ip','0.0.0.0')}\t"
-            f"0.0.0.0\t::\t::\t0.0.0.0\t"
+            f"{r.get('collector_device_id','') or '00000000-0000-0000-0000-000000000000'}\t"
+            f"{r.get('exporter_ip','') or '0.0.0.0'}\t"
+            f"{r.get('flow_type','unknown')}\t"
+            f"{_fix_ts(r.get('flow_start','1970-01-01 00:00:00'))}\t"
+            f"{_fix_ts(r.get('flow_end','1970-01-01 00:00:00'))}\t"
+            f"{r.get('src_ip','0.0.0.0') or '0.0.0.0'}\t"
+            f"{r.get('dst_ip','0.0.0.0') or '0.0.0.0'}\t"
+            f"::\t::\t"                                        # src_ip6, dst_ip6
+            f"0.0.0.0\t"                                       # next_hop
             f"{r.get('src_port',0)}\t{r.get('dst_port',0)}\t"
             f"{r.get('ip_protocol',0)}\t{r.get('tcp_flags',0)}\t"
             f"{r.get('bytes',0)}\t{r.get('packets',0)}\t"
             f"{r.get('input_if_index',0)}\t{r.get('output_if_index',0)}\t"
-            f"0\t0\t0\t0\t{r.get('tos',0)}\t{r.get('dscp',0)}\t"
+            f"0\t0\t0\t0\t"                                    # src_asn, dst_asn, src_prefix_len, dst_prefix_len
+            f"{r.get('tos',0)}\t{r.get('dscp',0)}\t"
             f"{r.get('sampling_rate',1)}"
         )
 
     async with httpx.AsyncClient(timeout=15) as client:
-        await client.post(
-            f"{_CH_URL}/?query=INSERT+INTO+flow_records+FORMAT+TabSeparated",
+        resp = await client.post(
+            f"{_CH_URL}/?query={_FLOWS_INSERT.replace(' ', '+')}",
             content="\n".join(rows),
             headers={"Content-Type": "text/plain"},
         )
+    if resp.status_code not in (200, 204):
+        logger.warning("flows_ingest_failed", collector=collector.name,
+                       status=resp.status_code, detail=resp.text[:200])
     return {"written": len(rows)}
 
 
@@ -562,20 +1107,23 @@ async def ingest_syslog(
     rows = []
     for r in records:
         rows.append(
-            f"{r.get('device_id','00000000-0000-0000-0000-000000000000')}\t"
-            f"{r.get('device_ip','0.0.0.0')}\t"
+            f"{r.get('device_id','') or '00000000-0000-0000-0000-000000000000'}\t"
+            f"{r.get('device_ip','') or '0.0.0.0'}\t"
             f"{r.get('facility',0)}\t{r.get('severity',6)}\t"
-            f"{r.get('ts','1970-01-01 00:00:00')}\t"
+            f"{_fix_ts(r.get('ts','1970-01-01 00:00:00'))}\t"
             f"{r.get('hostname','')}\t{r.get('program','')}\t"
             f"{r.get('pid','')}\t{r.get('message','')}\t{r.get('raw','')}"
         )
 
     async with httpx.AsyncClient(timeout=15) as client:
-        await client.post(
+        resp = await client.post(
             f"{_CH_URL}/?query=INSERT+INTO+syslog_messages+"
             "(device_id,device_ip,facility,severity,ts,hostname,program,pid,message,raw)"
             "+FORMAT+TabSeparated",
             content="\n".join(rows),
             headers={"Content-Type": "text/plain"},
         )
+    if resp.status_code not in (200, 204):
+        logger.warning("syslog_ingest_failed", collector=collector.name,
+                       status=resp.status_code, detail=resp.text[:200])
     return {"written": len(rows)}

@@ -249,7 +249,7 @@ async def update_device(
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
 
-    updates = body.model_dump(exclude_none=True)
+    updates = {k: v for k, v in body.model_dump().items() if k in body.model_fields_set}
     if "mgmt_ip" in updates:
         updates["mgmt_ip"] = str(updates["mgmt_ip"])
 
@@ -335,7 +335,7 @@ _VM_URL = "http://localhost:8428"
 @router.get("/{device_id}/health/history", summary="Health metric history from VictoriaMetrics")
 async def get_device_health_history(
     device_id: uuid.UUID,
-    hours: float = Query(default=1.0, ge=0.1, le=48.0),
+    hours: float = Query(default=1.0, ge=0.1, le=720.0),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:

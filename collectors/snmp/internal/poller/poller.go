@@ -294,16 +294,20 @@ func (m *Manager) runDevice(ctx context.Context, dev model.DeviceRow) {
 				result.CDPNeighbors = cdp
 			}
 
-			if ospf, err := PollOSPFNeighbours(session, dev.ID, ifByIndex); err != nil {
-				log.Warn().Err(err).Msg("ospf poll failed (non-fatal)")
-			} else if len(ospf) > 0 {
-				result.OSPFNeighbours = ospf
+			if currentProfile == nil || !currentProfile.SkipOSPF {
+				if ospf, err := PollOSPFNeighbours(session, dev.ID, ifByIndex); err != nil {
+					log.Warn().Err(err).Msg("ospf poll failed (non-fatal)")
+				} else if len(ospf) > 0 {
+					result.OSPFNeighbours = ospf
+				}
 			}
 
-			if bgp, err := PollBGPSessions(session, dev.ID); err != nil {
-				log.Warn().Err(err).Msg("bgp poll failed (non-fatal)")
-			} else if len(bgp) > 0 {
-				result.BGPSessions = bgp
+			if currentProfile == nil || !currentProfile.SkipBGP {
+				if bgp, err := PollBGPSessions(session, dev.ID); err != nil {
+					log.Warn().Err(err).Msg("bgp poll failed (non-fatal)")
+				} else if len(bgp) > 0 {
+					result.BGPSessions = bgp
+				}
 			}
 
 			if routes, err := PollRouteTable(session, dev.ID, ifByIndex); err != nil {

@@ -312,24 +312,43 @@ func (w *PostgresWriter) upsertHealth(ctx context.Context, h *model.HealthResult
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 func (w *PostgresWriter) upsertRouteEntries(ctx context.Context, deviceID uuid.UUID, routes []*model.RouteEntry) error {
+	// Capture a single poll timestamp before the batch so every upserted row
+	// gets the same updated_at value.  After the batch we delete any route for
+	// this device whose updated_at is older than pollAt — those rows were not
+	// present in the current route table and should be treated as withdrawn.
+	pollAt := time.Now()
+
 	batch := &pgx.Batch{}
 	for _, r := range routes {
 		batch.Queue(`
-			INSERT INTO route_entries (device_id, destination, next_hop, protocol, metric, interface_name)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			INSERT INTO route_entries (device_id, destination, next_hop, protocol, metric, interface_name, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
 			ON CONFLICT (device_id, destination, next_hop) DO UPDATE SET
 				protocol       = EXCLUDED.protocol,
 				metric         = EXCLUDED.metric,
 				interface_name = EXCLUDED.interface_name,
-				updated_at     = NOW()
-		`, deviceID, r.Destination, r.NextHop, r.Protocol, nullInt(r.Metric), nullStr(r.InterfaceName))
+				updated_at     = EXCLUDED.updated_at
+		`, deviceID, r.Destination, r.NextHop, r.Protocol, nullInt(r.Metric), nullStr(r.InterfaceName), pollAt)
 	}
 	br := w.pool.SendBatch(ctx, batch)
-	defer br.Close()
 	for i := 0; i < batch.Len(); i++ {
 		if _, err := br.Exec(); err != nil {
 			w.log.Error().Err(err).Msg("route entry batch exec error")
 		}
+	}
+	// Close (flush) the batch before running the DELETE so the upserts are
+	// visible to the subsequent query on the same connection.
+	if err := br.Close(); err != nil {
+		w.log.Error().Err(err).Str("device_id", deviceID.String()).Msg("route entry batch close error")
+	}
+
+	// Purge withdrawn routes: any row not refreshed this cycle is gone from the
+	// device's routing table and must be removed from the database.
+	if _, err := w.pool.Exec(ctx,
+		`DELETE FROM route_entries WHERE device_id = $1 AND updated_at < $2`,
+		deviceID, pollAt,
+	); err != nil {
+		w.log.Error().Err(err).Str("device_id", deviceID.String()).Msg("purge stale route entries failed")
 	}
 	return nil
 }
@@ -734,6 +753,7 @@ func (w *PostgresWriter) LoadDevices(ctx context.Context) ([]model.DeviceRow, er
 			d.is_active = true
 			AND d.collection_method IN ('snmp', 'both')
 			AND c.type IN ('snmp_v2c', 'snmp_v3')
+			AND d.collector_id IS NULL
 		ORDER BY d.id, dc.priority ASC
 	`)
 	if err != nil {

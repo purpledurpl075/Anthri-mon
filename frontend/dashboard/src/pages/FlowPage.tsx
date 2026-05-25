@@ -235,7 +235,17 @@ function IpDetailPanel({ ip, minutes, deviceId, onClose, onFilter }: {
               {/* Threat intel */}
               {intel && (intel.abuse_score != null || intel.country_name) && (
                 <div className={`px-5 py-3 border-b border-slate-100 ${intel.abuse_score != null && intel.abuse_score >= 25 ? 'bg-red-50' : ''}`}>
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">Intelligence</p>
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">Intelligence</p>
+                    <a
+                      href={`https://www.abuseipdb.com/check/${ip}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[10px] text-blue-500 hover:text-blue-700 hover:underline flex items-center gap-0.5"
+                    >
+                      AbuseIPDB ↗
+                    </a>
+                  </div>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     {intel.country_name && (
                       <div>

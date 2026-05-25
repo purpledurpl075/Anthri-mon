@@ -1,19 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 import structlog
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import ENCODERS_BY_TYPE
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+# All datetimes in this app are stored/returned as UTC.  Naive datetimes come
+# from PostgreSQL TIMESTAMP WITHOUT TIME ZONE columns.  Append 'Z' so that
+# JavaScript's Date constructor treats them as UTC and toLocaleString() etc.
+# automatically convert to the browser's local timezone.
+ENCODERS_BY_TYPE[datetime.datetime] = (
+    lambda dt: dt.isoformat() if dt.tzinfo else dt.isoformat() + "Z"
+)
 
 from .config import get_settings
 from .database import engine
 from .logging_config import configure_logging
 from .alerting.engine import start_alert_engine
 from .configmgmt.collector import start_config_collector
+from .configmgmt.rest_state import start_rest_state_collector
 from .collectors.monitor import start_collector_monitor
 from .routers import (admin_router, alerts_router, auth_router, channels_router,
                       bgp_router, collectors_router, config_router, credentials_router, devices_router,
@@ -30,14 +41,16 @@ _settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("anthrimon_api_starting", version="0.1.0")
-    engine_task   = await start_alert_engine()
-    topology_task = await start_topology_refresh_loop(interval_seconds=300)
-    config_task    = start_config_collector(interval_s=3600)
-    monitor_task   = start_collector_monitor()
+    engine_task      = await start_alert_engine()
+    topology_task    = await start_topology_refresh_loop(interval_seconds=300)
+    config_task      = start_config_collector(interval_s=3600)
+    ssh_state_task   = start_rest_state_collector(interval_s=300)
+    monitor_task     = start_collector_monitor()
     yield
     engine_task.cancel()
     topology_task.cancel()
     config_task.cancel()
+    ssh_state_task.cancel()
     monitor_task.cancel()
     try:
         await engine_task
@@ -49,6 +62,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     try:
         await config_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await ssh_state_task
     except asyncio.CancelledError:
         pass
     try:

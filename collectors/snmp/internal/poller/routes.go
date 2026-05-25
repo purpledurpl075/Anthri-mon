@@ -127,7 +127,7 @@ func cidrProtoName(v int) string {
 // ── RFC 4292: inetCidrRouteTable ─────────────────────────────────────────────
 // Used by Aruba CX, modern Juniper, newer IOS-XE, etc.
 // Index: destType.destLen.a.b.c.d.pfxLen.policyOID.nhType.nhLen.n.m.o.p
-// Protocol values: local=2, static=3, ospf=10, bgp=11 (different from RFC 2096)
+// Protocol uses IANAipRouteProtocol TC — same numbering as RFC 2096: local=2, static=3, ospf=13, bgp=14.
 
 func pollRouteTableInet(s *client.Session, deviceID uuid.UUID, ifByIndex map[int]string) ([]*model.RouteEntry, error) {
 	pdus, err := s.BulkWalkAll(oid.InetCidrRouteTable)

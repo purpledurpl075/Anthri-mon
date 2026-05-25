@@ -428,13 +428,14 @@ const EDGE_TYPES = { topology: TopologyEdge }
 // ── Device panel ───────────────────────────────────────────────────────────
 
 function DevicePanel({
-  node, edges, nodesById, onClose, onNavigate,
+  node, edges, nodesById, onClose, onNavigate, onHide,
 }: {
   node: TopologyNode
   edges: ApiEdge[]
   nodesById: Record<string, TopologyNode>
   onClose: () => void
   onNavigate: (id: string) => void
+  onHide: (id: string) => void
 }) {
   const color = TYPE_COLOR[node.device_type] ?? '#475569'
   const sc    = STATUS_COLOR[node.status]    ?? '#94a3b8'
@@ -515,13 +516,20 @@ function DevicePanel({
         )}
       </div>
 
-      <div className="px-4 py-3 border-t border-slate-100">
+      <div className="px-4 py-3 border-t border-slate-100 space-y-2">
         <button
           onClick={() => onNavigate(node.id)}
           className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors"
         >
           Open device
           <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+        </button>
+        <button
+          onClick={() => { onHide(node.id); onClose() }}
+          className="w-full flex items-center justify-center gap-2 px-4 py-2 border border-slate-200 text-slate-500 text-xs font-medium rounded-xl hover:bg-slate-50 hover:border-slate-300 transition-colors"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+          Hide from topology
         </button>
       </div>
     </div>
@@ -792,6 +800,7 @@ function TopologyPageInner() {
   const [showLabels,     setShowLabels]    = useState(true)
   const [protocolFilter, setProtocol]      = useState<'all' | 'lldp' | 'cdp'>('all')
   const [hiddenTypes,    setHiddenTypes]   = useState<Set<string>>(new Set())
+  const [hiddenNodeIds,  setHiddenNodeIds] = useState<Set<string>>(new Set())
   const [typeMenuOpen,   setTypeMenuOpen]  = useState(false)
   const [search,         setSearch]        = useState('')
   const [showUtilLegend, setShowUtilLegend] = useState(false)
@@ -873,7 +882,7 @@ function TopologyPageInner() {
     if (!data) return
 
     const visible = data.nodes.filter(n =>
-      !hiddenTypes.has(n.device_type) && (showIsolated || n.connected)
+      !hiddenTypes.has(n.device_type) && !hiddenNodeIds.has(n.id) && (showIsolated || n.connected)
     )
     const pos     = hierLayout(visible, data.edges)
     const nodeIds = new Set(visible.map(n => n.id))
@@ -1129,7 +1138,7 @@ function TopologyPageInner() {
             onClick={() => {
               try { localStorage.removeItem(LAYOUT_KEY) } catch { /* ignore */ }
               if (data) {
-                const visible = data.nodes.filter(n => !hiddenTypes.has(n.device_type) && (showIsolated || n.connected))
+                const visible = data.nodes.filter(n => !hiddenTypes.has(n.device_type) && !hiddenNodeIds.has(n.id) && (showIsolated || n.connected))
                 const pos = hierLayout(visible, data.edges)
                 setRfNodes(prev => prev.map(n => ({ ...n, position: pos[n.id] ?? n.position })))
               }
@@ -1144,6 +1153,16 @@ function TopologyPageInner() {
             <span className="hidden sm:inline">Reset</span>
           </button>
 
+          {hiddenNodeIds.size > 0 && (
+            <button
+              onClick={() => setHiddenNodeIds(new Set())}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-amber-50 border border-amber-200 text-amber-700 hover:bg-amber-100 transition-colors"
+              title="Click to show all hidden nodes"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+              {hiddenNodeIds.size} hidden
+            </button>
+          )}
           <div className="flex-1 hidden md:block"/>
           <button onClick={() => refetch()} disabled={isFetching}
             className="hidden md:flex items-center gap-1.5 text-xs text-blue-600 hover:underline disabled:opacity-50">
@@ -1224,6 +1243,7 @@ function TopologyPageInner() {
                 nodesById={nodesById}
                 onClose={() => setSelectedId(null)}
                 onNavigate={id => navigate(`/devices/${id}`)}
+                onHide={id => setHiddenNodeIds(prev => new Set([...prev, id]))}
               />
             )}
             {selectedEdgeId && edgePanelPos && (() => {

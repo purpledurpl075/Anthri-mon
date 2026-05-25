@@ -19,10 +19,12 @@ import (
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // Parse parses a raw syslog line into a SyslogMessage. sourceIP is the remote
-// address of the sender. The function never returns an error; on any parse
-// failure it falls back to storing the full input in the Raw and Message fields
-// with severity info (6).
-func Parse(data []byte, sourceIP net.IP) model.SyslogMessage {
+// address of the sender. loc is the timezone used to interpret RFC 3164
+// timestamps (which carry no timezone info) — pass the device's configured
+// IANA location, or time.UTC if unknown. The function never returns an error;
+// on any parse failure it falls back to storing the full input in the Raw and
+// Message fields with severity info (6).
+func Parse(data []byte, sourceIP net.IP, loc *time.Location) model.SyslogMessage {
 	raw := string(data)
 
 	// A well-formed syslog message always starts with '<'.
@@ -49,11 +51,12 @@ func Parse(data []byte, sourceIP net.IP) model.SyslogMessage {
 	rest := data[end+1:] // everything after the closing '>'
 
 	// RFC 5424 detection: immediately after '>' must be "1 " (version = 1).
+	// RFC 5424 embeds timezone in its timestamp, so loc is not needed there.
 	if len(rest) >= 2 && rest[0] == '1' && rest[1] == ' ' {
 		return parse5424(rest[2:], raw, sourceIP, facility, severity)
 	}
 
-	return parse3164(rest, raw, sourceIP, facility, severity)
+	return parse3164(rest, raw, sourceIP, facility, severity, loc)
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +74,8 @@ var rfc3164Months = map[string]time.Month{
 // parse3164 parses the portion of an RFC 3164 message after the PRI field.
 // Format: TIMESTAMP HOSTNAME PROGRAM[PID]: MESSAGE
 // TIMESTAMP: "Jan  2 15:04:05" or "Jan 02 15:04:05"
-func parse3164(rest []byte, raw string, sourceIP net.IP, facility, severity uint8) model.SyslogMessage {
+// loc is the device's timezone — used to convert the timestamp to UTC.
+func parse3164(rest []byte, raw string, sourceIP net.IP, facility, severity uint8, loc *time.Location) model.SyslogMessage {
 	msg := model.SyslogMessage{
 		DeviceIP: normaliseIP(sourceIP),
 		Facility: facility,
@@ -84,7 +88,7 @@ func parse3164(rest []byte, raw string, sourceIP net.IP, facility, severity uint
 
 	// Try to parse the timestamp: "Mmm DD HH:MM:SS " (16 chars minimum).
 	// Allow for single or double-digit day (space-padded or zero-padded).
-	ts, after, ok := parseRFC3164Timestamp(s)
+	ts, after, ok := parseRFC3164Timestamp(s, loc)
 	if ok {
 		msg.Ts = ts
 		s = strings.TrimLeft(after, " ")
@@ -104,9 +108,13 @@ func parse3164(rest []byte, raw string, sourceIP net.IP, facility, severity uint
 }
 
 // parseRFC3164Timestamp attempts to parse an RFC 3164 timestamp from the
-// beginning of s. Returns the parsed time, the remaining string, and whether
-// parsing succeeded.
-func parseRFC3164Timestamp(s string) (time.Time, string, bool) {
+// beginning of s. loc is the device's timezone; the parsed time is constructed
+// in that location and then converted to UTC. Returns the UTC time, the
+// remaining string, and whether parsing succeeded.
+func parseRFC3164Timestamp(s string, loc *time.Location) (time.Time, string, bool) {
+	if loc == nil {
+		loc = time.UTC
+	}
 	// Need at least "Jan  2 15:04:05 " = 16 chars.
 	if len(s) < 15 {
 		return time.Time{}, s, false
@@ -143,7 +151,7 @@ func parseRFC3164Timestamp(s string) (time.Time, string, bool) {
 		return time.Time{}, s, false
 	}
 
-	now := time.Now().UTC()
+	now := time.Now().In(loc)
 	year := now.Year()
 
 	// Handle December→January rollover: if the message month is December but
@@ -152,7 +160,9 @@ func parseRFC3164Timestamp(s string) (time.Time, string, bool) {
 		year--
 	}
 
-	t := time.Date(year, month, day, hour, min, sec, 0, time.UTC)
+	// Construct the time in the device's timezone, then convert to UTC so that
+	// ClickHouse stores the correct absolute instant.
+	t := time.Date(year, month, day, hour, min, sec, 0, loc)
 	// Consume the timestamp + trailing space (15 chars + 1 space = 16).
 	remaining := ""
 	if len(s) > 15 {

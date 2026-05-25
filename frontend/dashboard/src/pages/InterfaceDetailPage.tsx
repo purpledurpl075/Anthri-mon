@@ -278,9 +278,11 @@ function LiveTile({ label, value, sub, color }: {
 // ── Page ───────────────────────────────────────────────────────────────────
 
 const RANGES = [
-  { label: '1h',  hours: 1  },
-  { label: '6h',  hours: 6  },
-  { label: '24h', hours: 24 },
+  { label: '1h',  hours: 1   },
+  { label: '6h',  hours: 6   },
+  { label: '24h', hours: 24  },
+  { label: '7d',  hours: 168 },
+  { label: '30d', hours: 720 },
 ]
 
 const LIVE_WINDOW_S = 180  // 3-minute rolling window

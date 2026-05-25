@@ -63,9 +63,8 @@ type LogConfig struct {
 
 // defaults fills in sensible values for any unset fields.
 func defaults(c *Config) {
-	if c.HubURL == "" {
-		c.HubURL = "https://10.0.2.109"
-	}
+	// No default for HubURL — must be set explicitly in collector.yaml
+	// or via the ANTHRIMON_HUB environment variable.
 	if c.CACert == "" {
 		c.CACert = "/etc/anthrimon/ca.crt"
 	}
@@ -144,6 +143,10 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("ANTHRIMON_STATE"); v != "" {
 		cfg.StateFile = v
+	}
+
+	if cfg.HubURL == "" {
+		return nil, fmt.Errorf("hub_url is not set — configure it in collector.yaml or set ANTHRIMON_HUB")
 	}
 
 	return &cfg, nil

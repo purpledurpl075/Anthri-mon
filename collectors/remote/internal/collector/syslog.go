@@ -23,6 +23,7 @@ type SyslogCollector struct {
 	cfg         config.SyslogConfig
 	fwdCfg      config.ForwardConfig
 	devicesByIP map[string]string // mgmt_ip → device_id
+	timezone    string            // collector-level IANA timezone (e.g. "America/New_York")
 	log         zerolog.Logger
 
 	mu  sync.Mutex
@@ -42,6 +43,7 @@ func NewSyslogCollector(
 		cfg:         cfg,
 		fwdCfg:      fwdCfg,
 		devicesByIP: devicesByIP,
+		timezone:    "UTC",
 		log:         log.With().Str("component", "syslog_collector").Logger(),
 	}
 }
@@ -51,6 +53,18 @@ func (c *SyslogCollector) UpdateDevices(devicesByIP map[string]string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.devicesByIP = devicesByIP
+}
+
+// SetTimezone updates the IANA timezone used to interpret RFC 3164 timestamps.
+// Called whenever the collector config is refreshed from the hub.
+func (c *SyslogCollector) SetTimezone(tz string) {
+	if tz == "" {
+		tz = "UTC"
+	}
+	c.mu.Lock()
+	c.timezone = tz
+	c.mu.Unlock()
+	c.log.Info().Str("timezone", tz).Msg("syslog timezone updated")
 }
 
 // Run starts UDP and TCP listeners and the flush loop.
@@ -143,12 +157,17 @@ func (c *SyslogCollector) handleTCPConn(ctx context.Context, conn net.Conn) {
 // ─── Ingest + parse ───────────────────────────────────────────────────────────
 
 func (c *SyslogCollector) ingest(raw, srcIP string) {
-	record := parseRFC3164(raw, srcIP)
-
 	c.mu.Lock()
 	deviceID := c.devicesByIP[srcIP]
+	tz := c.timezone
+	c.mu.Unlock()
+
+	loc := loadLocation(tz)
+	record := parseRFC3164(raw, srcIP, loc)
 	record["device_id"] = deviceID
 	record["device_ip"] = srcIP
+
+	c.mu.Lock()
 	c.buf = append(c.buf, record)
 	overflow := len(c.buf) >= c.fwdCfg.BatchSize
 	c.mu.Unlock()
@@ -158,27 +177,38 @@ func (c *SyslogCollector) ingest(raw, srcIP string) {
 	}
 }
 
+// loadLocation returns the *time.Location for an IANA timezone name.
+// Falls back to UTC on any error.
+func loadLocation(name string) *time.Location {
+	if name == "" || name == "UTC" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
 // parseRFC3164 parses a syslog message in RFC 3164 format:
 //
 //	<PRI>TIMESTAMP HOSTNAME PROGRAM[PID]: MESSAGE
 //
-// It is deliberately lenient — fields missing from the message are left as
-// zero values.
-func parseRFC3164(raw, srcIP string) map[string]any {
+// loc is the timezone used to interpret the RFC 3164 timestamp.
+func parseRFC3164(raw, srcIP string, loc *time.Location) map[string]any {
 	record := map[string]any{
-		"facility":  0,
-		"severity":  0,
-		"ts":        time.Now().UTC().Format(time.RFC3339),
-		"hostname":  srcIP,
-		"program":   "",
-		"pid":       "",
-		"message":   raw,
-		"raw":       raw,
+		"facility": 0,
+		"severity": 0,
+		"ts":       time.Now().UTC().Format(time.RFC3339),
+		"hostname": srcIP,
+		"program":  "",
+		"pid":      "",
+		"message":  raw,
+		"raw":      raw,
 	}
 
 	s := raw
 
-	// Parse priority: <PRI>
 	facility, severity, rest, ok := parsePriority(s)
 	if ok {
 		record["facility"] = facility
@@ -186,14 +216,12 @@ func parseRFC3164(raw, srcIP string) map[string]any {
 		s = rest
 	}
 
-	// Parse timestamp (RFC 3164 style: "Jan  2 15:04:05" or ISO8601).
-	ts, rest2, ok2 := parseTimestamp(s)
+	ts, rest2, ok2 := parseTimestamp(s, loc)
 	if ok2 {
 		record["ts"] = ts
 		s = rest2
 	}
 
-	// Parse HOSTNAME PROGRAM[PID]: MESSAGE
 	parts := strings.SplitN(s, " ", 3)
 	if len(parts) >= 1 {
 		record["hostname"] = strings.TrimSpace(parts[0])
@@ -211,7 +239,6 @@ func parseRFC3164(raw, srcIP string) map[string]any {
 	return record
 }
 
-// parsePriority extracts <N> from the front of s.
 func parsePriority(s string) (facility, severity int, rest string, ok bool) {
 	if len(s) < 3 || s[0] != '<' {
 		return 0, 0, s, false
@@ -227,10 +254,7 @@ func parsePriority(s string) (facility, severity int, rest string, ok bool) {
 	return pri >> 3, pri & 7, strings.TrimSpace(s[end+1:]), true
 }
 
-// parseTimestamp tries to parse the leading timestamp from s.
-// Supports "Jan  2 15:04:05" (RFC 3164) and "2006-01-02T15:04:05" (ISO 8601).
-func parseTimestamp(s string) (ts, rest string, ok bool) {
-	// Try ISO 8601 / RFC 3339 first.
+func parseTimestamp(s string, loc *time.Location) (ts, rest string, ok bool) {
 	if len(s) >= 19 {
 		t, err := time.Parse(time.RFC3339, s[:19])
 		if err == nil {
@@ -238,22 +262,18 @@ func parseTimestamp(s string) (ts, rest string, ok bool) {
 		}
 	}
 
-	// Try RFC 3164 "Jan  2 15:04:05" (15 chars).
 	if len(s) >= 15 {
-		layout := "Jan  2 15:04:05"
-		t, err := time.Parse(layout, s[:15])
-		if err == nil {
-			// RFC 3164 has no year; assume current year.
-			now := time.Now()
-			t = t.AddDate(now.Year(), 0, 0)
-			return t.UTC().Format(time.RFC3339), strings.TrimSpace(s[15:]), true
-		}
-		// Try single-digit day with space: "Jan 02 15:04:05".
-		layout2 := "Jan 02 15:04:05"
-		t, err = time.Parse(layout2, s[:15])
-		if err == nil {
-			now := time.Now()
-			t = t.AddDate(now.Year(), 0, 0)
+		for _, layout := range []string{"Jan  2 15:04:05", "Jan 02 15:04:05"} {
+			t, err := time.Parse(layout, s[:15])
+			if err != nil {
+				continue
+			}
+			now := time.Now().In(loc)
+			year := now.Year()
+			if t.Month() == time.December && now.Month() == time.January {
+				year--
+			}
+			t = time.Date(year, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, loc)
 			return t.UTC().Format(time.RFC3339), strings.TrimSpace(s[15:]), true
 		}
 	}
@@ -261,7 +281,6 @@ func parseTimestamp(s string) (ts, rest string, ok bool) {
 	return "", s, false
 }
 
-// splitProgPID splits "sshd[1234]:" into ("sshd", "1234").
 func splitProgPID(token string) (prog, pid string) {
 	token = strings.TrimSuffix(token, ":")
 	if idx := strings.Index(token, "["); idx >= 0 {

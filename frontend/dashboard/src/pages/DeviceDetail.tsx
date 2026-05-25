@@ -564,7 +564,7 @@ function NeighborsSection({ deviceId, deviceName }: { deviceId: string; deviceNa
                         <div className="mt-1 flex flex-wrap gap-2 text-slate-400">
                           {s.uptime_seconds != null && s.uptime_seconds > 0 && <span>up {fmtUptime(s.uptime_seconds)}</span>}
                           {s.prefixes_received != null && <span>{s.prefixes_received} pfx rx</span>}
-                          {s.flap_count > 0 && <span className="text-amber-500">{s.flap_count} flaps</span>}
+                          {s.flap_count > 1 && <span className="text-amber-500">{s.flap_count} flaps</span>}
                         </div>
                       )}
                     </div>
@@ -1184,7 +1184,13 @@ function MaintenanceSection({ deviceId }: { deviceId: string }) {
 
 // ── Health tab ─────────────────────────────────────────────────────────────────
 
-const HEALTH_RANGES = [{ label: '1h', hours: 1 }, { label: '6h', hours: 6 }, { label: '24h', hours: 24 }]
+const HEALTH_RANGES = [
+  { label: '1h',  hours: 1   },
+  { label: '6h',  hours: 6   },
+  { label: '24h', hours: 24  },
+  { label: '7d',  hours: 168 },
+  { label: '30d', hours: 720 },
+]
 
 function fmtPct(v: number)  { return `${v.toFixed(1)}%` }
 function fmtTemp(v: number) { return `${v.toFixed(1)}°C` }
@@ -1454,6 +1460,17 @@ export default function DeviceDetail() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [tab, setTab] = useState<'interfaces' | 'neighbors' | 'addresses' | 'routes' | 'vlans' | 'stp' | 'health' | 'config' | 'bgp'>('interfaces')
+
+  // Check if device has any SSH/API credential — hides Config tab if not
+  const { data: deviceCredsForTab = [] } = useQuery({
+    queryKey:  ['device-creds-tab', id],
+    queryFn:   () => fetchDeviceCredentials(id!),
+    enabled:   !!id,
+    staleTime: 120_000,
+  })
+  const hasConfigCred = deviceCredsForTab.some(
+    c => ['ssh', 'api_token', 'netconf'].includes(c.type)
+  )
 
   // Lightweight count queries for tab badges — long staleTime, no refetch interval
   const { data: bgpSessionsForBadge = [] } = useQuery({
@@ -1774,6 +1791,48 @@ export default function DeviceDetail() {
 
               <CollectorSection deviceId={id!} currentCollectorId={(device as any).collector_id ?? null} onSave={(cid) => patchMutation.mutate({ collector_id: cid })} />
 
+              {device.vendor === 'aruba_cx' && (
+                <Section title="REST API Collection">
+                  <div className="space-y-3">
+                    <label className="flex items-center justify-between gap-3 cursor-pointer">
+                      <div>
+                        <p className="text-xs font-medium text-slate-700">Enable REST API collection</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">
+                          Collects BGP and OSPF state via ArubaOS-CX REST API every 5 minutes.
+                          Standard SNMP MIBs are not supported on this platform.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => patchMutation.mutate({ rest_collection_enabled: !(device as any).rest_collection_enabled })}
+                        disabled={patchMutation.isPending}
+                        className={`relative shrink-0 w-10 h-5 rounded-full transition-colors ${
+                          (device as any).rest_collection_enabled ? 'bg-blue-600' : 'bg-slate-200'
+                        }`}
+                      >
+                        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                          (device as any).rest_collection_enabled ? 'translate-x-5' : 'translate-x-0.5'
+                        }`} />
+                      </button>
+                    </label>
+                    {!(device as any).rest_collection_enabled && (
+                      <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-[10px] font-mono text-slate-600 space-y-0.5">
+                        <p className="text-[9px] text-slate-400 font-sans mb-1">Enable REST API on the switch first:</p>
+                        <p>conf t</p>
+                        <p>https-server vrf mgmt</p>
+                        <p>https-server rest swagger</p>
+                        <p>end</p>
+                        <p>wr mem</p>
+                      </div>
+                    )}
+                    {(device as any).rest_collection_enabled && (
+                      <p className="text-[10px] text-slate-400">
+                        If authentication fails or the device becomes unreachable, collection will be disabled automatically and must be re-enabled here.
+                      </p>
+                    )}
+                  </div>
+                </Section>
+              )}
+
               <Section title="Tags">
                 <div className="flex flex-wrap gap-1.5 mb-2 min-h-[24px]">
                   {(device.tags ?? []).length === 0 && (
@@ -1970,7 +2029,7 @@ export default function DeviceDetail() {
               { id: 'stp',        label: 'STP' },
               { id: 'health',     label: 'Health' },
               ...(bgpCount > 0 ? [{ id: 'bgp' as const, label: 'BGP', badge: bgpCount, badgeAlert: bgpDownCount > 0 }] : []),
-              { id: 'config',     label: 'Config' },
+              ...(hasConfigCred ? [{ id: 'config' as const, label: 'Config' }] : []),
             ] as { id: typeof tab; label: string; badge?: number; badgeAlert?: boolean }[]).map(t => (
               <button key={t.id} onClick={() => setTab(t.id as typeof tab)}
                 className={`flex items-center gap-1 px-2.5 md:px-3 py-2.5 md:py-3 text-xs md:text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 ${
@@ -2170,7 +2229,10 @@ function BGPEventDrawer({ session }: { session: BGPSession }) {
         {isLoading ? (
           <span className="text-xs text-slate-400">Loading…</span>
         ) : events.length === 0 ? (
-          <span className="text-xs text-slate-400">No transitions recorded yet</span>
+          <span className="text-xs text-slate-400">
+            No transitions observed yet — history records state changes seen during polling.
+            {' '}<span className="font-medium">flap count</span> reflects the device's own lifetime counter.
+          </span>
         ) : (
           <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
             {events.map(e => (
@@ -2216,7 +2278,7 @@ function BGPSection({ deviceId }: { deviceId: string }) {
   }, [sessions, queryClient])
 
   const established = sessions.filter(s => s.session_state === 'established').length
-  const flappers    = sessions.filter(s => s.flap_count > 0).length
+  const flappers    = sessions.filter(s => s.flap_count > 1).length
 
   return (
     <div className="space-y-4">
@@ -2302,7 +2364,7 @@ function BGPSection({ deviceId }: { deviceId: string }) {
                         : '—'}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {s.flap_count > 0 ? (
+                      {s.flap_count > 1 ? (
                         <span className="text-xs font-semibold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
                           {s.flap_count}
                         </span>

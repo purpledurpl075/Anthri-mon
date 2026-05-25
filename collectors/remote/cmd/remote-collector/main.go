@@ -117,7 +117,7 @@ func run(cfgPath string) error {
 	snmpCol := collector.NewSNMPCollector(hubClient, cfg.SNMP, logger)
 
 	devicesByIP := make(map[string]string)
-	flowCol := collector.NewFlowCollector(hubClient, cfg.Flow, cfg.Forward, devicesByIP, logger)
+	flowCol   := collector.NewFlowCollector(hubClient, cfg.Flow, cfg.Forward, devicesByIP, logger)
 	syslogCol := collector.NewSyslogCollector(hubClient, cfg.Syslog, cfg.Forward, devicesByIP, logger)
 
 	// Initial config fetch.
@@ -298,7 +298,6 @@ func refreshDevices(
 		return fmt.Errorf("fetch config: %w", err)
 	}
 
-	// Build IP→device_id map for flow and syslog.
 	byIP := make(map[string]string, len(devCfg.Devices))
 	for _, d := range devCfg.Devices {
 		byIP[d.MgmtIP] = d.ID
@@ -307,6 +306,7 @@ func refreshDevices(
 	snmpCol.SetDevices(devCfg.Devices)
 	flowCol.UpdateDevices(byIP)
 	syslogCol.UpdateDevices(byIP)
+	syslogCol.SetTimezone(devCfg.Timezone)
 
 	logger.Info().
 		Int("devices", len(devCfg.Devices)).

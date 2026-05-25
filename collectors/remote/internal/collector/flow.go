@@ -93,6 +93,8 @@ func (c *FlowCollector) listenUDP(ctx context.Context, addr, kind string) {
 		if len(records) == 0 {
 			continue
 		}
+		c.log.Debug().Str("kind", kind).Str("src", exporterIP).
+			Int("bytes", n).Int("records", len(records)).Msg("flow packet received")
 
 		c.mu.Lock()
 		c.buf = append(c.buf, records...)
@@ -139,16 +141,24 @@ func (c *FlowCollector) flush(ctx context.Context) {
 	}
 }
 
-// parsePacket inspects the first two bytes to detect the flow protocol version
-// and dispatches accordingly.
+// parsePacket detects the flow protocol and dispatches to the appropriate
+// parser. sFlow v5 encodes its version as a 4-byte uint32 (value 5) whereas
+// NetFlow/IPFIX encode theirs as a 2-byte uint16, so we check the 4-byte word
+// first.
 func (c *FlowCollector) parsePacket(data []byte, exporterIP string) []map[string]any {
-	if len(data) < 2 {
+	if len(data) < 4 {
 		return nil
 	}
 
 	c.mu.RLock()
 	deviceID := c.devicesByIP[exporterIP]
 	c.mu.RUnlock()
+
+	// sFlow v5: bytes 0-3 as uint32 == 5 (0x00000005).
+	// NetFlow v5 would have 0x0005XXXX here (count in high word), so no clash.
+	if binary.BigEndian.Uint32(data[0:4]) == 5 {
+		return parseSFlow5(data, exporterIP, deviceID)
+	}
 
 	version := binary.BigEndian.Uint16(data[0:2])
 	switch version {
@@ -159,10 +169,7 @@ func (c *FlowCollector) parsePacket(data []byte, exporterIP string) []map[string
 	case 10:
 		return parseNetFlowGeneric(data, exporterIP, deviceID, "ipfix")
 	default:
-		// Likely sFlow or unknown — return a skeleton record.
-		return []map[string]any{
-			buildFlowRecord(exporterIP, deviceID, "unknown"),
-		}
+		return nil
 	}
 }
 

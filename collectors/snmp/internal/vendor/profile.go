@@ -79,4 +79,12 @@ type Profile struct {
 
 	// TempOIDs overrides ENTITY-SENSOR-MIB for temperature collection.
 	TempOIDs *OIDSet
+
+	// SkipOSPF: when true, skip ospfNbrTable polling.
+	// Set when the vendor does not implement OSPF-MIB (RFC 1850).
+	SkipOSPF bool
+
+	// SkipBGP: when true, skip bgpPeerTable polling.
+	// Set when the vendor does not implement BGP4-MIB (RFC 1657).
+	SkipBGP bool
 }

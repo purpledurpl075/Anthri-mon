@@ -204,7 +204,7 @@ async def _persist_topology_links(tenant_id: str, edges: list[dict]) -> None:
             # Prune edges not seen in the last 10 minutes
             await db.execute(text("""
                 DELETE FROM topology_links
-                WHERE tenant_id = :tid::uuid
+                WHERE tenant_id = CAST(:tid AS uuid)
                   AND updated_at < now() - interval '10 minutes'
             """), {"tid": tenant_id})
             await db.commit()

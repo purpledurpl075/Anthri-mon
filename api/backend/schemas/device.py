@@ -67,6 +67,7 @@ class DeviceUpdate(BaseModel):
     tags: Optional[list[str]] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    rest_collection_enabled: Optional[bool] = None
 
 
 class SiteEmbedded(BaseModel):
@@ -117,6 +118,7 @@ class DeviceRead(BaseModel):
     last_seen: Optional[datetime] = None
     last_polled: Optional[datetime] = None
     is_active: bool
+    rest_collection_enabled: bool = False
     tags: list[Any] = []
     notes: Optional[str] = None
     alert_exclusions: dict = {}

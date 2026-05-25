@@ -600,6 +600,7 @@ interface PlatformSettings {
   business_days:                  number[]
   alert_retention_days:           number
   abuseipdb_api_key:              string
+  wg_public_endpoint:             string
 }
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -819,11 +820,20 @@ function PlatformTab() {
         </SettingRow>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 px-6">
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Threat Intelligence</h3>
         <SettingRow label="AbuseIPDB API key"
           description="Used to score IPs in flow data. Free key at abuseipdb.com — 1 000 checks/day. Leave blank to disable.">
           {textInput('abuseipdb_api_key', 'Paste API key here', 'password')}
+        </SettingRow>
+      </div>
+
+      {/* Remote collectors */}
+      <div className="bg-white rounded-2xl border border-slate-200 px-6">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Remote Collectors</h3>
+        <SettingRow label="WireGuard public endpoint"
+          description="Override the endpoint given to remote collectors during bootstrap. Required when this hub is behind NAT — auto-detection returns the private LAN address, which external collectors cannot reach. Use your public IP or hostname, e.g. 203.0.113.5 or 203.0.113.5:51820. Leave blank to auto-detect.">
+          {textInput('wg_public_endpoint', 'e.g. 203.0.113.5 or 203.0.113.5:51820')}
         </SettingRow>
       </div>
 

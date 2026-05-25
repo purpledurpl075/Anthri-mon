@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import Boolean, ForeignKey, Numeric, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, Text, func
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,8 +25,8 @@ class Site(Base):
     latitude:    Mapped[Optional[float]]= mapped_column(Numeric(9, 6))
     longitude:   Mapped[Optional[float]]= mapped_column(Numeric(9, 6))
     tags:        Mapped[list]           = mapped_column(JSONB, nullable=False, server_default="[]")
-    created_at:  Mapped[datetime]       = mapped_column(nullable=False, server_default=func.now())
-    updated_at:  Mapped[datetime]       = mapped_column(nullable=False, server_default=func.now())
+    created_at:  Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at:  Mapped[datetime]       = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     devices:    Mapped[list["Device"]]         = relationship("Device",          back_populates="site",       lazy="noload")
     collectors: Mapped[list["RemoteCollector"]] = relationship("RemoteCollector", back_populates="site",       lazy="noload")
@@ -47,7 +47,7 @@ class RemoteCollector(Base):
     # One-time registration token — hashed before storage.
     # Set at creation, cleared after successful bootstrap.
     token_hash:       Mapped[str]              = mapped_column(Text, nullable=False, unique=True)
-    token_expires_at: Mapped[Optional[datetime]]= mapped_column()
+    token_expires_at: Mapped[Optional[datetime]]= mapped_column(DateTime(timezone=True))
 
     # ── Ongoing API authentication ────────────────────────────────────────────
     # Returned to the collector at bootstrap; used for all subsequent requests.
@@ -65,13 +65,18 @@ class RemoteCollector(Base):
     ip_address:    Mapped[Optional[str]]    = mapped_column(INET)        # public IP seen at bootstrap
     version:       Mapped[Optional[str]]    = mapped_column(Text)        # collector binary version
     capabilities:  Mapped[list]             = mapped_column(JSONB, nullable=False, server_default='["snmp","flow","syslog"]')
-    last_seen:     Mapped[Optional[datetime]]= mapped_column()
-    registered_at: Mapped[Optional[datetime]]= mapped_column()
+    last_seen:     Mapped[Optional[datetime]]= mapped_column(DateTime(timezone=True))
+    registered_at: Mapped[Optional[datetime]]= mapped_column(DateTime(timezone=True))
+
+    # ── Configuration ─────────────────────────────────────────────────────────
+    # IANA timezone for devices at this collector's site — used to interpret
+    # RFC 3164 syslog timestamps, which carry no timezone info.
+    timezone: Mapped[str] = mapped_column(Text, nullable=False, server_default="UTC")
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
     is_active:  Mapped[bool]     = mapped_column(Boolean, nullable=False, default=True)
-    created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     site: Mapped[Optional["Site"]] = relationship("Site", back_populates="collectors", lazy="noload")
 
@@ -83,4 +88,4 @@ class WgIpPool(Base):
     ip:           Mapped[str]              = mapped_column(INET, primary_key=True)
     assigned_to:  Mapped[Optional[uuid.UUID]]= mapped_column(UUID(as_uuid=True), ForeignKey("remote_collectors.id", ondelete="SET NULL"))
     allocated:    Mapped[bool]             = mapped_column(Boolean, nullable=False, default=False)
-    allocated_at: Mapped[Optional[datetime]]= mapped_column()
+    allocated_at: Mapped[Optional[datetime]]= mapped_column(DateTime(timezone=True))

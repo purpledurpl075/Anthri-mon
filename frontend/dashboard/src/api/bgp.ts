@@ -57,3 +57,37 @@ export const fetchBGPSummary = () =>
 
 export const fetchBGPSessionEvents = (sessionId: string) =>
   api.get<BGPSessionEvent[]>(`/bgp/sessions/${sessionId}/events`).then(r => r.data)
+
+export interface BGPPrefixTotals {
+  sessions:      number
+  established:   number
+  total_rx:      number
+  total_tx:      number
+  top_receivers: { device: string; peer_ip: string; peer_asn: number | null; prefixes_rx: number }[]
+}
+
+export interface BGPFlapEvent {
+  recorded_at: string
+  device:      string
+  peer_ip:     string
+  peer_asn:    number | null
+  prev_state:  string
+  new_state:   string
+}
+
+export interface OSPFArea {
+  area:      string
+  vrf:       string
+  total:     number
+  full:      number
+  not_full:  number
+}
+
+export const fetchBGPPrefixTotals = () =>
+  api.get<BGPPrefixTotals>('/bgp/prefix-totals').then(r => r.data)
+
+export const fetchBGPFlapLog = (limit = 20) =>
+  api.get<BGPFlapEvent[]>('/bgp/flap-log', { params: { limit } }).then(r => r.data)
+
+export const fetchOSPFAreas = () =>
+  api.get<OSPFArea[]>('/bgp/ospf-areas').then(r => r.data)

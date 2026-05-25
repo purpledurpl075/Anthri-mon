@@ -4,7 +4,7 @@ from typing import Optional
 
 import structlog
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..dependencies import get_current_user, get_db
@@ -137,11 +137,12 @@ async def bgp_summary(
     total = sum(by_state.values())
     established = by_state.get("established", 0)
 
-    # Top flappers (flap_count > 0, sorted descending).
+    # Top flappers: flap_count > 1 (>1 means it dropped and re-established;
+    # count of 1 is just the initial connection, not a flap).
     flappers = (await db.execute(
         select(BGPSession, Device)
         .join(Device, BGPSession.device_id == Device.id)
-        .where(Device.tenant_id == current_user.tenant_id, BGPSession.flap_count > 0)
+        .where(Device.tenant_id == current_user.tenant_id, BGPSession.flap_count > 1)
         .order_by(desc(BGPSession.flap_count))
         .limit(5)
     )).all()
@@ -163,3 +164,109 @@ async def bgp_summary(
             for s, dev in flappers
         ],
     }
+
+
+@router.get("/prefix-totals", summary="Total BGP prefixes received and advertised across all sessions")
+async def bgp_prefix_totals(
+    current_user: User         = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    rows = (await db.execute(text("""
+        SELECT
+            COUNT(*)                                                        AS sessions,
+            SUM(prefixes_received)                                          AS total_rx,
+            SUM(prefixes_advertised)                                        AS total_tx,
+            COUNT(*) FILTER (WHERE s.session_state = 'established'::bgp_session_state) AS established
+        FROM bgp_sessions s
+        JOIN devices d ON d.id = s.device_id
+        WHERE d.tenant_id = :tid
+    """), {"tid": str(current_user.tenant_id)})).mappings().one()
+
+    top = (await db.execute(
+        select(BGPSession, Device)
+        .join(Device, BGPSession.device_id == Device.id)
+        .where(
+            Device.tenant_id == current_user.tenant_id,
+            text("bgp_sessions.session_state = 'established'::bgp_session_state"),
+            BGPSession.prefixes_received.isnot(None),
+        )
+        .order_by(BGPSession.prefixes_received.desc())
+        .limit(8)
+    )).all()
+
+    return {
+        "sessions":    int(rows["sessions"]   or 0),
+        "established": int(rows["established"] or 0),
+        "total_rx":    int(rows["total_rx"]   or 0),
+        "total_tx":    int(rows["total_tx"]   or 0),
+        "top_receivers": [
+            {
+                "device":      dev.fqdn or dev.hostname,
+                "peer_ip":     str(s.peer_ip),
+                "peer_asn":    s.peer_asn,
+                "prefixes_rx": s.prefixes_received,
+            }
+            for s, dev in top
+        ],
+    }
+
+
+@router.get("/flap-log", summary="Recent BGP state transitions")
+async def bgp_flap_log(
+    limit:        int  = Query(default=20, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> list[dict]:
+    from ..models.bgp import BGPSessionEvent
+    from sqlalchemy import desc as sqldesc
+
+    rows = (await db.execute(
+        select(BGPSessionEvent, BGPSession, Device)
+        .join(BGPSession, BGPSessionEvent.session_id == BGPSession.id)
+        .join(Device, BGPSession.device_id == Device.id)
+        .where(Device.tenant_id == current_user.tenant_id)
+        .order_by(sqldesc(BGPSessionEvent.recorded_at))
+        .limit(limit)
+    )).all()
+
+    return [
+        {
+            "recorded_at": e.recorded_at.isoformat(),
+            "device":      dev.fqdn or dev.hostname,
+            "peer_ip":     str(s.peer_ip),
+            "peer_asn":    s.peer_asn,
+            "prev_state":  e.prev_state,
+            "new_state":   e.new_state,
+        }
+        for e, s, dev in rows
+    ]
+
+
+@router.get("/ospf-areas", summary="OSPF neighbor counts grouped by area")
+async def ospf_areas(
+    current_user: User         = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> list[dict]:
+    rows = (await db.execute(text("""
+        SELECT
+            o.area,
+            o.vrf,
+            COUNT(*)                                                            AS total,
+            COUNT(*) FILTER (WHERE o.state = 'full'::ospf_neighbor_state)      AS full
+        FROM ospf_neighbors o
+        JOIN devices d ON d.id = o.device_id
+        WHERE d.tenant_id = :tid
+        GROUP BY o.area, o.vrf
+        ORDER BY o.area
+    """), {"tid": str(current_user.tenant_id)})).mappings().all()
+
+    return [
+        {
+            "area":    r["area"] or "backbone",
+            "vrf":     r["vrf"],
+            "total":    int(r["total"]),
+            "full":     int(r["full"]),
+            "not_full": int(r["total"]) - int(r["full"]),
+        }
+        for r in rows
+    ]

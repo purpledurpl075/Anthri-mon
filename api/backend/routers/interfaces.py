@@ -54,7 +54,7 @@ async def update_interface(
 @router.get("/{interface_id}/utilisation", summary="Interface metrics from VictoriaMetrics")
 async def get_interface_utilisation(
     interface_id: uuid.UUID,
-    hours: float = Query(default=0.5, ge=0.1, le=48.0),
+    hours: float = Query(default=0.5, ge=0.1, le=720.0),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:

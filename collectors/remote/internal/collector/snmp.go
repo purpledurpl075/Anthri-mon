@@ -345,11 +345,17 @@ func pollMemory(g *gosnmp.GoSNMP, dev hub.Device, ts int64) ([]string, error) {
 
 // pickSNMPCredential returns the highest-priority SNMP credential (type "snmpv2"
 // or "snmpv3") from the device's credential list, or nil if none.
+// normSNMPType normalises credential type strings so that both "snmpv2c" and
+// "snmp_v2c" (and similar) map to a canonical form for comparison.
+func normSNMPType(t string) string {
+	return strings.ReplaceAll(strings.ToLower(t), "_", "")
+}
+
 func pickSNMPCredential(creds []hub.Credential) *hub.Credential {
 	var best *hub.Credential
 	for i := range creds {
 		c := &creds[i]
-		t := strings.ToLower(c.Type)
+		t := normSNMPType(c.Type)
 		if t != "snmpv2" && t != "snmpv2c" && t != "snmpv3" {
 			continue
 		}
@@ -374,14 +380,14 @@ func buildSNMPClient(dev hub.Device, cred *hub.Credential, cfg config.SNMPConfig
 		MaxOids:   60,
 	}
 
-	switch strings.ToLower(cred.Type) {
+	switch normSNMPType(cred.Type) {
 	case "snmpv3":
 		g.Version = gosnmp.Version3
 		username, _ := cred.Data["username"].(string)
 		authProto, _ := cred.Data["auth_protocol"].(string)
-		authPass, _ := cred.Data["auth_password"].(string)
+		authPass, _ := cred.Data["auth_key"].(string)
 		privProto, _ := cred.Data["priv_protocol"].(string)
-		privPass, _ := cred.Data["priv_password"].(string)
+		privPass, _ := cred.Data["priv_key"].(string)
 
 		msgFlags := gosnmp.NoAuthNoPriv
 		if authPass != "" {

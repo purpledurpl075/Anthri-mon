@@ -69,7 +69,7 @@ The installer handles everything else.
 ```bash
 git clone https://github.com/purpledurpl075/Anthri-mon.git
 cd Anthri-mon
-sudo bash infra/scripts/install-dev.sh
+sudo bash infra/scripts/install.sh
 ```
 
 The installer prompts for:
@@ -239,7 +239,7 @@ sudo bash scripts/setup-tls.sh
 
 ```bash
 git pull
-sudo bash infra/scripts/install-dev.sh
+sudo bash infra/scripts/install.sh
 ```
 
 The installer is idempotent — it skips steps already complete (existing CA, existing WireGuard config, already-applied migrations).
@@ -270,7 +270,7 @@ scripts/
   setup-wireguard.sh     Set up WireGuard hub interface (wg0, 10.100.0.1/24)
 infra/
   scripts/
-    install-dev.sh       Full installer — prompts for config, installs everything
+    install.sh       Full installer — prompts for config, installs everything
 ```
 
 ---

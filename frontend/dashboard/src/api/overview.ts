@@ -85,3 +85,32 @@ export const fetchOverview = () =>
 
 export const fetchTopBandwidth = (limit = 8, windowMinutes = 30) =>
   api.get<TopBandwidthData>('/overview/top-bandwidth', { params: { limit, window_minutes: windowMinutes } }).then(r => r.data)
+
+export interface TopResourcesData {
+  cpu:    { device_id: string; hostname: string; device_type: string; cpu_pct: number }[]
+  memory: { device_id: string; hostname: string; device_type: string; mem_pct: number }[]
+}
+
+export interface WidgetData {
+  interface_health: { up: number; down: number; admin_down: number; total: number }
+  routing_health: {
+    bgp:  { total: number; established: number; by_state: Record<string, number> }
+    ospf: { total: number; full: number; by_state: Record<string, number> }
+  }
+  config_changes: { device_id: string; hostname: string; vendor: string; collected_at: string; lines_added: number; lines_removed: number }[]
+  collector_status: { name: string; status: string; last_seen: string | null }[]
+}
+
+export const fetchTopResources = (limit = 5) =>
+  api.get<TopResourcesData>('/overview/top-resources', { params: { limit } }).then(r => r.data)
+
+export const fetchWidgetData = () =>
+  api.get<WidgetData>('/overview/widget-data').then(r => r.data)
+
+export interface SyslogHeatmapCell { dow: number; hr: number; count: number }
+
+export const fetchSyslogHeatmap = () =>
+  api.get<SyslogHeatmapCell[]>('/syslog/heatmap').then(r => r.data)
+
+export const fetchSyslogMessages = (severityMax: number, limit: number) =>
+  api.get<{ messages: any[] }>('/syslog/messages', { params: { severity_max: severityMax, limit, minutes: 1440 } }).then(r => r.data)

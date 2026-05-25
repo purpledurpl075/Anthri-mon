@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rs/zerolog"
 
@@ -205,9 +206,14 @@ func stripOctetCount(line []byte) ([]byte, bool) {
 // dispatchMessage parses a raw syslog line, enriches it with device lookup
 // data, and forwards it to the ClickHouse writer.
 func (s *Server) dispatchMessage(data []byte, sourceIP net.IP) {
-	msg := parser.Parse(data, sourceIP)
+	// Resolve the platform timezone to a *time.Location for RFC 3164 parsing.
+	tz := s.lookup.Timezone()
+	loc, err := time.LoadLocation(tz)
+	if err != nil {
+		loc = time.UTC
+	}
 
-	// Enrich with device lookup.
+	msg := parser.Parse(data, sourceIP, loc)
 	msg.DeviceID = s.lookup.Lookup(sourceIP)
 
 	// Fill hostname from source IP if the parser did not find one.

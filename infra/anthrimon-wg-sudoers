@@ -1,0 +1,11 @@
+# Anthrimon — allow the API service user to manage WireGuard peers
+# without a password.  The API runs as a non-root user and needs these
+# commands to register/deregister remote collector tunnels.
+#
+# Installed to /etc/sudoers.d/anthrimon-wg by infra/scripts/install.sh
+# Syntax checked with: visudo -cf /etc/sudoers.d/anthrimon-wg
+
+__API_USER__ ALL=(ALL) NOPASSWD: /usr/bin/wg show wg0 public-key
+__API_USER__ ALL=(ALL) NOPASSWD: /usr/bin/wg show wg0 listen-port
+__API_USER__ ALL=(ALL) NOPASSWD: /usr/bin/wg set wg0 peer *
+__API_USER__ ALL=(ALL) NOPASSWD: /usr/bin/wg-quick save wg0

@@ -49,6 +49,8 @@ PLATFORM_DEFAULTS: dict = {
     "alert_retention_days":          90,
     # Threat intelligence
     "abuseipdb_api_key":             "",
+    # Remote collectors
+    "wg_public_endpoint":            "",
 }
 
 
@@ -69,6 +71,7 @@ class PlatformSettingsRead(BaseModel):
     business_days:                  list[int]
     alert_retention_days:           int
     abuseipdb_api_key:              str        = ""
+    wg_public_endpoint:             str        = ""
 
 
 class PlatformSettingsWrite(BaseModel):
@@ -88,6 +91,7 @@ class PlatformSettingsWrite(BaseModel):
     business_days:                  list[int]  = [0, 1, 2, 3, 4]
     alert_retention_days:           int        = 90
     abuseipdb_api_key:              str        = ""
+    wg_public_endpoint:             str        = ""
 
 DEFAULT_SUBJECT  = "[{{tag}}] {{title}}"
 

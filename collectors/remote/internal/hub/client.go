@@ -22,6 +22,7 @@ import (
 // DeviceConfig is the full device list returned by the hub.
 type DeviceConfig struct {
 	CollectorID string   `json:"collector_id"`
+	Timezone    string   `json:"timezone"` // collector-level IANA timezone
 	Devices     []Device `json:"devices"`
 	GeneratedAt string   `json:"generated_at"`
 }
