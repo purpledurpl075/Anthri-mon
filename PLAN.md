@@ -124,9 +124,9 @@ Anthrimon is a modern, open-source network monitoring and orchestration platform
 ### Verification
 - [x] **Alert → channel end-to-end test** — force a rule to fire and confirm email delivery
 
-### BGP (blocked on Eve-NG lab)
-- [ ] BGP session state — `bgpPeerTable` (RFC 1657); schema exists (`bgp_sessions`)
-- [ ] BGP session alerts (session down, prefix count change)
+### BGP
+- [x] BGP session state — `bgpPeerTable` (RFC 1657); `collectors/snmp/internal/poller/bgp.go`; Cisco TimeTicks vs Gauge32 handled; `SkipBGP` flag for non-RFC-1657 vendors
+- [x] BGP session alerts (session down, flap)
 
 ### Platform improvements
 - [ ] User invite flow — email invite instead of admin-creates-password *(deferred)*
@@ -207,6 +207,9 @@ Distributed polling with a central aggregation hub.
 - [x] Metric forwarding — POST Prometheus text to /collectors/metrics → VM; flows → /collectors/flows → CH; syslog → /collectors/syslog → CH
 - [x] Collector health monitoring — background task marks online/offline from last_seen; fires major alert after 5 min dark; auto-resolves on recovery
 - [x] Frontend — Collectors page (create/list/revoke/token modal); collector status on list; device assignment in settings
+- [x] SSH config collection — remote collector runs `show running-config` over PTY SSH (per-vendor pager/enable handling); posts backup to hub `/collectors/config-backup`; `store_config_backup()` shared with hub SSH collector; hub SSH/REST/SNMP collectors skip `collector_id IS NOT NULL` devices
+- [x] Aruba CX REST collection — remote collector polls BGP session state + OSPF neighbour state via Aruba CX REST API (`/rest/v10.16/`); posts to hub `/collectors/bgp-sessions` + `/collectors/ospf-neighbors`; hub REST poller skips remote devices
+- [x] Live REST toggle push — device PATCH fires `_nudge_collector()` POST to collector's WireGuard HTTP server so REST enable/disable takes effect immediately
 
 ---
 
@@ -217,7 +220,7 @@ Distributed polling with a central aggregation hub.
   - `_ca_cert_pem()` auto-detects self-signed vs public CA; omits CA bundle when public CA is in use
   - `collector.yaml` sets `ca_cert: ""` when hub uses a public CA so collector falls back to system trust store
   - Collector binary handles empty `ca_cert` gracefully (system trust store)
-- Baseline-aware alerting — alert when a metric deviates from learned normal
+- ~~Baseline-aware alerting~~ ✅ Done — rolling 14-day baselines, adaptive thresholds (mean + 3σ), normal_up_pct suppression, force_alert/force_suppress overrides, frontend baseline display on health tab and interface table
 - Multi-condition alert rules — CPU > 80% AND memory > 85%
 - Per-device alert threshold overrides UI (two-tier policy model)
 - IS-IS neighbour and topology collection

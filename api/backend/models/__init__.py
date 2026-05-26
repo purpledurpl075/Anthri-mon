@@ -1,6 +1,7 @@
 from .tenant import Tenant, User, ApiToken
 from .site import Site, RemoteCollector, WgIpPool
 from .bgp import BGPSession
+from .baseline import MetricBaseline
 from .credential import Credential, DeviceCredential
 from .device import Device
 from .interface import Interface, InterfaceStatusLog
@@ -14,6 +15,7 @@ __all__ = [
     "Device",
     "Interface", "InterfaceStatusLog",
     "DeviceHealthLatest",
+    "MetricBaseline",
     "NotificationChannel", "MaintenanceWindow",
     "AlertRule", "Alert",
     "AuditLog",

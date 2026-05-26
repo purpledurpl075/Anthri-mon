@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   fetchCollectors, fetchCollectorDetails, fetchCollectorLogs,
   createCollector, deleteCollector, regenerateToken, patchCollector,
-  downloadPackage, fetchBuildStatus, triggerBuild,
+  downloadPackage, fetchBuildStatus, triggerBuild, triggerUpdate,
   type RemoteCollector, type CollectorDetails, type SyslogMessage, type BuildStatus,
 } from '../api/collectors'
 import { useRole, hasRole } from '../hooks/useCurrentUser'
@@ -195,6 +195,21 @@ function CollectorDrawer({ collectorId, canEdit, onClose, onToken }: {
     },
   })
 
+  const [updateResult, setUpdateResult] = useState<string | null>(null)
+  const updateMut = useMutation({
+    mutationFn: () => triggerUpdate(collectorId),
+    onSuccess:  (data) => {
+      setUpdateResult(
+        data.status === 'update_triggered'
+          ? 'Update triggered — collector is installing the new binary.'
+          : data.status === 'offline'
+          ? 'Collector is offline. Try again once it comes back online.'
+          : (data.detail ?? 'Unknown error'),
+      )
+      setTimeout(() => setUpdateResult(null), 6000)
+    },
+  })
+
   const [confirmAction, setConfirmAction] = useState<'revoke' | 'delete' | null>(null)
 
   // ── Timezone ────────────────────────────────────────────────────────────────
@@ -372,6 +387,20 @@ function CollectorDrawer({ collectorId, canEdit, onClose, onToken }: {
               {/* Actions */}
               {canEdit && (
                 <section className="border-t border-slate-100 pt-4 space-y-2">
+                  {/* Hot-patch update */}
+                  {details.is_active && details.status === 'online' && (
+                    <button onClick={() => updateMut.mutate()} disabled={updateMut.isPending}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 transition-colors disabled:opacity-50">
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+                      {updateMut.isPending ? 'Triggering…' : 'Deploy update'}
+                    </button>
+                  )}
+                  {updateResult && (
+                    <p className={`text-[11px] px-1 ${updateResult.startsWith('Update triggered') ? 'text-green-600' : 'text-amber-600'}`}>
+                      {updateResult}
+                    </p>
+                  )}
+
                   {details.is_active && (
                     <button onClick={() => tokenMut.mutate()} disabled={tokenMut.isPending}
                       className="w-full flex items-center justify-center gap-2 px-4 py-2 text-xs font-medium border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors disabled:opacity-50">

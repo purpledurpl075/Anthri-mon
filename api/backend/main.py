@@ -23,6 +23,7 @@ from .config import get_settings
 from .database import engine
 from .logging_config import configure_logging
 from .alerting.engine import start_alert_engine
+from .alerting.baselines import start_baseline_task
 from .configmgmt.collector import start_config_collector
 from .configmgmt.rest_state import start_rest_state_collector
 from .collectors.monitor import start_collector_monitor
@@ -46,12 +47,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     config_task      = start_config_collector(interval_s=3600)
     ssh_state_task   = start_rest_state_collector(interval_s=300)
     monitor_task     = start_collector_monitor()
+    baseline_task    = start_baseline_task(interval_s=3600)
     yield
     engine_task.cancel()
     topology_task.cancel()
     config_task.cancel()
     ssh_state_task.cancel()
     monitor_task.cancel()
+    baseline_task.cancel()
     try:
         await engine_task
     except asyncio.CancelledError:
@@ -70,6 +73,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     try:
         await monitor_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await baseline_task
     except asyncio.CancelledError:
         pass
     await engine.dispose()

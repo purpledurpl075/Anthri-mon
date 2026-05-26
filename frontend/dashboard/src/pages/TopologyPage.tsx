@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   ReactFlow, ReactFlowProvider, Controls, Background, MiniMap, Panel, useReactFlow,
-  EdgeLabelRenderer, getSmoothStepPath, applyNodeChanges,
+  EdgeLabelRenderer, getStraightPath, applyNodeChanges,
   Handle, Position,
   type NodeProps, type Node, type Edge, type EdgeProps,
   type NodeMouseHandler, type NodeChange,
@@ -39,14 +39,43 @@ const SEVERITY_ORDER = ['critical', 'major', 'minor', 'warning', 'info']
 
 // ── Layout constants ───────────────────────────────────────────────────────
 
-const NODE_W  = 160
-const H_STEP  = 240
-const V_STEP  = 190
+const CIRCLE_SIZE = 68       // px — diameter of the node circle
+const CIRCLE_R    = CIRCLE_SIZE / 2
+const NODE_W      = 100      // total node width including text label
+const H_STEP      = 180
+const V_STEP      = 150
+
+// Cloud node dimensions
+const CLOUD_W     = 96       // px — width of the cloud SVG
+const CLOUD_H_PX  = 52       // px — height of the cloud SVG portion
+
+// Invisible handle placed at the centre of the circle so edges always
+// originate from the node centre regardless of relative position.
+const CENTER_H: React.CSSProperties = {
+  opacity: 0, border: 'none',
+  width: 1, height: 1, minWidth: 1, minHeight: 1,
+  top: `${CIRCLE_R}px`,    // vertical centre of the circle
+  left: '50%',
+  transform: 'translate(-50%, -50%)',
+}
+
+// Handle at the visual centre of the cloud SVG
+const CLOUD_HANDLE_H: React.CSSProperties = {
+  opacity: 0, border: 'none',
+  width: 1, height: 1, minWidth: 1, minHeight: 1,
+  top: `${CLOUD_H_PX / 2}px`,
+  left: '50%',
+  transform: 'translate(-50%, -50%)',
+}
 
 const ROOT_PRIO: Record<string, number> = {
   router: 5, firewall: 5, load_balancer: 4,
   switch: 3, wireless_controller: 2, access_point: 0, unknown: 1,
 }
+
+// Device types that are treated as WAN border / uplink devices → get cloud connection
+const BORDER_TYPES = new Set(['router', 'firewall', 'load_balancer'])
+const CLOUD_NODE_ID = 'synthetic-internet-cloud'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -66,6 +95,7 @@ function fmtBps(bps: number): string {
 
 // Colour an edge based on utilisation percentage
 function utilEdgeColor(pct: number | null, protocol: string): string {
+  if (protocol === 'wan') return '#94a3b8'     // WAN / cloud edge — grey
   if (pct === null) return protocol === 'lldp' ? '#0891b2' : '#7c3aed'
   if (pct < 30)   return '#16a34a'  // green
   if (pct < 60)   return protocol === 'lldp' ? '#0891b2' : '#7c3aed'  // normal
@@ -88,8 +118,8 @@ function edgeStrokeWidth(speedBps: number | null): number {
 function hierLayout(
   nodes: TopologyNode[],
   rawEdges: Pick<ApiEdge, 'source' | 'target'>[],
-): Record<string, { x: number; y: number }> {
-  if (!nodes.length) return {}
+): { pos: Record<string, { x: number; y: number }>; layer: Record<string, number> } {
+  if (!nodes.length) return { pos: {}, layer: {} }
 
   const idSet = new Set(nodes.map(n => n.id))
   const adj: Record<string, string[]> = {}
@@ -168,35 +198,10 @@ function hierLayout(
     offsetX += compW + H_STEP
   }
 
-  return pos
-}
-
-// ── Handle routing ────────────────────────────────────────────────────────
-
-type HandleSide = 'top' | 'bottom' | 'left' | 'right'
-
-function edgeHandles(
-  src?: { x: number; y: number },
-  tgt?: { x: number; y: number },
-): { sh: HandleSide; th: HandleSide; sp: Position; tp: Position } {
-  if (!src || !tgt) return { sh: 'bottom', th: 'top', sp: Position.Bottom, tp: Position.Top }
-  const dx = tgt.x - src.x
-  const dy = tgt.y - src.y
-  if (Math.abs(dy) >= Math.abs(dx) * 0.6) {
-    return dy >= 0
-      ? { sh: 'bottom', th: 'top',    sp: Position.Bottom, tp: Position.Top    }
-      : { sh: 'top',    th: 'bottom', sp: Position.Top,    tp: Position.Bottom }
-  }
-  return dx >= 0
-    ? { sh: 'right', th: 'left',  sp: Position.Right, tp: Position.Left  }
-    : { sh: 'left',  th: 'right', sp: Position.Left,  tp: Position.Right }
+  return { pos, layer }
 }
 
 // ── Node ───────────────────────────────────────────────────────────────────
-
-const H: React.CSSProperties = {
-  opacity: 0, width: 2, height: 2, minWidth: 2, minHeight: 2, border: 'none',
-}
 
 type NodeData = TopologyNode & {
   alerts:    { count: number; severity: string } | null
@@ -205,30 +210,37 @@ type NodeData = TopologyNode & {
 }
 
 function DeviceNode({ data, selected }: NodeProps) {
-  const d      = data as unknown as NodeData
-  const color  = TYPE_COLOR[d.device_type] ?? '#475569'
-  const sc     = STATUS_COLOR[d.status] ?? '#94a3b8'
-  const hasCrit = d.alerts?.severity === 'critical'
+  const d        = data as unknown as NodeData
+  const typeColor = TYPE_COLOR[d.device_type] ?? '#475569'
+  const isDown   = d.status === 'down'
+  const isUnreachable = d.status === 'unreachable'
+  const hasCrit  = d.alerts?.severity === 'critical'
+
+  const ringColor  = isDown ? '#dc2626' : isUnreachable ? '#f97316' : selected ? '#3b82f6' : typeColor
+  const ringWidth  = isDown || isUnreachable ? 2.5 : selected ? 2.5 : 1.5
+  const circleBg   = isDown ? '#fff1f2' : isUnreachable ? '#fff7ed' : 'white'
+  const shadow     = isDown
+    ? `0 0 0 4px #dc262618, 0 2px 8px rgba(220,38,38,0.18)`
+    : isUnreachable
+      ? `0 0 0 4px #f9731618, 0 2px 8px rgba(249,115,22,0.15)`
+      : selected
+        ? `0 0 0 4px ${typeColor}22, 0 4px 14px rgba(0,0,0,0.09)`
+        : '0 1px 5px rgba(0,0,0,0.07)'
 
   return (
-    <div style={{ width: NODE_W, opacity: d.dimmed ? 0.15 : 1, transition: 'opacity 0.2s' }}>
-      <Handle id="top"    type="source" position={Position.Top}    style={H} />
-      <Handle id="top"    type="target" position={Position.Top}    style={H} />
-      <Handle id="bottom" type="source" position={Position.Bottom} style={H} />
-      <Handle id="bottom" type="target" position={Position.Bottom} style={H} />
-      <Handle id="left"   type="source" position={Position.Left}   style={H} />
-      <Handle id="left"   type="target" position={Position.Left}   style={H} />
-      <Handle id="right"  type="source" position={Position.Right}  style={H} />
-      <Handle id="right"  type="target" position={Position.Right}  style={H} />
+    <div style={{ width: NODE_W, opacity: d.dimmed ? 0.1 : 1, transition: 'opacity 0.2s', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      {/* Single centre handle — edges always start/end at circle centre */}
+      <Handle type="source" position={Position.Top} style={CENTER_H} />
+      <Handle type="target" position={Position.Top} style={CENTER_H} />
 
-      <div className="relative">
+      <div className="relative" style={{ width: CIRCLE_SIZE, height: CIRCLE_SIZE }}>
         {/* Alert badge */}
         {d.alerts && d.alerts.count > 0 && (
           <div
-            className="absolute -top-2 -right-2 z-10 min-w-[20px] h-5 rounded-full flex items-center justify-center text-[9px] font-bold text-white px-1.5"
+            className="absolute -top-1.5 -right-1.5 z-10 min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px] font-bold text-white px-1"
             style={{
               backgroundColor: SEVERITY_COLOR[d.alerts.severity] ?? '#dc2626',
-              boxShadow: `0 0 0 2px white`,
+              boxShadow: '0 0 0 2px white',
               animation: hasCrit ? 'alertPulse 1.8s ease-in-out infinite' : undefined,
             }}
           >
@@ -239,50 +251,101 @@ function DeviceNode({ data, selected }: NodeProps) {
         {/* Search highlight ring */}
         {d.searchHit && (
           <div
-            className="absolute -inset-1.5 rounded-[14px] pointer-events-none"
-            style={{ boxShadow: '0 0 0 2.5px #3b82f6, 0 0 12px #3b82f640' }}
+            className="absolute -inset-1 rounded-full pointer-events-none"
+            style={{ boxShadow: '0 0 0 2.5px #3b82f6, 0 0 10px #3b82f640' }}
           />
         )}
 
+        {/* Circle */}
         <div
-          className="rounded-xl bg-white transition-shadow"
+          className="w-full h-full rounded-full flex items-center justify-center transition-shadow"
           style={{
-            border:     `1.5px solid ${selected ? color : '#e2e8f0'}`,
-            boxShadow:  selected
-              ? `0 0 0 3px ${color}22, 0 6px 20px rgba(0,0,0,0.10)`
-              : '0 1px 3px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.04)',
+            border:      `${ringWidth}px solid ${ringColor}`,
+            background:  circleBg,
+            boxShadow:   shadow,
+            animation:   isDown && !d.dimmed ? 'downPulse 2.2s ease-in-out infinite' : undefined,
           }}
         >
-          <div style={{ height: 3, backgroundColor: color, borderRadius: '8px 8px 0 0' }} />
-          <div className="px-3 pt-2.5 pb-2">
-            <div className="flex items-start justify-between mb-1.5">
-              <span style={{ color }}><DeviceTypeIcon type={d.device_type} size={22} /></span>
-              <span
-                className="w-2 h-2 rounded-full mt-0.5 shrink-0"
-                style={{ backgroundColor: sc }}
-                title={STATUS_LABEL[d.status] ?? d.status}
-              />
-            </div>
-            <div className="text-[11px] font-semibold text-slate-800 truncate leading-tight">
-              {d.hostname}
-            </div>
-            <div className="text-[10px] font-mono text-slate-400 mt-0.5 truncate">
-              {d.mgmt_ip || '—'}
-            </div>
-          </div>
-          <div
-            className="px-3 py-1 border-t text-[9px] text-slate-400 capitalize rounded-b-xl"
-            style={{ borderColor: `${color}20`, backgroundColor: `${color}07` }}
-          >
-            {TYPE_LABEL[d.device_type] ?? 'Unknown'}
-          </div>
+          <span style={{ color: typeColor, opacity: isDown ? 0.6 : 1 }}>
+            <DeviceTypeIcon type={d.device_type} size={28} />
+          </span>
+        </div>
+      </div>
+
+      {/* Labels below the circle */}
+      <div className="mt-1.5 text-center" style={{ maxWidth: NODE_W }}>
+        <div className="text-[11px] font-semibold leading-tight truncate px-1"
+          style={{ color: isDown ? '#dc2626' : '#1e293b' }}>
+          {d.hostname}
+        </div>
+        <div className="text-[9px] font-mono text-slate-400 truncate px-1">
+          {d.mgmt_ip || '—'}
         </div>
       </div>
     </div>
   )
 }
 
-const NODE_TYPES = { device: DeviceNode }
+// ── Cloud / Internet node ──────────────────────────────────────────────────
+
+type CloudData = { dimmed: boolean; label?: string }
+
+function CloudNode({ data, selected }: NodeProps) {
+  const d = data as unknown as CloudData
+  const borderColor = selected ? '#3b82f6' : '#94a3b8'
+  const borderW     = selected ? 1.8 : 1.4
+  const bgFill      = selected ? '#eff6ff' : '#f0f9ff'
+
+  return (
+    <div
+      style={{
+        width: CLOUD_W,
+        opacity: d.dimmed ? 0.1 : 1,
+        transition: 'opacity 0.2s',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        pointerEvents: 'all',
+      }}
+    >
+      {/* Centre handle — edges meet at the visual centre of the cloud */}
+      <Handle type="source" position={Position.Bottom} style={CLOUD_HANDLE_H} />
+      <Handle type="target" position={Position.Bottom} style={CLOUD_HANDLE_H} />
+
+      {/* Cloud SVG */}
+      <svg width={CLOUD_W} height={CLOUD_H_PX} viewBox={`0 0 ${CLOUD_W} ${CLOUD_H_PX}`} fill="none">
+        {/* Soft drop-shadow filter */}
+        <defs>
+          <filter id="cloudShadow" x="-10%" y="-10%" width="120%" height="130%">
+            <feDropShadow dx="0" dy="1" stdDeviation="2" floodColor="#0000001a"/>
+          </filter>
+        </defs>
+        {/* Cloud body — classic cumulus outline */}
+        <path
+          filter="url(#cloudShadow)"
+          d="M20 44 Q5 44 5 31 Q5 20 15 18 Q14 6 26 6 Q33 0 41 7 Q48 0 57 5 Q69 3 72 15 Q83 14 84 27 Q86 38 76 42 Q72 46 62 46 Z"
+          fill={bgFill}
+          stroke={borderColor}
+          strokeWidth={borderW}
+          strokeLinejoin="round"
+        />
+        {/* Internet dot grid inside cloud */}
+        <circle cx="34" cy="27" r="2.4" fill="#64748b" opacity="0.55"/>
+        <circle cx="46" cy="25" r="2.4" fill="#64748b" opacity="0.55"/>
+        <circle cx="58" cy="27" r="2.4" fill="#64748b" opacity="0.55"/>
+        {/* Connecting line between dots */}
+        <path d="M36.4 27 L43.6 25 M48.4 25 L55.6 27" stroke="#94a3b8" strokeWidth="1" opacity="0.6"/>
+      </svg>
+
+      {/* Label */}
+      <div className="text-[9px] font-semibold text-slate-400 tracking-wide -mt-0.5">
+        {d.label ?? 'Internet'}
+      </div>
+    </div>
+  )
+}
+
+const NODE_TYPES = { device: DeviceNode, cloud: CloudNode }
 
 // ── Edge ───────────────────────────────────────────────────────────────────
 
@@ -320,17 +383,13 @@ function TopologyEdge({
     ? Math.max(0.5, 3 - utilPct * 0.025)
     : null
 
-  const [path, labelX, labelY] = getSmoothStepPath({
-    sourceX, sourceY, sourcePosition,
-    targetX, targetY, targetPosition,
-    borderRadius: 14,
-    offset: 28,
-  })
+  const isWan = d.protocol === 'wan'
+  const [path, labelX, labelY] = getStraightPath({ sourceX, sourceY, targetX, targetY })
 
   return (
     <>
       {/* Glow halo when selected */}
-      {hilit && (
+      {hilit && !isWan && (
         <path d={path} fill="none" stroke={color} strokeWidth={(sw + 6)} strokeOpacity={0.12} strokeLinecap="round" />
       )}
       {/* White backing (creates gap effect) */}
@@ -344,14 +403,14 @@ function TopologyEdge({
       <path
         id={id} d={path} fill="none"
         stroke={color}
-        strokeWidth={hilit ? sw + 1 : sw}
-        strokeOpacity={dimmed ? 0.07 : 1}
+        strokeWidth={isWan ? 1.2 : hilit ? sw + 1 : sw}
+        strokeOpacity={dimmed ? 0.07 : isWan ? 0.55 : 1}
         strokeLinecap="round"
-        strokeDasharray={hilit ? '7 4' : (flowDur ? '6 5' : undefined)}
+        strokeDasharray={isWan ? '5 4' : hilit ? '7 4' : (flowDur ? '6 5' : undefined)}
         style={{
-          animation: hilit
+          animation: (!isWan && hilit)
             ? 'topoEdgeDash 0.9s linear infinite'
-            : flowDur
+            : (!isWan && flowDur)
               ? `topoEdgeDash ${flowDur}s linear infinite`
               : undefined,
           transition: 'stroke 0.4s, stroke-opacity 0.15s, stroke-width 0.15s',
@@ -797,6 +856,7 @@ function TopologyPageInner() {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [edgePanelPos,   setEdgePanelPos]  = useState<{ x: number; y: number } | null>(null)
   const [showIsolated,   setShowIsolated]  = useState(false)
+  const [showIssuesOnly, setShowIssuesOnly] = useState(false)
   const [showLabels,     setShowLabels]    = useState(true)
   const [protocolFilter, setProtocol]      = useState<'all' | 'lldp' | 'cdp'>('all')
   const [hiddenTypes,    setHiddenTypes]   = useState<Set<string>>(new Set())
@@ -884,14 +944,40 @@ function TopologyPageInner() {
     const visible = data.nodes.filter(n =>
       !hiddenTypes.has(n.device_type) && !hiddenNodeIds.has(n.id) && (showIsolated || n.connected)
     )
-    const pos     = hierLayout(visible, data.edges)
+    const { pos, layer } = hierLayout(visible, data.edges)
     const nodeIds = new Set(visible.map(n => n.id))
+
+    // Issues-only: collect alerting node IDs + their direct neighbours
+    const alertingIds = new Set(Object.keys(alertsByDevice))
+    const issuesNeighbourIds = new Set<string>()
+    if (showIssuesOnly) {
+      data.edges.forEach(e => {
+        if (alertingIds.has(e.source)) issuesNeighbourIds.add(e.target)
+        if (alertingIds.has(e.target)) issuesNeighbourIds.add(e.source)
+      })
+    }
+
+    // ── Cloud / WAN node synthesis ─────────────────────────────────────────
+    // Pick the SINGLE WAN gateway: the border device (router/firewall/LB)
+    // that sits at the lowest BFS layer — i.e. the top of the hierarchy.
+    // Among ties, prefer the one with the fewest topology-layer peers (more
+    // likely to be a solo uplink device than a core router).
+    const borderNodes = visible.filter(n => BORDER_TYPES.has(n.device_type) && n.connected)
+    const wanGateway = borderNodes.length > 0
+      ? borderNodes.reduce((best, n) => {
+          const ln = layer[n.id] ?? 99
+          const lb = layer[best.id] ?? 99
+          return ln < lb ? n : best
+        })
+      : null
 
     setRfNodes(prev => {
       const prevById = Object.fromEntries(prev.map(n => [n.id, n]))
-      return visible.map(n => {
-        const isSearchDimmed = searchMatchIds !== null && !searchMatchIds.has(n.id)
-        const isSearchHit    = searchMatchIds !== null && searchMatchIds.has(n.id)
+
+      const deviceRfNodes = visible.map(n => {
+        const isSearchDimmed  = searchMatchIds !== null && !searchMatchIds.has(n.id)
+        const isSearchHit     = searchMatchIds !== null && searchMatchIds.has(n.id)
+        const isIssuesDimmed  = showIssuesOnly && !alertingIds.has(n.id) && !issuesNeighbourIds.has(n.id)
         return {
           id:       n.id,
           type:     'device',
@@ -900,68 +986,124 @@ function TopologyPageInner() {
           data: {
             ...n,
             alerts:    alertsByDevice[n.id] ?? null,
-            dimmed:    isSearchDimmed,
+            dimmed:    isSearchDimmed || isIssuesDimmed,
             searchHit: isSearchHit,
           } as unknown as Record<string, unknown>,
           draggable: true,
         }
       })
+
+      // Cloud node: positioned directly above the single WAN gateway
+      const cloudRfNode: Node[] = []
+      if (wanGateway) {
+        const gwPos    = pos[wanGateway.id] ?? { x: 0, y: 0 }
+        const fallback = { x: gwPos.x - CLOUD_W / 2 + NODE_W / 2, y: gwPos.y - V_STEP * 1.4 }
+        const cloudPos = prevById[CLOUD_NODE_ID]?.position
+          ?? savedLayout[CLOUD_NODE_ID]
+          ?? fallback
+
+        const isCloudDimmed = (searchMatchIds !== null && searchMatchIds.size > 0) ||
+          showIssuesOnly
+
+        cloudRfNode.push({
+          id:        CLOUD_NODE_ID,
+          type:      'cloud',
+          position:  cloudPos,
+          draggable: true,
+          data:      { dimmed: isCloudDimmed, label: 'Internet' } as unknown as Record<string, unknown>,
+        })
+      }
+
+      return [...deviceRfNodes, ...cloudRfNode]
     })
 
-    setRfEdges(
-      data.edges
-        .filter(e =>
-          nodeIds.has(e.source) && nodeIds.has(e.target) &&
-          (protocolFilter === 'all' || e.protocol === protocolFilter)
-        )
-        .map(e => {
-          const { sh, th } = edgeHandles(pos[e.source], pos[e.target])
-          const isAdj = !selectedId || e.source === selectedId || e.target === selectedId
-          const label = showLabels
-            ? (e.source_port && e.target_port
-                ? `${e.source_port} → ${e.target_port}`
-                : e.source_port ?? e.target_port ?? '')
-            : ''
+    // ── API edges ──────────────────────────────────────────────────────────
+    const apiEdges = data.edges
+      .filter(e =>
+        nodeIds.has(e.source) && nodeIds.has(e.target) &&
+        (protocolFilter === 'all' || e.protocol === protocolFilter)
+      )
+      .map(e => {
+        const isAdj = !selectedId || e.source === selectedId || e.target === selectedId
+        const label = showLabels
+          ? (e.source_port && e.target_port
+              ? `${e.source_port} → ${e.target_port}`
+              : e.source_port ?? e.target_port ?? '')
+          : ''
 
-          // Compute utilisation percentage from batch snapshot
-          let utilPct: number | null = null
-          let utilInPct: number | null = null
-          let utilOutPct: number | null = null
-          if (e.source_iface_id && utilBatch?.[e.source_iface_id]) {
-            const snap = utilBatch[e.source_iface_id]
-            if (snap.speed_bps && snap.speed_bps > 0) {
-              utilInPct  = (snap.in_bps  / snap.speed_bps) * 100
-              utilOutPct = (snap.out_bps / snap.speed_bps) * 100
-              utilPct    = Math.max(utilInPct, utilOutPct)
-            }
+        let utilPct: number | null = null
+        let utilInPct: number | null = null
+        let utilOutPct: number | null = null
+        if (e.source_iface_id && utilBatch?.[e.source_iface_id]) {
+          const snap = utilBatch[e.source_iface_id]
+          if (snap.speed_bps && snap.speed_bps > 0) {
+            utilInPct  = (snap.in_bps  / snap.speed_bps) * 100
+            utilOutPct = (snap.out_bps / snap.speed_bps) * 100
+            utilPct    = Math.max(utilInPct, utilOutPct)
           }
+        }
 
-          const edgeDimmed = (!!selectedId && !isAdj) ||
-            (searchMatchIds !== null && !searchMatchIds.has(e.source) && !searchMatchIds.has(e.target))
+        const edgeDimmed = (!!selectedId && !isAdj) ||
+          (searchMatchIds !== null && !searchMatchIds.has(e.source) && !searchMatchIds.has(e.target))
 
-          return {
-            id: e.id, source: e.source, target: e.target,
-            sourceHandle: sh, targetHandle: th,
-            type: 'topology',
-            data: {
-              label,
-              protocol:        e.protocol,
-              highlighted:     !!selectedId && isAdj,
-              dimmed:          edgeDimmed,
-              source_port:     e.source_port,
-              target_port:     e.target_port,
-              speed_bps:       e.source_speed_bps,
-              source_hostname: nodesById[e.source]?.hostname,
-              target_hostname: nodesById[e.target]?.hostname,
-              source_iface_id: e.source_iface_id,
-              util_pct:        utilPct,
-              util_in_pct:     utilInPct,
-              util_out_pct:    utilOutPct,
-            },
-          }
-        })
-    )
-  }, [data, showIsolated, hiddenTypes, selectedId, protocolFilter, showLabels,
+        return {
+          id: e.id, source: e.source, target: e.target,
+          type: 'topology',
+          data: {
+            label,
+            protocol:        e.protocol,
+            highlighted:     !!selectedId && isAdj,
+            dimmed:          edgeDimmed,
+            source_port:     e.source_port,
+            target_port:     e.target_port,
+            speed_bps:       e.source_speed_bps,
+            source_hostname: nodesById[e.source]?.hostname,
+            target_hostname: nodesById[e.target]?.hostname,
+            source_iface_id: e.source_iface_id,
+            util_pct:        utilPct,
+            util_in_pct:     utilInPct,
+            util_out_pct:    utilOutPct,
+          },
+        }
+      })
+
+    // ── WAN / cloud edge ───────────────────────────────────────────────────
+    // Single dashed edge from the cloud to the WAN gateway device.
+    // The "WAN interface" is any port on the gateway that does NOT appear
+    // in the LLDP/CDP edge table (those are internal-facing).
+    let wanEdges: Edge[] = []
+    if (wanGateway) {
+      // Collect all interface names this device uses in known LLDP/CDP edges
+      const internalPorts = new Set<string>()
+      data.edges.forEach(e => {
+        if (e.source === wanGateway.id && e.source_port) internalPorts.add(e.source_port)
+        if (e.target === wanGateway.id && e.target_port) internalPorts.add(e.target_port)
+      })
+      // We can't know the WAN interface name without the full interface list,
+      // but we label the edge with the gateway hostname so it's clear.
+      const wanDimmed = (searchMatchIds !== null && searchMatchIds.size > 0) || showIssuesOnly
+      wanEdges = [{
+        id:     `wan-edge-${wanGateway.id}`,
+        source: CLOUD_NODE_ID,
+        target: wanGateway.id,
+        type:   'topology',
+        data:   {
+          label:           showLabels ? 'WAN' : '',
+          protocol:        'wan',
+          highlighted:     false,
+          dimmed:          wanDimmed,
+          source_port:     'Internet',
+          target_port:     wanGateway.hostname,
+          speed_bps:       null,
+          util_pct:        null,
+          util_in_pct:     null,
+          util_out_pct:    null,
+        },
+      }]
+    }
+
+    setRfEdges([...apiEdges, ...wanEdges])
+  }, [data, showIsolated, showIssuesOnly, hiddenTypes, selectedId, protocolFilter, showLabels,
       alertsByDevice, utilBatch, searchMatchIds, savedLayout])
 
   // ── Drag with localStorage persistence ───────────────────────────────
@@ -978,12 +1120,42 @@ function TopologyPageInner() {
     })
   }, [])
 
-  const onNodeClick: NodeMouseHandler = (_, node) => {
+  const onNodeClick: NodeMouseHandler = useCallback((_, node) => {
+    // Cloud node: fit view to it + the WAN gateway node directly below it
+    if (node.id === CLOUD_NODE_ID) {
+      const wanEdge = rfEdges.find(e => e.id.startsWith('wan-edge-'))
+      const gatewayId = wanEdge?.target
+      const focusIds = new Set([CLOUD_NODE_ID, ...(gatewayId ? [gatewayId] : [])])
+      setTimeout(() => {
+        fitView({ nodes: rfNodes.filter(n => focusIds.has(n.id)), padding: 0.5, duration: 450 })
+      }, 30)
+      return
+    }
+
     setSelectedEdgeId(null)
-    setSelectedId(id => id === node.id ? null : node.id)
-  }
+    setSelectedId(prev => {
+      const next = prev === node.id ? null : node.id
+      if (next) {
+        // Fit view to the selected node + its direct neighbours
+        const neighbourIds = new Set<string>([next])
+        data?.edges.forEach(e => {
+          if (e.source === next) neighbourIds.add(e.target)
+          if (e.target === next) neighbourIds.add(e.source)
+        })
+        setTimeout(() => {
+          fitView({
+            nodes:   rfNodes.filter(n => neighbourIds.has(n.id)),
+            padding: 0.35,
+            duration: 450,
+          })
+        }, 30)
+      }
+      return next
+    })
+  }, [data?.edges, rfNodes, rfEdges, fitView])
 
   const onNodeDoubleClick: NodeMouseHandler = (_, node) => {
+    if (node.id === CLOUD_NODE_ID) return   // cloud node has no device page
     navigate(`/devices/${node.id}`)
   }
 
@@ -1024,6 +1196,10 @@ function TopologyPageInner() {
         @keyframes alertPulse {
           0%, 100% { box-shadow: 0 0 0 2px white, 0 0 0 4px transparent; }
           50%       { box-shadow: 0 0 0 2px white, 0 0 0 5px #dc262660; }
+        }
+        @keyframes downPulse {
+          0%, 100% { box-shadow: 0 0 0 4px #dc262618, 0 2px 8px rgba(220,38,38,0.18); }
+          50%       { box-shadow: 0 0 0 8px #dc262630, 0 4px 14px rgba(220,38,38,0.28); }
         }
       `}</style>
 
@@ -1122,6 +1298,20 @@ function TopologyPageInner() {
             <span className="hidden sm:inline">{showIsolated ? 'All devices' : 'Connected only'}</span>
             <span className="sm:hidden">All</span>
           </Pill>
+          {Object.keys(alertsByDevice).length > 0 && (
+            <Pill active={showIssuesOnly} onClick={() => setShowIssuesOnly(v => !v)}>
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block" />
+                <span className="hidden sm:inline">Issues only</span>
+                <span className="sm:hidden">Issues</span>
+                {showIssuesOnly && (
+                  <span className="bg-red-600 text-white rounded-full px-1 text-[9px] leading-none py-px ml-0.5">
+                    {Object.keys(alertsByDevice).length}
+                  </span>
+                )}
+              </span>
+            </Pill>
+          )}
 
           {/* Util legend toggle */}
           {hasUtilData && (
@@ -1139,7 +1329,7 @@ function TopologyPageInner() {
               try { localStorage.removeItem(LAYOUT_KEY) } catch { /* ignore */ }
               if (data) {
                 const visible = data.nodes.filter(n => !hiddenTypes.has(n.device_type) && !hiddenNodeIds.has(n.id) && (showIsolated || n.connected))
-                const pos = hierLayout(visible, data.edges)
+                const { pos } = hierLayout(visible, data.edges)
                 setRfNodes(prev => prev.map(n => ({ ...n, position: pos[n.id] ?? n.position })))
               }
             }}

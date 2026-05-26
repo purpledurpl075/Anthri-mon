@@ -29,14 +29,27 @@ type DeviceConfig struct {
 
 // Device represents a single monitored device assigned to this collector.
 type Device struct {
-	ID               string       `json:"id"`
-	Hostname         string       `json:"hostname"`
-	MgmtIP           string       `json:"mgmt_ip"`
-	Vendor           string       `json:"vendor"`
-	DeviceType       string       `json:"device_type"`
-	SNMPPort         int          `json:"snmp_port"`
-	PollingIntervalS int          `json:"polling_interval_s"`
-	Credentials      []Credential `json:"credentials"`
+	ID                    string       `json:"id"`
+	Hostname              string       `json:"hostname"`
+	MgmtIP                string       `json:"mgmt_ip"`
+	Vendor                string       `json:"vendor"`
+	DeviceType            string       `json:"device_type"`
+	SNMPPort              int          `json:"snmp_port"`
+	PollingIntervalS      int          `json:"polling_interval_s"`
+	Credentials           []Credential `json:"credentials"`
+	RestCollectionEnabled bool         `json:"rest_collection_enabled"`
+	ConfigIntervalS       int          `json:"config_interval_s"`
+}
+
+// SSHCredential returns the highest-priority SSH credential for the device,
+// or nil if none is assigned.
+func (d *Device) SSHCredential() *Credential {
+	for i := range d.Credentials {
+		if d.Credentials[i].Type == "ssh" {
+			return &d.Credentials[i]
+		}
+	}
+	return nil
 }
 
 // Credential holds a single authentication credential for a device.
@@ -143,6 +156,61 @@ func (c *Client) PostFlows(ctx context.Context, records []map[string]any) error 
 // PostSyslog sends a batch of syslog records to the hub.
 func (c *Client) PostSyslog(ctx context.Context, records []map[string]any) error {
 	return c.postJSON(ctx, "/api/v1/collectors/syslog", records, nil)
+}
+
+// PostConfigBackup sends a device running-configuration snapshot to the hub.
+// The hub stores it, diffs it against the previous backup, and fires
+// config-change alerts if applicable.
+func (c *Client) PostConfigBackup(ctx context.Context, deviceID, configText, method string) error {
+	return c.postJSON(ctx, "/api/v1/collectors/config-backup", map[string]any{
+		"device_id":   deviceID,
+		"config_text": configText,
+		"method":      method,
+	}, nil)
+}
+
+// PostBGPSessions sends a batch of BGP session state records to the hub.
+// Each record must contain a device_id field plus the BGP peer fields.
+func (c *Client) PostBGPSessions(ctx context.Context, sessions []map[string]any) error {
+	return c.postJSON(ctx, "/api/v1/collectors/bgp-sessions", sessions, nil)
+}
+
+// PostOSPFNeighbors sends a batch of OSPF neighbor state records to the hub.
+// Each record must contain a device_id field plus the OSPF neighbor fields.
+func (c *Client) PostOSPFNeighbors(ctx context.Context, neighbors []map[string]any) error {
+	return c.postJSON(ctx, "/api/v1/collectors/ospf-neighbors", neighbors, nil)
+}
+
+// DownloadBinary fetches the latest collector binary for the given architecture
+// from the hub.  Returns the raw bytes and the expected SHA-256 hex digest
+// from the X-Binary-SHA256 response header (empty string if the hub did not
+// provide one).
+func (c *Client) DownloadBinary(ctx context.Context, arch string) ([]byte, string, error) {
+	req, err := c.newRequest(ctx, http.MethodGet,
+		"/api/v1/collectors/binary?arch="+arch, nil)
+	if err != nil {
+		return nil, "", err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("GET /collectors/binary: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, "", fmt.Errorf("GET /collectors/binary: HTTP %d: %s",
+			resp.StatusCode, string(body))
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("read binary body: %w", err)
+	}
+
+	sha256hex := resp.Header.Get("X-Binary-SHA256")
+	return data, sha256hex, nil
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

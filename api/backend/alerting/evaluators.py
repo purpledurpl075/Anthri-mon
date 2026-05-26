@@ -79,8 +79,16 @@ async def eval_cpu(db: AsyncSession, device: dict, condition: str, threshold: fl
     if not row or row["cpu_util_pct"] is None:
         return None
     val = float(row["cpu_util_pct"])
-    if _check(val, condition, threshold):
-        return Breach(device["id"], device["hostname"], value=val)
+
+    # Adaptive threshold: use max(static threshold, baseline mean + 3σ).
+    # This prevents false positives on devices that idle at high CPU.
+    # Falls back to static threshold if no baseline exists yet.
+    effective_threshold = await _adaptive_threshold(
+        db, device["id"], "cpu_util_pct", threshold, sigma=3.0
+    )
+    if _check(val, condition, effective_threshold):
+        return Breach(device["id"], device["hostname"], value=val,
+                      extra={"effective_threshold": round(effective_threshold, 1)})
     return None
 
 
@@ -92,8 +100,13 @@ async def eval_mem(db: AsyncSession, device: dict, condition: str, threshold: fl
     if not row or not row["mem_total_bytes"]:
         return None
     pct = float(row["mem_used_bytes"] or 0) / float(row["mem_total_bytes"]) * 100
-    if _check(pct, condition, threshold):
-        return Breach(device["id"], device["hostname"], value=round(pct, 1))
+
+    effective_threshold = await _adaptive_threshold(
+        db, device["id"], "mem_util_pct", threshold, sigma=3.0
+    )
+    if _check(pct, condition, effective_threshold):
+        return Breach(device["id"], device["hostname"], value=round(pct, 1),
+                      extra={"effective_threshold": round(effective_threshold, 1)})
     return None
 
 
@@ -123,21 +136,54 @@ async def eval_device_down(db: AsyncSession, device: dict) -> Optional[Breach]:
 
 
 async def eval_interface_down(db: AsyncSession, device: dict) -> list[Breach]:
-    """Return one breach per interface that is admin-up but oper-down."""
+    """Return one breach per interface that is admin-up but oper-down.
+
+    Baseline suppression: if metric_baselines shows normal_up_pct ≤ 0.4 for an
+    interface (i.e. it is down more than 60% of the time), the alert is suppressed —
+    the port is considered 'normally down' (unplugged, reserved, etc.).
+
+    Override: force_alert = TRUE always fires; force_suppress = TRUE always suppresses.
+    No baseline row yet (new device / first 14 days) → alert as normal.
+    """
     rows = (await db.execute(
         text("""
-            SELECT id::text, name, oper_status, admin_status
-            FROM interfaces
-            WHERE device_id = :did
-              AND admin_status = 'up'
-              AND oper_status = 'down'
+            SELECT
+                i.id::text     AS id,
+                i.name,
+                mb.normal_up_pct,
+                mb.force_alert,
+                mb.force_suppress
+            FROM interfaces i
+            LEFT JOIN metric_baselines mb
+                   ON mb.device_id   = i.device_id
+                  AND mb.interface_id = i.id
+                  AND mb.metric_type  = 'interface_down'
+                  AND mb.bucket_type  = 'rolling'
+                  AND mb.bucket_index = 0
+            WHERE i.device_id    = :did
+              AND i.admin_status = 'up'
+              AND i.oper_status  = 'down'
         """),
         {"did": device["id"]},
     )).mappings().all()
-    return [
-        Breach(device["id"], device["hostname"], interface_id=r["id"], interface_name=r["name"])
-        for r in rows
-    ]
+
+    breaches = []
+    for r in rows:
+        force_alert    = r["force_alert"]    or False
+        force_suppress = r["force_suppress"] or False
+        normal_up_pct  = r["normal_up_pct"]  # None = no baseline yet
+
+        if force_suppress and not force_alert:
+            continue  # user explicitly silenced this port
+
+        if not force_alert and normal_up_pct is not None and normal_up_pct <= 0.4:
+            continue  # normally down port — suppress
+
+        breaches.append(
+            Breach(device["id"], device["hostname"],
+                   interface_id=r["id"], interface_name=r["name"])
+        )
+    return breaches
 
 
 async def eval_uptime(db: AsyncSession, device: dict, condition: str, threshold: float) -> Optional[Breach]:
@@ -198,17 +244,42 @@ async def eval_interface_errors(db: AsyncSession, device: dict, threshold: float
     breaches: list[Breach] = []
     for r in results:
         val = float(r.get("value", [0, 0])[1] or 0)
-        if val <= threshold:
-            continue
         if_name = r["metric"].get("if_name", "")
-        # Look up the interface row for its UUID
+
+        # Look up the interface row for its UUID and baseline.
         iface_row = (await db.execute(
-            text("SELECT id::text FROM interfaces WHERE device_id = :did AND name = :name LIMIT 1"),
+            text("""
+                SELECT i.id::text,
+                       mb.mean, mb.stddev, mb.force_alert, mb.force_suppress
+                FROM interfaces i
+                LEFT JOIN metric_baselines mb
+                       ON mb.interface_id = i.id
+                      AND mb.metric_type  = 'interface_errors'
+                      AND mb.bucket_type  = 'rolling'
+                      AND mb.bucket_index = 0
+                WHERE i.device_id = :did AND i.name = :name LIMIT 1
+            """),
             {"did": device_id, "name": if_name},
-        )).first()
+        )).mappings().first()
+
+        iface_id = iface_row["id"] if iface_row else None
+
+        # Determine effective threshold: max(static, mean + 3σ from baseline).
+        effective = float(threshold)
+        if iface_row and not iface_row["force_alert"]:
+            bl_mean   = float(iface_row["mean"]   or 0)
+            bl_stddev = float(iface_row["stddev"] or 0)
+            if bl_mean > 0 or bl_stddev > 0:
+                effective = max(effective, bl_mean + 3.0 * bl_stddev)
+            if iface_row["force_suppress"]:
+                continue  # always silenced
+
+        if val <= effective:
+            continue
+
         breaches.append(Breach(
             device_id, device["hostname"],
-            interface_id=iface_row[0] if iface_row else None,
+            interface_id=iface_id,
             interface_name=if_name,
             value=val,
         ))
@@ -592,7 +663,7 @@ async def eval_bgp_session_flapping(
             FROM bgp_sessions s
             JOIN bgp_session_events e ON e.session_id = s.id
             WHERE s.device_id = :did
-              AND e.recorded_at >= NOW() - INTERVAL ':window minutes'
+              AND e.recorded_at >= NOW() - make_interval(mins => :window)
             GROUP BY s.id, s.peer_ip, s.peer_asn, s.local_asn, s.session_state
             HAVING COUNT(e.id) >= :threshold
         """),
@@ -609,6 +680,78 @@ async def eval_bgp_session_flapping(
         })
         for row in rows
     ]
+
+
+async def eval_bgp_prefix_drop(
+    db: AsyncSession,
+    device: dict,
+    drop_pct: float = 20.0,
+    lookback_hours: int = 24,
+) -> list[Breach]:
+    """Alert when any BGP peer's received prefix count drops >= drop_pct% from its 24h average.
+
+    Uses VictoriaMetrics time-series data pushed by the SNMP collector.
+    The `threshold` in the alert rule is the minimum percentage drop to trigger (default 20%).
+    """
+    device_id = device["id"]
+    filter_str = f'device_id="{device_id}"'
+
+    # Current value: instant query
+    # Historical average: avg_over_time over the lookback window
+    async def vm_instant(query: str) -> list[dict]:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{_VM_URL}/api/v1/query", params={"query": query})
+            return r.json().get("data", {}).get("result", [])
+        except Exception:
+            return []
+
+    cur_series, avg_series = await __import__("asyncio").gather(
+        vm_instant(f'anthrimon_bgp_prefixes_received{{{filter_str}}}'),
+        vm_instant(f'avg_over_time(anthrimon_bgp_prefixes_received{{{filter_str}}}[{lookback_hours}h])'),
+    )
+
+    if not cur_series or not avg_series:
+        return []
+
+    # Build lookup: peer_ip → current count
+    cur_map: dict[str, tuple[float, str]] = {}
+    for s in cur_series:
+        peer_ip  = s["metric"].get("peer_ip", "")
+        peer_asn = s["metric"].get("peer_asn", "")
+        val      = s.get("value")
+        if val:
+            cur_map[peer_ip] = (float(val[1]), peer_asn)
+
+    breaches: list[Breach] = []
+    for s in avg_series:
+        peer_ip  = s["metric"].get("peer_ip", "")
+        peer_asn = s["metric"].get("peer_asn", "")
+        val      = s.get("value")
+        if not val or peer_ip not in cur_map:
+            continue
+        avg_count = float(val[1])
+        cur_count, _ = cur_map[peer_ip]
+
+        # Only alert if there was a meaningful baseline (>= 10 prefixes avg)
+        if avg_count < 10:
+            continue
+
+        actual_drop_pct = (avg_count - cur_count) / avg_count * 100
+        if actual_drop_pct >= drop_pct:
+            breaches.append(Breach(
+                device["id"], device["hostname"],
+                value=actual_drop_pct,
+                extra={
+                    "peer_ip":       peer_ip,
+                    "peer_asn":      peer_asn,
+                    "prefixes_now":  int(cur_count),
+                    "prefixes_avg":  round(avg_count, 1),
+                    "drop_pct":      round(actual_drop_pct, 1),
+                    "threshold_pct": drop_pct,
+                },
+            ))
+    return breaches
 
 
 async def eval_route_missing(db: AsyncSession, device: dict, prefix: str) -> list[Breach]:
@@ -634,3 +777,52 @@ def _check(value: float, condition: str, threshold: float) -> bool:
     if condition == "lte":
         return value <= threshold
     return False
+
+
+async def _adaptive_threshold(
+    db: AsyncSession,
+    device_id: str,
+    metric_type: str,
+    static_threshold: float,
+    sigma: float = 3.0,
+    interface_id: Optional[str] = None,
+) -> float:
+    """Return max(static_threshold, baseline_mean + sigma * stddev).
+
+    Falls back to static_threshold when no baseline row exists, when the
+    baseline is too fresh (sample_count < 50), or if force_suppress is set.
+    """
+    try:
+        row = (await db.execute(
+            text("""
+                SELECT mean, stddev, sample_count, force_alert, force_suppress
+                FROM metric_baselines
+                WHERE device_id   = :did
+                  AND metric_type = :mt
+                  AND bucket_type = 'rolling'
+                  AND bucket_index = 0
+                  AND (interface_id = :iid OR (:iid IS NULL AND interface_id IS NULL))
+                LIMIT 1
+            """),
+            {
+                "did": device_id,
+                "mt":  metric_type,
+                "iid": interface_id,
+            },
+        )).mappings().first()
+    except Exception:
+        return static_threshold
+
+    if not row:
+        return static_threshold
+
+    # Minimum sample count before we trust the baseline (~4 days of 5-min samples).
+    if (row["sample_count"] or 0) < 50:
+        return static_threshold
+
+    bl_mean   = float(row["mean"]   or 0)
+    bl_stddev = float(row["stddev"] or 0)
+    adaptive  = bl_mean + sigma * bl_stddev
+
+    # Never lower the user's explicit threshold — only raise it.
+    return max(static_threshold, adaptive)

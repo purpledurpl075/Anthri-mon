@@ -1,5 +1,5 @@
 // Package server exposes a tiny HTTP server on the collector's WireGuard IP
-// that accepts hub-initiated commands (/refresh, /health).
+// that accepts hub-initiated commands (/refresh, /health, /update).
 package server
 
 import (
@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	defaultPort    = 9090
-	version        = "0.1.0"
+	defaultPort     = 9090
+	version         = "0.1.0"
 	shutdownTimeout = 5 * time.Second
 )
 
@@ -24,6 +24,7 @@ type Server struct {
 	wgIP      string
 	port      int
 	onRefresh func()
+	onUpdate  func() error
 	log       zerolog.Logger
 }
 
@@ -32,7 +33,8 @@ type Server struct {
 //   - wgIP is the WireGuard-assigned IP (e.g. "10.100.0.2").
 //   - port is the listen port; 0 means use defaultPort (9090).
 //   - onRefresh is called when POST /refresh is received.
-func NewServer(wgIP string, port int, onRefresh func(), log zerolog.Logger) *Server {
+//   - onUpdate is called when POST /update is received; nil disables the endpoint.
+func NewServer(wgIP string, port int, onRefresh func(), onUpdate func() error, log zerolog.Logger) *Server {
 	if port == 0 {
 		port = defaultPort
 	}
@@ -40,6 +42,7 @@ func NewServer(wgIP string, port int, onRefresh func(), log zerolog.Logger) *Ser
 		wgIP:      wgIP,
 		port:      port,
 		onRefresh: onRefresh,
+		onUpdate:  onUpdate,
 		log:       log.With().Str("component", "control_server").Logger(),
 	}
 }
@@ -49,6 +52,7 @@ func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/refresh", s.handleRefresh)
+	mux.HandleFunc("/update", s.handleUpdate)
 
 	addr := net.JoinHostPort(s.wgIP, fmt.Sprintf("%d", s.port))
 	srv := &http.Server{
@@ -106,5 +110,27 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "refreshing",
+	})
+}
+
+func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.onUpdate == nil {
+		http.Error(w, "update not configured", http.StatusNotImplemented)
+		return
+	}
+	s.log.Info().Msg("self-update requested by hub")
+	// Kick off asynchronously so the HTTP response is sent before the process restarts.
+	go func() {
+		if err := s.onUpdate(); err != nil {
+			s.log.Error().Err(err).Msg("self-update failed")
+		}
+	}()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status": "updating",
 	})
 }

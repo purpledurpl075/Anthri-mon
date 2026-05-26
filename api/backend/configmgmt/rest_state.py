@@ -140,17 +140,26 @@ async def _collect_bgp(client: ArubaRestClient, device_id: uuid.UUID) -> list[di
                 stats      = data.get("statistics", {}) or {}
                 state_raw  = status.get("bgp_peer_state", "unknown")
 
+                # Sum received prefixes across all AFI/SAFI families
+                # e.g. status.prefix_statistics["ipv4-unicast"]["received"]
+                prefixes_rx = 0
+                pfx_stats = status.get("prefix_statistics") or {}
+                for afi_data in pfx_stats.values():
+                    if isinstance(afi_data, dict):
+                        prefixes_rx += int(afi_data.get("received") or 0)
+
                 peers.append({
-                    "vrf":          vrf_name,
-                    "peer_ip":      peer_ip,
-                    "peer_asn":     data.get("remote_as"),
-                    "local_asn":    local_asn,
-                    "description":  data.get("description"),
-                    "state":        _bgp_state(state_raw),
-                    "uptime_s":     stats.get("bgp_peer_uptime") or 0,
-                    "flap_count":   stats.get("bgp_peer_established_count") or 0,
-                    "in_updates":   stats.get("bgp_peer_update_in_count") or 0,
-                    "out_updates":  stats.get("bgp_peer_update_out_count") or 0,
+                    "vrf":               vrf_name,
+                    "peer_ip":           peer_ip,
+                    "peer_asn":          data.get("remote_as"),
+                    "local_asn":         local_asn,
+                    "description":       data.get("description"),
+                    "state":             _bgp_state(state_raw),
+                    "uptime_s":          stats.get("bgp_peer_uptime") or 0,
+                    "flap_count":        stats.get("bgp_peer_established_count") or 0,
+                    "in_updates":        stats.get("bgp_peer_update_in_count") or 0,
+                    "out_updates":       stats.get("bgp_peer_update_out_count") or 0,
+                    "prefixes_received": prefixes_rx,
                 })
     return peers
 
@@ -232,39 +241,41 @@ async def _write_bgp(device_id: uuid.UUID, peers: list[dict]) -> None:
                     (device_id, vrf, peer_ip, local_asn, peer_asn,
                      peer_description, session_state, admin_status,
                      uptime_seconds, in_updates, out_updates, flap_count,
-                     updated_at)
+                     prefixes_received, updated_at)
                 VALUES
                     (CAST(:did AS uuid), :vrf, CAST(:peer_ip AS inet),
                      :local_asn, :peer_asn,
                      :description, CAST(:state AS bgp_session_state), 'start',
                      :uptime_s, :in_updates, :out_updates, :flap_count,
-                     NOW())
+                     :prefixes_received, NOW())
                 ON CONFLICT (device_id, vrf, peer_ip) DO UPDATE SET
-                    local_asn        = EXCLUDED.local_asn,
-                    peer_asn         = EXCLUDED.peer_asn,
-                    peer_description = EXCLUDED.peer_description,
-                    session_state    = EXCLUDED.session_state,
-                    uptime_seconds   = EXCLUDED.uptime_seconds,
-                    in_updates       = EXCLUDED.in_updates,
-                    out_updates      = EXCLUDED.out_updates,
-                    flap_count       = EXCLUDED.flap_count,
+                    local_asn         = EXCLUDED.local_asn,
+                    peer_asn          = EXCLUDED.peer_asn,
+                    peer_description  = EXCLUDED.peer_description,
+                    session_state     = EXCLUDED.session_state,
+                    uptime_seconds    = EXCLUDED.uptime_seconds,
+                    in_updates        = EXCLUDED.in_updates,
+                    out_updates       = EXCLUDED.out_updates,
+                    flap_count        = EXCLUDED.flap_count,
+                    prefixes_received = EXCLUDED.prefixes_received,
                     last_state_change = CASE
                         WHEN bgp_sessions.session_state != EXCLUDED.session_state THEN NOW()
                         ELSE bgp_sessions.last_state_change
                     END,
                     updated_at = NOW()
             """), {
-                "did":         str(device_id),
-                "vrf":         p.get("vrf", "default"),
-                "peer_ip":     p["peer_ip"],
-                "local_asn":   p["local_asn"],
-                "peer_asn":    p.get("peer_asn"),
-                "description": p.get("description"),
-                "state":       p["state"],
-                "uptime_s":    p.get("uptime_s", 0),
-                "in_updates":  p.get("in_updates", 0),
-                "out_updates": p.get("out_updates", 0),
-                "flap_count":  p.get("flap_count", 0),
+                "did":               str(device_id),
+                "vrf":               p.get("vrf", "default"),
+                "peer_ip":           p["peer_ip"],
+                "local_asn":         p["local_asn"],
+                "peer_asn":          p.get("peer_asn"),
+                "description":       p.get("description"),
+                "state":             p["state"],
+                "uptime_s":          p.get("uptime_s", 0),
+                "in_updates":        p.get("in_updates", 0),
+                "out_updates":       p.get("out_updates", 0),
+                "flap_count":        p.get("flap_count", 0),
+                "prefixes_received": p.get("prefixes_received", 0),
             })
 
         # Log transitions
@@ -289,6 +300,49 @@ async def _write_bgp(device_id: uuid.UUID, peers: list[dict]) -> None:
                             prev=old["state"], new=p["state"])
 
         await db.commit()
+
+    # ── Push to VictoriaMetrics ───────────────────────────────────────────────
+    await _push_bgp_to_vm(device_id, peers)
+
+
+async def _push_bgp_to_vm(device_id: uuid.UUID, peers: list[dict]) -> None:
+    """Push BGP metrics to VictoriaMetrics in Prometheus text format."""
+    import time as _time
+    did = str(device_id)
+    ts_ms = int(_time.time() * 1000)
+    lines: list[str] = []
+
+    for p in peers:
+        peer_ip   = p["peer_ip"].replace('"', '')
+        peer_asn  = int(p.get("peer_asn") or 0)
+        local_asn = int(p.get("local_asn") or 0)
+        labels = (
+            f'device_id="{did}",'
+            f'peer_ip="{peer_ip}",'
+            f'peer_asn="{peer_asn}",'
+            f'local_asn="{local_asn}"'
+        )
+        lines.append(f'anthrimon_bgp_prefixes_received{{{labels}}} {p.get("prefixes_received", 0)} {ts_ms}')
+        lines.append(f'anthrimon_bgp_in_updates_total{{{labels}}} {p.get("in_updates", 0)} {ts_ms}')
+        lines.append(f'anthrimon_bgp_out_updates_total{{{labels}}} {p.get("out_updates", 0)} {ts_ms}')
+        lines.append(f'anthrimon_bgp_flap_count_total{{{labels}}} {p.get("flap_count", 0)} {ts_ms}')
+
+    if not lines:
+        return
+
+    body = "\n".join(lines) + "\n"
+    try:
+        async with httpx.AsyncClient(timeout=5) as hc:
+            resp = await hc.post(
+                "http://localhost:8428/api/v1/import/prometheus",
+                content=body.encode(),
+                headers={"Content-Type": "text/plain"},
+            )
+            if resp.status_code not in (200, 204):
+                logger.warning("bgp_vm_push_failed",
+                               device_id=did, status=resp.status_code)
+    except Exception as exc:
+        logger.warning("bgp_vm_push_error", device_id=did, error=str(exc))
 
 
 async def _write_ospf(device_id: uuid.UUID, neighbors: list[dict]) -> None:
@@ -330,19 +384,39 @@ async def _write_ospf(device_id: uuid.UUID, neighbors: list[dict]) -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _disable_rest(device_id: uuid.UUID, reason: str) -> None:
-    """Set rest_collection_enabled=False — requires manual re-enable."""
+    """Set rest_collection_enabled=False — requires manual re-enable.
+
+    Skipped for devices assigned to a remote collector: the hub can't reach
+    those devices directly, so unreachability is expected and should not
+    disable collection for the remote collector.
+    """
     async with AsyncSessionLocal() as db:
-        await db.execute(
-            text("UPDATE devices SET rest_collection_enabled = FALSE WHERE id = CAST(:did AS uuid)"),
+        result = await db.execute(
+            text("""
+                UPDATE devices
+                   SET rest_collection_enabled = FALSE
+                 WHERE id = CAST(:did AS uuid)
+                   AND collector_id IS NULL
+            """),
             {"did": str(device_id)},
         )
+        if result.rowcount == 0:
+            logger.debug("rest_collection_disable_skipped_remote",
+                         device_id=str(device_id), reason=reason)
+            return
         await db.commit()
     logger.warning("rest_collection_disabled", device_id=str(device_id), reason=reason)
 
 
 async def _auto_enable_aruba_cx() -> None:
     """Enable REST collection for any ArubaOS-CX devices not yet enabled.
-    Runs at the start of each loop cycle to pick up newly discovered devices."""
+
+    Applies to ALL Aruba CX devices regardless of whether they are managed by
+    the hub or a remote collector — remote collectors read this flag from the
+    /config endpoint and handle REST collection themselves.
+
+    Runs at the start of each loop cycle to pick up newly discovered devices.
+    """
     async with AsyncSessionLocal() as db:
         result = await db.execute(text("""
             UPDATE devices SET rest_collection_enabled = TRUE
@@ -371,6 +445,10 @@ async def collect_device_rest_state(device_id: uuid.UUID) -> None:
         if dev is None:
             return
         if not dev.rest_collection_enabled:
+            return
+        if dev.collector_id is not None:
+            # Device is assigned to a remote collector which handles REST
+            # collection itself — the hub must not attempt to reach it directly.
             return
 
         # Prefer api_token credential, fall back to ssh credential
@@ -459,6 +537,7 @@ async def _rest_state_loop(interval_s: int) -> None:
                         SELECT d.id::text FROM devices d
                         WHERE d.is_active = true
                           AND d.rest_collection_enabled = true
+                          AND d.collector_id IS NULL
                     """)
                 )).scalars().all()
 

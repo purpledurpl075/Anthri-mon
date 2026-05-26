@@ -11,7 +11,7 @@ Bootstrap is unauthenticated — one-time registration token validates the reque
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import hashlib  # noqa: F401 — used for SHA-256 in binary download + token generation
 import io
 import ipaddress
 import json
@@ -28,7 +28,7 @@ from typing import Optional
 import httpx
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import cast, select, update
 from sqlalchemy.dialects.postgresql import INET as PG_INET
@@ -394,6 +394,46 @@ async def build_collector_binaries(
 # ── Collector-facing routes (no JWT — use API key from WireGuard tunnel) ──────
 # These MUST be defined before /{collector_id} to avoid path-param shadowing.
 
+@router.get("/binary", summary="Download the collector binary (collector API-key auth)")
+async def download_binary_self_update(
+    arch:    str     = "amd64",
+    request: Request = None,
+    db:      AsyncSession = Depends(get_db),
+) -> Response:
+    """Serve the pre-built collector binary for the given architecture.
+
+    Called by the collector itself during a hub-triggered self-update.
+    Requires a valid collector API key over the WireGuard tunnel.
+    Sets X-Binary-SHA256 so the collector can verify integrity before replacing
+    its own binary on disk.
+    """
+    await _require_collector(request, db)
+
+    if arch not in _VALID_ARCHES:
+        raise HTTPException(status_code=400,
+                            detail=f"arch must be one of: {', '.join(sorted(_VALID_ARCHES))}")
+
+    binary_path = _COLLECTOR_DIST / f"anthrimon-collector-linux-{arch}"
+    if not binary_path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=f"Binary for linux/{arch} not built yet. "
+                   "Run POST /collectors/builds on the hub first.",
+        )
+
+    data = binary_path.read_bytes()
+    sha256_hex = hashlib.sha256(data).hexdigest()
+
+    return Response(
+        content=data,
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="anthrimon-collector-linux-{arch}"',
+            "X-Binary-SHA256": sha256_hex,
+        },
+    )
+
+
 @router.get("/config", summary="Fetch device list and credentials for this collector")
 async def collector_config(
     request: Request,
@@ -439,14 +479,16 @@ async def collector_config(
             })
 
         devices_out.append({
-            "id":                str(dev.id),
-            "hostname":          dev.fqdn or dev.hostname,
-            "mgmt_ip":           str(dev.mgmt_ip).split("/")[0],
-            "vendor":            dev.vendor,
-            "device_type":       dev.device_type,
-            "snmp_port":         dev.snmp_port,
-            "polling_interval_s":dev.polling_interval_s,
-            "credentials":       cred_list,
+            "id":                      str(dev.id),
+            "hostname":                dev.fqdn or dev.hostname,
+            "mgmt_ip":                 str(dev.mgmt_ip).split("/")[0],
+            "vendor":                  dev.vendor,
+            "device_type":             dev.device_type,
+            "snmp_port":               dev.snmp_port,
+            "polling_interval_s":      dev.polling_interval_s,
+            "credentials":             cred_list,
+            "rest_collection_enabled": dev.rest_collection_enabled,
+            "config_interval_s":       3600,
         })
 
     return {
@@ -640,6 +682,78 @@ async def delete_collector(
     c.wg_ip         = None
     await db.commit()
     logger.info("collector_revoked", collector=c.name)
+
+
+@router.post("/{collector_id}/update", summary="Trigger a hot-patch self-update on a remote collector")
+async def trigger_collector_update(
+    collector_id: str,
+    current_user: User         = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    """Signal a running collector to download and install the latest built binary.
+
+    The hub sends POST /update to the collector's control server on its
+    WireGuard IP (:9090).  The collector responds immediately, then
+    asynchronously downloads the binary from GET /collectors/binary, verifies
+    the SHA-256, atomically replaces its executable, drains all goroutines, and
+    re-execs into the new binary — without tearing down the WireGuard tunnel.
+
+    Prerequisites:
+      - The collector must be online (reachable over the WireGuard tunnel).
+      - Binaries must have been built first via POST /collectors/builds.
+
+    If the collector is offline the response indicates so.  Trigger again once
+    it comes back online — there is no automatic retry.
+    """
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+
+    if not c.wg_ip:
+        raise HTTPException(
+            status_code=409,
+            detail="Collector has no WireGuard IP — bootstrap it first",
+        )
+
+    # Ensure at least one binary exists.
+    any_built = any(
+        (_COLLECTOR_DIST / f"anthrimon-collector-linux-{arch}").exists()
+        for arch, _ in _BUILD_TARGETS
+    )
+    if not any_built:
+        raise HTTPException(
+            status_code=503,
+            detail="No built binaries found — run POST /collectors/builds first",
+        )
+
+    control_url = f"http://{str(c.wg_ip).split('/')[0]}:9090/update"
+    try:
+        async with httpx.AsyncClient(timeout=10) as hc:
+            resp = await hc.post(control_url)
+        if resp.status_code == 200:
+            logger.info("collector_update_triggered",
+                        collector=c.name, wg_ip=str(c.wg_ip))
+            return {
+                "status":    "update_triggered",
+                "collector": c.name,
+                "detail":    "Collector is downloading and installing the latest binary",
+            }
+        return {
+            "status": "error",
+            "detail": f"Collector control server returned HTTP {resp.status_code}",
+        }
+    except httpx.ConnectError:
+        return {
+            "status": "offline",
+            "detail": "Collector unreachable — trigger again once it comes back online",
+        }
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)}
 
 
 @router.post("/{collector_id}/token", summary="Regenerate registration token")
@@ -1127,3 +1241,144 @@ async def ingest_syslog(
         logger.warning("syslog_ingest_failed", collector=collector.name,
                        status=resp.status_code, detail=resp.text[:200])
     return {"written": len(rows)}
+
+
+# ── Config backup ingest ──────────────────────────────────────────────────────
+
+class ConfigBackupIngest(BaseModel):
+    device_id:   str
+    config_text: str
+    method:      str = "ssh_show_run"
+
+
+@router.post("/config-backup",
+             summary="Ingest a config backup collected by the remote collector")
+async def ingest_config_backup(
+    body:    ConfigBackupIngest,
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    """Accept a device running-config from a remote collector, store it, diff it,
+    and fire config-change alerts if applicable.  Device must be assigned to the
+    authenticated collector."""
+    collector = await _require_collector(request, db)
+
+    # Validate the device is assigned to this collector.
+    dev = (await db.execute(
+        select(Device).where(
+            Device.id == body.device_id,
+            Device.collector_id == collector.id,
+            Device.is_active == True,  # noqa: E712
+        )
+    )).scalar_one_or_none()
+    if dev is None:
+        raise HTTPException(status_code=404,
+                            detail="Device not found or not assigned to this collector")
+
+    from ..configmgmt.collector import store_config_backup
+    changed = await store_config_backup(body.device_id, body.config_text, body.method, db)
+
+    logger.info("config_backup_ingested", collector=collector.name,
+                device=dev.hostname, changed=changed)
+    return {"stored": True, "changed": changed}
+
+
+# ── BGP sessions ingest ───────────────────────────────────────────────────────
+
+@router.post("/bgp-sessions",
+             summary="Ingest BGP session state collected by the remote collector")
+async def ingest_bgp_sessions(
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    """Accept a list of BGP session records (each with a device_id field) from a
+    remote collector and upsert them into bgp_sessions.
+
+    Each record must include at minimum: device_id, vrf, peer_ip, local_asn, state.
+    """
+    collector = await _require_collector(request, db)
+    records   = await request.json()
+    if not records:
+        return {"written": 0}
+
+    import uuid as _uuid
+    from ..configmgmt.rest_state import _write_bgp
+
+    # Gather allowed device IDs for this collector.
+    allowed = {
+        str(did) for (did,) in (await db.execute(
+            select(Device.id).where(
+                Device.collector_id == collector.id,
+                Device.is_active == True,  # noqa: E712
+            )
+        )).all()
+    }
+
+    # Group records by device_id.
+    by_device: dict[str, list] = {}
+    for r in records:
+        did = r.get("device_id")
+        if did and did in allowed:
+            r_clean = {k: v for k, v in r.items() if k != "device_id"}
+            by_device.setdefault(did, []).append(r_clean)
+
+    written = 0
+    for did, peers in by_device.items():
+        try:
+            await _write_bgp(_uuid.UUID(did), peers)
+            written += len(peers)
+        except Exception as exc:
+            logger.warning("bgp_ingest_failed", collector=collector.name,
+                           device_id=did, error=str(exc))
+
+    return {"written": written}
+
+
+# ── OSPF neighbors ingest ─────────────────────────────────────────────────────
+
+@router.post("/ospf-neighbors",
+             summary="Ingest OSPF neighbor state collected by the remote collector")
+async def ingest_ospf_neighbors(
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    """Accept a list of OSPF neighbor records (each with a device_id field) from a
+    remote collector and upsert them into ospf_neighbors.
+
+    Each record must include at minimum: device_id, vrf, router_id, neighbor_ip,
+    interface_name, area, state.
+    """
+    collector = await _require_collector(request, db)
+    records   = await request.json()
+    if not records:
+        return {"written": 0}
+
+    import uuid as _uuid
+    from ..configmgmt.rest_state import _write_ospf
+
+    allowed = {
+        str(did) for (did,) in (await db.execute(
+            select(Device.id).where(
+                Device.collector_id == collector.id,
+                Device.is_active == True,  # noqa: E712
+            )
+        )).all()
+    }
+
+    by_device: dict[str, list] = {}
+    for r in records:
+        did = r.get("device_id")
+        if did and did in allowed:
+            r_clean = {k: v for k, v in r.items() if k != "device_id"}
+            by_device.setdefault(did, []).append(r_clean)
+
+    written = 0
+    for did, nbrs in by_device.items():
+        try:
+            await _write_ospf(_uuid.UUID(did), nbrs)
+            written += len(nbrs)
+        except Exception as exc:
+            logger.warning("ospf_ingest_failed", collector=collector.name,
+                           device_id=did, error=str(exc))
+
+    return {"written": written}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gosnmp/gosnmp"
 	"github.com/google/uuid"
@@ -96,6 +97,7 @@ func PollBGPSessions(s *client.Session, deviceID uuid.UUID) ([]*model.BGPSession
 		}
 	}
 
+	pollTime := time.Now().UTC()
 	results := make([]*model.BGPSession, 0, len(rows))
 	for peerIP, r := range rows {
 		// Skip rows where we got no useful data.
@@ -118,6 +120,7 @@ func PollBGPSessions(s *client.Session, deviceID uuid.UUID) ([]*model.BGPSession
 
 		results = append(results, &model.BGPSession{
 			DeviceID:         deviceID,
+			PollTime:         pollTime,
 			PeerIP:           peerIP,
 			PeerRouterID:     r.routerID,
 			LocalASN:         localASN,

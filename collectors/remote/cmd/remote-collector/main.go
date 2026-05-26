@@ -11,11 +11,13 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -114,28 +116,40 @@ func run(cfgPath string) error {
 
 	// ── Collectors ────────────────────────────────────────────────────────────
 
-	snmpCol := collector.NewSNMPCollector(hubClient, cfg.SNMP, logger)
+	snmpCol   := collector.NewSNMPCollector(hubClient, cfg.SNMP, logger)
+	sshCfgCol := collector.NewSSHConfigCollector(hubClient, logger)
+	restCol   := collector.NewArubaRESTCollector(hubClient, logger)
 
 	devicesByIP := make(map[string]string)
 	flowCol   := collector.NewFlowCollector(hubClient, cfg.Flow, cfg.Forward, devicesByIP, logger)
 	syslogCol := collector.NewSyslogCollector(hubClient, cfg.Syslog, cfg.Forward, devicesByIP, logger)
 
 	// Initial config fetch.
-	if err := refreshDevices(ctx, hubClient, snmpCol, flowCol, syslogCol, logger); err != nil {
+	if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, flowCol, syslogCol, logger); err != nil {
 		logger.Warn().Err(err).Msg("initial config fetch failed — will retry")
 	}
 
-	// ── Control server refresh callback ───────────────────────────────────────
+	// ── Control server callbacks ──────────────────────────────────────────────
 
 	onRefresh := func() {
-		if err := refreshDevices(ctx, hubClient, snmpCol, flowCol, syslogCol, logger); err != nil {
+		if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, flowCol, syslogCol, logger); err != nil {
 			logger.Warn().Err(err).Msg("on-demand config refresh failed")
 		}
 	}
 
+	// restartCh receives the new executable path when a self-update completes.
+	// selfUpdate sends on this channel and calls cancel() to trigger graceful
+	// shutdown.  The main goroutine then re-execs into the new binary.
+	restartCh := make(chan string, 1)
+
+	onUpdate := func() error {
+		go selfUpdate(hubClient, cancel, restartCh, logger)
+		return nil
+	}
+
 	// ── Mini HTTP server on the WireGuard IP ─────────────────────────────────
 
-	controlSrv := server.NewServer(st.WGAssignedIP, 9090, onRefresh, logger)
+	controlSrv := server.NewServer(st.WGAssignedIP, 9090, onRefresh, onUpdate, logger)
 
 	// ── Launch all goroutines ─────────────────────────────────────────────────
 
@@ -150,13 +164,25 @@ func run(cfgPath string) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		configRefreshLoop(ctx, hubClient, snmpCol, flowCol, syslogCol, logger)
+		configRefreshLoop(ctx, hubClient, snmpCol, sshCfgCol, restCol, flowCol, syslogCol, logger)
 	}()
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		snmpCol.Run(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		sshCfgCol.Run(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		restCol.Run(ctx)
 	}()
 
 	wg.Add(1)
@@ -179,12 +205,99 @@ func run(cfgPath string) error {
 		}
 	}()
 
-	// Wait for context cancellation.
+	// Wait for context cancellation (SIGINT/SIGTERM or self-update).
 	<-ctx.Done()
 	logger.Info().Msg("shutdown signal received — draining goroutines")
 	wg.Wait()
 	logger.Info().Msg("remote-collector stopped")
+
+	// ── Self-update re-exec ───────────────────────────────────────────────────
+	// If selfUpdate completed successfully it sent the new binary path on
+	// restartCh and called cancel().  We re-exec into the new binary here,
+	// AFTER all goroutines have drained but BEFORE the deferred tunnel.Teardown
+	// runs (syscall.Exec replaces the process image — defers don't run).
+	// The WireGuard tunnel therefore stays up and the new binary finds it
+	// already configured, avoiding any connectivity gap.
+	select {
+	case newBin := <-restartCh:
+		logger.Info().Str("binary", newBin).Msg("re-execing into updated binary")
+		if err := syscall.Exec(newBin, os.Args, os.Environ()); err != nil {
+			// exec failed — fall through to normal shutdown (defer tears down tunnel)
+			return fmt.Errorf("self-exec failed: %w", err)
+		}
+		// syscall.Exec never returns on success.
+	default:
+		// Normal shutdown — deferred tunnel.Teardown will run.
+	}
+
 	return nil
+}
+
+// ─── Self-update ──────────────────────────────────────────────────────────────
+
+// selfUpdate downloads the latest binary from the hub, verifies its SHA-256,
+// atomically replaces the running executable, sends the new path on restartCh,
+// and cancels the context to trigger graceful shutdown → re-exec.
+func selfUpdate(
+	hubClient *hub.Client,
+	cancel    context.CancelFunc,
+	restartCh chan<- string,
+	logger    zerolog.Logger,
+) {
+	log := logger.With().Str("op", "self_update").Logger()
+
+	exePath, err := os.Executable()
+	if err != nil {
+		log.Error().Err(err).Msg("cannot determine executable path")
+		return
+	}
+
+	log.Info().Str("arch", runtime.GOARCH).Msg("downloading updated binary")
+
+	dlCtx, dlCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer dlCancel()
+
+	data, expectedSHA, err := hubClient.DownloadBinary(dlCtx, runtime.GOARCH)
+	if err != nil {
+		log.Error().Err(err).Msg("download failed")
+		return
+	}
+
+	// Verify SHA-256 when the hub provides it.
+	if expectedSHA != "" {
+		actual := fmt.Sprintf("%x", sha256.Sum256(data))
+		if actual != expectedSHA {
+			log.Error().
+				Str("expected", expectedSHA).
+				Str("actual", actual).
+				Msg("SHA-256 mismatch — aborting update")
+			return
+		}
+		log.Info().Str("sha256", actual).Msg("SHA-256 verified")
+	}
+
+	// Write to a temp file adjacent to the current binary.
+	tmpPath := exePath + ".new"
+	if err := os.WriteFile(tmpPath, data, 0755); err != nil { //nolint:gosec
+		log.Error().Err(err).Str("path", tmpPath).Msg("write temp binary failed")
+		return
+	}
+
+	// Atomically replace the running binary.
+	if err := os.Rename(tmpPath, exePath); err != nil {
+		_ = os.Remove(tmpPath)
+		log.Error().Err(err).Str("path", exePath).Msg("rename failed")
+		return
+	}
+
+	log.Info().
+		Str("path", exePath).
+		Int("bytes", len(data)).
+		Msg("binary replaced — initiating graceful restart")
+
+	// Signal the main goroutine: send path, then cancel context.
+	restartCh <- exePath
+	cancel()
 }
 
 // ─── Bootstrap helper ─────────────────────────────────────────────────────────
@@ -238,6 +351,7 @@ func heartbeatLoop(ctx context.Context, hubClient *hub.Client, ver string, logge
 	send := func() {
 		stats := map[string]any{
 			"uptime_s": time.Now().Unix(),
+			"arch":     runtime.GOARCH,
 		}
 		if err := hubClient.Heartbeat(ctx, ver, stats); err != nil {
 			logger.Warn().Err(err).Msg("heartbeat failed")
@@ -264,10 +378,12 @@ func heartbeatLoop(ctx context.Context, hubClient *hub.Client, ver string, logge
 func configRefreshLoop(
 	ctx context.Context,
 	hubClient *hub.Client,
-	snmpCol *collector.SNMPCollector,
-	flowCol *collector.FlowCollector,
+	snmpCol   *collector.SNMPCollector,
+	sshCfgCol *collector.SSHConfigCollector,
+	restCol   *collector.ArubaRESTCollector,
+	flowCol   *collector.FlowCollector,
 	syslogCol *collector.SyslogCollector,
-	logger zerolog.Logger,
+	logger    zerolog.Logger,
 ) {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
@@ -277,21 +393,23 @@ func configRefreshLoop(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := refreshDevices(ctx, hubClient, snmpCol, flowCol, syslogCol, logger); err != nil {
+			if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, flowCol, syslogCol, logger); err != nil {
 				logger.Warn().Err(err).Msg("periodic config refresh failed")
 			}
 		}
 	}
 }
 
-// refreshDevices fetches the device list from the hub and updates all collectors.
+// refreshDevices fetches the device list from the hub and pushes it to all collectors.
 func refreshDevices(
 	ctx context.Context,
 	hubClient *hub.Client,
-	snmpCol *collector.SNMPCollector,
-	flowCol *collector.FlowCollector,
+	snmpCol   *collector.SNMPCollector,
+	sshCfgCol *collector.SSHConfigCollector,
+	restCol   *collector.ArubaRESTCollector,
+	flowCol   *collector.FlowCollector,
 	syslogCol *collector.SyslogCollector,
-	logger zerolog.Logger,
+	logger    zerolog.Logger,
 ) error {
 	devCfg, err := hubClient.FetchConfig(ctx)
 	if err != nil {
@@ -304,6 +422,8 @@ func refreshDevices(
 	}
 
 	snmpCol.SetDevices(devCfg.Devices)
+	sshCfgCol.SetDevices(devCfg.Devices)
+	restCol.SetDevices(devCfg.Devices)
 	flowCol.UpdateDevices(byIP)
 	syslogCol.UpdateDevices(byIP)
 	syslogCol.SetTimezone(devCfg.Timezone)

@@ -104,6 +104,15 @@ export const fetchBuildStatus = () =>
 export const triggerBuild = () =>
   api.post<BuildResult>('/collectors/builds').then(r => r.data)
 
+export interface UpdateResult {
+  status:    'update_triggered' | 'offline' | 'error'
+  collector?: string
+  detail?:   string
+}
+
+export const triggerUpdate = (id: string) =>
+  api.post<UpdateResult>(`/collectors/${id}/update`).then(r => r.data)
+
 // ── Deployment package download ───────────────────────────────────────────────
 
 /** Trigger a browser download of the deployment zip for the given collector.

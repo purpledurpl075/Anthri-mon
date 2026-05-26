@@ -140,6 +140,33 @@ func (w *VMWriter) encode(result *poller.PollResult) []string {
 		line(`anthrimon_device_uptime_seconds{%s} %d %d`, baseLbls, h.UptimeSecs, ts)
 	}
 
+	// ── BGP sessions ─────────────────────────────────────────────────────────
+	// Push one data point per peer per poll so we have prefix-count trends,
+	// update rates, and flap-count timelines in VictoriaMetrics.
+	if len(result.BGPSessions) > 0 {
+		pollT := result.BGPSessions[0].PollTime
+		if pollT.IsZero() {
+			pollT = time.Now()
+		}
+		ts := pollT.UnixMilli()
+		for _, s := range result.BGPSessions {
+			labels := fmt.Sprintf(
+				`device_id="%s",peer_ip="%s",peer_asn="%d",local_asn="%d"`,
+				deviceID,
+				escapeLabelValue(s.PeerIP),
+				s.RemoteASN,
+				s.LocalASN,
+			)
+			// Gauge: current prefix count received from this peer
+			line(`anthrimon_bgp_prefixes_received{%s} %d %d`, labels, s.PrefixesReceived, ts)
+			// Counters: cumulative UPDATE message counts (monotonically increasing)
+			line(`anthrimon_bgp_in_updates_total{%s} %d %d`, labels, s.InUpdates, ts)
+			line(`anthrimon_bgp_out_updates_total{%s} %d %d`, labels, s.OutUpdates, ts)
+			// Counter: FSM established transitions (session flap count)
+			line(`anthrimon_bgp_flap_count_total{%s} %d %d`, labels, s.FlapCount, ts)
+		}
+	}
+
 	return lines
 }
 

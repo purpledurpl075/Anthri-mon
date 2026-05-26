@@ -358,9 +358,112 @@ def _deploy_ssh_paramiko(
     return "\n".join(output_parts).strip()
 
 
+async def store_config_backup(
+    device_id: str,
+    config_text: str,
+    method: str,
+    db: AsyncSession,
+) -> bool:
+    """Store a config snapshot for *device_id*.
+
+    Hashes the text, diffs against the previous backup, writes to the DB,
+    and fires config-change alerts when the config has changed.
+
+    Returns True if the config was new or changed, False if identical to the
+    current latest backup (no write performed).
+    """
+    if not config_text:
+        return False
+
+    # Need device metadata for diff labels and alert firing.
+    dev = (await db.execute(
+        select(Device).where(Device.id == device_id)
+    )).scalar_one_or_none()
+    if dev is None:
+        return False
+
+    config_hash = hashlib.sha256(config_text.encode()).hexdigest()
+
+    # Load current latest backup.
+    prev = (await db.execute(
+        select(ConfigBackup)
+        .where(ConfigBackup.device_id == device_id, ConfigBackup.is_latest == True)  # noqa: E712
+    )).scalar_one_or_none()
+
+    # Skip if unchanged.
+    if prev and prev.config_hash == config_hash:
+        logger.debug("config_store_unchanged", device=dev.hostname)
+        return False
+
+    now = datetime.now(timezone.utc)
+    lines_added, lines_removed = 0, 0
+
+    # Clear old is_latest BEFORE inserting the new one to avoid the
+    # unique partial index constraint firing during autoflush.
+    if prev:
+        await db.execute(
+            update(ConfigBackup)
+            .where(ConfigBackup.id == prev.id)
+            .values(is_latest=False)
+        )
+        await db.flush()
+
+    # Create new backup.
+    backup = ConfigBackup(
+        device_id=device_id,
+        collected_at=now,
+        config_text=config_text,
+        config_hash=config_hash,
+        collection_method=method,
+        is_latest=True,
+    )
+    db.add(backup)
+    await db.flush()  # get backup.id
+
+    # Generate diff.
+    if prev:
+        prev_lines = prev.config_text.splitlines(keepends=True)
+        curr_lines = config_text.splitlines(keepends=True)
+        diff_lines = list(difflib.unified_diff(
+            prev_lines, curr_lines,
+            fromfile=f"previous ({prev.collected_at.strftime('%Y-%m-%d %H:%M')})",
+            tofile=f"current ({now.strftime('%Y-%m-%d %H:%M')})",
+            lineterm="",
+        ))
+        diff_text     = "".join(diff_lines)
+        lines_added   = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
+        lines_removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
+
+        diff = ConfigDiff(
+            device_id=device_id,
+            prev_backup_id=prev.id,
+            curr_backup_id=backup.id,
+            diff_text=diff_text,
+            lines_added=lines_added,
+            lines_removed=lines_removed,
+        )
+        db.add(diff)
+
+    await db.commit()
+    logger.info("config_stored", device=dev.hostname, hash=config_hash[:12],
+                changed=prev is not None, method=method)
+
+    # Fire change alerts if this was an actual change (not the first backup).
+    if prev:
+        await _fire_config_change_alerts(
+            db=db, dev=dev,
+            lines_added=lines_added, lines_removed=lines_removed,
+            backup_id=str(backup.id),
+        )
+
+    return True
+
+
 async def collect_device(device_id: str, db: AsyncSession) -> Optional[ConfigBackup]:
-    """Collect running config for one device.  Returns the new ConfigBackup if
-    a change was detected, else None."""
+    """Collect running config for one device via SSH.
+
+    Returns the new ConfigBackup if a change was detected, else None.
+    """
     from .. import crypto
 
     # Load device
@@ -391,9 +494,9 @@ async def collect_device(device_id: str, db: AsyncSession) -> Optional[ConfigBac
         except Exception:
             pass
 
-    host    = str(dev.mgmt_ip).split("/")[0]
-    port    = 22
-    vendor  = _vendor_key(dev)
+    host   = str(dev.mgmt_ip).split("/")[0]
+    port   = 22
+    vendor = _vendor_key(dev)
 
     loop = asyncio.get_running_loop()
     try:
@@ -404,83 +507,15 @@ async def collect_device(device_id: str, db: AsyncSession) -> Optional[ConfigBac
         logger.warning("config_collect_failed", device=dev.hostname, error=str(exc))
         return None
 
-    if not config_text:
-        return None
+    changed = await store_config_backup(device_id, config_text, "ssh_show_run", db)
 
-    config_hash = hashlib.sha256(config_text.encode()).hexdigest()
+    if changed:
+        return (await db.execute(
+            select(ConfigBackup)
+            .where(ConfigBackup.device_id == device_id, ConfigBackup.is_latest == True)  # noqa: E712
+        )).scalar_one_or_none()
 
-    # Load current latest backup
-    prev = (await db.execute(
-        select(ConfigBackup)
-        .where(ConfigBackup.device_id == device_id, ConfigBackup.is_latest == True)  # noqa: E712
-    )).scalar_one_or_none()
-
-    # Skip if unchanged
-    if prev and prev.config_hash == config_hash:
-        logger.debug("config_collect_unchanged", device=dev.hostname)
-        return None
-
-    now = datetime.now(timezone.utc)
-
-    # Clear old is_latest BEFORE inserting the new one to avoid the
-    # unique partial index constraint firing during autoflush.
-    if prev:
-        await db.execute(
-            update(ConfigBackup)
-            .where(ConfigBackup.id == prev.id)
-            .values(is_latest=False)
-        )
-        await db.flush()
-
-    # Create new backup
-    backup = ConfigBackup(
-        device_id=device_id,
-        collected_at=now,
-        config_text=config_text,
-        config_hash=config_hash,
-        collection_method="ssh_show_run",
-        is_latest=True,
-    )
-    db.add(backup)
-    await db.flush()  # get backup.id
-
-    # Generate diff
-    if prev:
-        prev_lines = prev.config_text.splitlines(keepends=True)
-        curr_lines = config_text.splitlines(keepends=True)
-        diff_lines = list(difflib.unified_diff(
-            prev_lines, curr_lines,
-            fromfile=f"previous ({prev.collected_at.strftime('%Y-%m-%d %H:%M')})",
-            tofile=f"current ({now.strftime('%Y-%m-%d %H:%M')})",
-            lineterm="",
-        ))
-        diff_text     = "".join(diff_lines)
-        lines_added   = sum(1 for l in diff_lines if l.startswith("+") and not l.startswith("+++"))
-        lines_removed = sum(1 for l in diff_lines if l.startswith("-") and not l.startswith("---"))
-
-        diff = ConfigDiff(
-            device_id=device_id,
-            prev_backup_id=prev.id,
-            curr_backup_id=backup.id,
-            diff_text=diff_text,
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-        )
-        db.add(diff)
-
-    await db.commit()
-    logger.info("config_collected", device=dev.hostname, hash=config_hash[:12],
-                changed=prev is not None)
-
-    # Fire change alerts if this was an actual change (not first backup)
-    if prev:
-        await _fire_config_change_alerts(
-            db=db, dev=dev,
-            lines_added=lines_added, lines_removed=lines_removed,
-            backup_id=str(backup.id),
-        )
-
-    return backup
+    return None
 
 
 async def _fire_config_change_alerts(
@@ -574,7 +609,10 @@ class ConfigCollector:
         async with AsyncSessionLocal() as db:
             device_rows = (await db.execute(
                 select(Device.id, Device.hostname)
-                .where(Device.is_active == True)  # noqa: E712
+                .where(
+                    Device.is_active == True,        # noqa: E712
+                    Device.collector_id == None,     # noqa: E711 — hub-managed only
+                )
             )).all()
 
         logger.info("config_collect_cycle_start", devices=len(device_rows))

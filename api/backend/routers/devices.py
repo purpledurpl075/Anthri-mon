@@ -211,6 +211,38 @@ async def create_device(
     return DeviceRead.model_validate(device)
 
 
+# ── Baseline status (must be before /{device_id} to avoid path-param shadowing) ─
+
+@router.get("/baselines/status", summary="Baseline computation health across all devices")
+async def baselines_status(
+    user: User         = Depends(get_current_user),
+    db:   AsyncSession = Depends(get_db),
+) -> dict:
+    """Return last computed_at and row counts per metric_type for admin visibility."""
+    rows = (await db.execute(
+        text("""
+            SELECT
+                metric_type,
+                COUNT(*)         AS row_count,
+                MAX(computed_at) AS last_computed_at
+            FROM metric_baselines
+            GROUP BY metric_type
+            ORDER BY metric_type
+        """),
+    )).mappings().all()
+
+    return {
+        "metrics": [
+            {
+                "metric_type":      r["metric_type"],
+                "row_count":        r["row_count"],
+                "last_computed_at": r["last_computed_at"].isoformat() if r["last_computed_at"] else None,
+            }
+            for r in rows
+        ]
+    }
+
+
 # ── Get one ────────────────────────────────────────────────────────────────────
 
 @router.get("/{device_id}", response_model=DeviceRead, summary="Get device details")
@@ -259,7 +291,31 @@ async def update_device(
     await db.commit()
     await db.refresh(device)
     logger.info("device_updated", device_id=str(device_id), fields=list(updates.keys()))
+
+    # If this device is assigned to a remote collector, nudge it to refresh its
+    # config so changes (e.g. rest_collection_enabled) take effect immediately
+    # rather than waiting up to 5 minutes for the periodic poll.
+    if device.collector_id:
+        from ..models.site import RemoteCollector
+        collector = (await db.execute(
+            select(RemoteCollector).where(RemoteCollector.id == device.collector_id)
+        )).scalar_one_or_none()
+        if collector and collector.wg_ip:
+            asyncio.create_task(_nudge_collector(str(collector.wg_ip)))
+
     return DeviceRead.model_validate(device)
+
+
+async def _nudge_collector(wg_ip: str) -> None:
+    """Fire-and-forget: ask the remote collector to refresh its device config."""
+    url = f"http://{wg_ip}:9090/refresh"
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            await client.post(url)
+        logger.debug("collector_nudged", wg_ip=wg_ip)
+    except Exception as exc:
+        # Non-fatal — collector will pick up the change on its next periodic refresh.
+        logger.debug("collector_nudge_failed", wg_ip=wg_ip, error=str(exc))
 
 
 # ── Delete ─────────────────────────────────────────────────────────────────────
@@ -952,6 +1008,131 @@ async def snmp_diag(
     except Exception as exc:
         return {"success": False, "credential_name": cred.name, "credential_type": cred.type,
                 "error": str(exc), "results": [], "response_ms": None}
+
+
+# ── Baseline endpoints ─────────────────────────────────────────────────────────
+
+@router.get("/{device_id}/baselines", summary="Learned metric baselines for a device")
+async def get_device_baselines(
+    device_id: uuid.UUID,
+    user:      User         = Depends(get_current_user),
+    db:        AsyncSession = Depends(get_db),
+) -> dict:
+    """Return all metric_baselines rows for this device, grouped by metric_type."""
+    await _assert_device_visible(device_id, user, db)
+
+    rows = (await db.execute(
+        text("""
+            SELECT
+                mb.id::text,
+                mb.metric_type,
+                mb.bucket_type,
+                mb.bucket_index,
+                mb.interface_id::text,
+                mb.label,
+                mb.window_days,
+                mb.normal_up_pct,
+                mb.mean,
+                mb.stddev,
+                mb.p5,
+                mb.p95,
+                mb.sample_count,
+                mb.force_alert,
+                mb.force_suppress,
+                mb.computed_at,
+                i.name  AS interface_name
+            FROM metric_baselines mb
+            LEFT JOIN interfaces i ON i.id = mb.interface_id
+            WHERE mb.device_id = :did
+            ORDER BY mb.metric_type, mb.label NULLS LAST, mb.bucket_index
+        """),
+        {"did": str(device_id)},
+    )).mappings().all()
+
+    # Group by metric_type for convenient frontend consumption.
+    grouped: dict[str, list] = {}
+    for r in rows:
+        mt = r["metric_type"]
+        grouped.setdefault(mt, []).append({
+            "id":             r["id"],
+            "bucket_type":    r["bucket_type"],
+            "bucket_index":   r["bucket_index"],
+            "interface_id":   r["interface_id"],
+            "interface_name": r["interface_name"] or r["label"],
+            "label":          r["label"],
+            "window_days":    r["window_days"],
+            "normal_up_pct":  r["normal_up_pct"],
+            "mean":           float(r["mean"])   if r["mean"]   is not None else None,
+            "stddev":         float(r["stddev"]) if r["stddev"] is not None else None,
+            "p5":             float(r["p5"])     if r["p5"]     is not None else None,
+            "p95":            float(r["p95"])    if r["p95"]    is not None else None,
+            "sample_count":   r["sample_count"],
+            "force_alert":    r["force_alert"],
+            "force_suppress": r["force_suppress"],
+            "computed_at":    r["computed_at"].isoformat() if r["computed_at"] else None,
+        })
+
+    return {
+        "device_id": str(device_id),
+        "baselines":  grouped,
+    }
+
+
+class BaselineOverrideRequest(BaseModel):
+    force_alert:    bool = False
+    force_suppress: bool = False
+
+
+@router.post(
+    "/{device_id}/baselines/{metric_type}/override",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_model=None,
+    summary="Pin or suppress alerts for a specific interface/label baseline",
+)
+async def override_baseline(
+    device_id:   uuid.UUID,
+    metric_type: str,
+    body:        BaselineOverrideRequest,
+    label:       Optional[str] = Query(None, description="Interface name or peer IP to target"),
+    user:        User         = Depends(get_current_user),
+    db:          AsyncSession = Depends(get_db),
+) -> None:
+    """Set force_alert or force_suppress on a baseline row.
+
+    - `force_alert=true`    → always fire this alert even if baseline says suppress
+    - `force_suppress=true` → always silence even if value spikes
+    - Both false            → revert to automatic baseline logic
+    """
+    await _assert_device_visible(device_id, user, db)
+
+    result = await db.execute(
+        text("""
+            UPDATE metric_baselines
+               SET force_alert    = :fa,
+                   force_suppress = :fs
+             WHERE device_id   = :did
+               AND metric_type = :mt
+               AND bucket_type = 'rolling'
+               AND bucket_index = 0
+               AND (
+                     (:label IS NULL AND label IS NULL)
+                  OR label = :label
+               )
+        """),
+        {
+            "did":   str(device_id),
+            "mt":    metric_type,
+            "label": label,
+            "fa":    body.force_alert,
+            "fs":    body.force_suppress,
+        },
+    )
+    if result.rowcount == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No baseline found for that metric_type / label combination.",
+        )
+    await db.commit()
 
 
 # ── Internal helper ────────────────────────────────────────────────────────────

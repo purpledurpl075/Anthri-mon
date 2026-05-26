@@ -91,3 +91,20 @@ export const fetchBGPFlapLog = (limit = 20) =>
 
 export const fetchOSPFAreas = () =>
   api.get<OSPFArea[]>('/bgp/ospf-areas').then(r => r.data)
+
+// ── BGP prefix history (time-series from VictoriaMetrics) ─────────────────
+
+export interface BGPPeerSeries {
+  peer_ip:  string
+  peer_asn: string
+  values:   [number, number][]  // [timestamp_ms, value]
+}
+
+export interface BGPPrefixHistory {
+  prefix_count: BGPPeerSeries[]
+  update_rate:  BGPPeerSeries[]
+}
+
+export const fetchBGPPrefixHistory = (deviceId: string, hours = 24) =>
+  api.get<BGPPrefixHistory>(`/bgp/devices/${deviceId}/prefix-history`, { params: { hours } })
+    .then(r => r.data)

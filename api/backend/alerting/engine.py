@@ -22,7 +22,8 @@ from .evaluators import (
     eval_interface_down, eval_interface_flap,
     eval_uptime, eval_temperature, eval_interface_errors, eval_interface_util,
     eval_custom_oid, eval_ospf_state, eval_route_missing, eval_flow_bandwidth,
-    eval_syslog_match, eval_bgp_session_down, eval_bgp_session_flapping, fetch_syslog_context,
+    eval_syslog_match, eval_bgp_session_down, eval_bgp_session_flapping,
+    eval_bgp_prefix_drop, fetch_syslog_context,
     resolve_devices,
 )
 
@@ -115,6 +116,7 @@ def _build_title(rule: AlertRule, breach: Breach) -> str:
         "config_change":   f"config changed (+{breach.extra.get('lines_added',0)} -{breach.extra.get('lines_removed',0)} lines)",
         "bgp_session_down":    f"BGP peer {breach.extra.get('peer_ip','?')} (AS{breach.extra.get('peer_asn','?')}) {breach.extra.get('session_state','down')}",
         "bgp_session_flapping":f"BGP peer {breach.extra.get('peer_ip','?')} (AS{breach.extra.get('peer_asn','?')}) flapped {breach.extra.get('flap_count',0)}× in {breach.extra.get('window_minutes',60)}m",
+        "bgp_prefix_drop":     f"BGP peer {breach.extra.get('peer_ip','?')} (AS{breach.extra.get('peer_asn','?')}) prefix count dropped {breach.extra.get('drop_pct',0):.1f}% ({breach.extra.get('prefixes_now','?')} vs avg {breach.extra.get('prefixes_avg','?')})",
     }
     return f"{base}: {metric_labels.get(rule.metric, rule.metric)}"
 
@@ -327,6 +329,9 @@ class AlertEngine:
                 threshold  = int(rule.threshold)  if rule.threshold  else 3
                 window_min = int(rule.duration_seconds // 60) if rule.duration_seconds else 60
                 breaches.extend(await eval_bgp_session_flapping(db, device, threshold, window_min))
+            elif rule.metric == "bgp_prefix_drop":
+                drop_pct = float(rule.threshold) if rule.threshold else 20.0
+                breaches.extend(await eval_bgp_prefix_drop(db, device, drop_pct=drop_pct))
             elif rule.metric == "syslog_match" and rule.custom_oid:
                 b = await eval_syslog_match(
                     device, rule.custom_oid,

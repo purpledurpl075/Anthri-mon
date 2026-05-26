@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
+import httpx
 import structlog
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, desc, func, text
@@ -11,6 +13,8 @@ from ..dependencies import get_current_user, get_db
 from ..models.bgp import BGPSession, BGPSessionEvent
 from ..models.device import Device
 from ..models.tenant import User
+
+VM_BASE = "http://localhost:8428"
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/bgp", tags=["bgp"])
@@ -208,6 +212,65 @@ async def bgp_prefix_totals(
             }
             for s, dev in top
         ],
+    }
+
+
+@router.get("/devices/{device_id}/prefix-history", summary="Prefix count + update rate time-series for all BGP peers on a device")
+async def bgp_prefix_history(
+    device_id:    str,
+    hours:        int  = Query(default=24, ge=1, le=168),
+    current_user: User = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Returns per-peer time-series:
+      - prefix_count:  anthrimon_bgp_prefixes_received (gauge)
+      - update_rate:   rate(anthrimon_bgp_in_updates_total[5m]) — incoming UPDATE msg/s
+    Both sampled at 5-min resolution over the requested window.
+    """
+    # Verify device belongs to tenant
+    dev = (await db.execute(
+        select(Device).where(Device.id == device_id, Device.tenant_id == current_user.tenant_id)
+    )).scalar_one_or_none()
+    if not dev:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    step  = "5m"
+    end   = "now()"
+    start = f"now()-{hours}h"
+
+    async def vm_range(query: str) -> list[dict]:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(f"{VM_BASE}/api/v1/query_range", params={
+                    "query": query,
+                    "start": start,
+                    "end":   end,
+                    "step":  step,
+                })
+            series = r.json().get("data", {}).get("result", [])
+        except Exception:
+            logger.exception("bgp_vm_query_failed")
+            return []
+        out = []
+        for s in series:
+            out.append({
+                "peer_ip":  s["metric"].get("peer_ip", ""),
+                "peer_asn": s["metric"].get("peer_asn", ""),
+                "values":   [[int(ts * 1000), float(v)] for ts, v in s.get("values", [])],
+            })
+        return out
+
+    device_filter = f'device_id="{device_id}"'
+    prefix_series, update_series = await asyncio.gather(
+        vm_range(f'anthrimon_bgp_prefixes_received{{{device_filter}}}'),
+        vm_range(f'rate(anthrimon_bgp_in_updates_total{{{device_filter}}}[5m]) * 60'),
+    )
+
+    return {
+        "prefix_count": prefix_series,
+        "update_rate":  update_series,
     }
 
 

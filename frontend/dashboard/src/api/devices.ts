@@ -171,3 +171,47 @@ export const fetchDeviceVlans = (deviceId: string) =>
 
 export const fetchDeviceStp = (deviceId: string) =>
   api.get<StpPort[]>(`/devices/${deviceId}/stp`).then(r => r.data)
+
+// ── Baselines ──────────────────────────────────────────────────────────────────
+
+export interface BaselineRow {
+  id:             string
+  bucket_type:    string
+  bucket_index:   number
+  interface_id:   string | null
+  interface_name: string | null
+  label:          string | null
+  window_days:    number
+  normal_up_pct:  number | null  // 0.0–1.0; null = no baseline yet
+  mean:           number | null
+  stddev:         number | null
+  p5:             number | null
+  p95:            number | null
+  sample_count:   number | null
+  force_alert:    boolean
+  force_suppress: boolean
+  computed_at:    string | null
+}
+
+export interface DeviceBaselines {
+  device_id: string
+  /** Keyed by metric_type, e.g. 'interface_down', 'cpu_util_pct' */
+  baselines: Record<string, BaselineRow[]>
+}
+
+export const fetchDeviceBaselines = (id: string) =>
+  api.get<DeviceBaselines>(`/devices/${id}/baselines`).then(r => r.data)
+
+export const overrideBaseline = (
+  deviceId: string,
+  metricType: string,
+  force_alert: boolean,
+  force_suppress: boolean,
+  label?: string,
+) => {
+  const qs = label ? `?label=${encodeURIComponent(label)}` : ''
+  return api.post(
+    `/devices/${deviceId}/baselines/${metricType}/override${qs}`,
+    { force_alert, force_suppress },
+  )
+}

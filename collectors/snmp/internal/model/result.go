@@ -136,8 +136,9 @@ type OSPFNeighbour struct {
 // BGPSession is one row from bgpPeerTable (RFC 1657) for a device.
 type BGPSession struct {
 	DeviceID         uuid.UUID
-	PeerIP           string // bgpPeerRemoteAddr (index, dotted-decimal)
-	PeerRouterID     string // bgpPeerIdentifier
+	PollTime         time.Time // wall-clock time this row was collected
+	PeerIP           string    // bgpPeerRemoteAddr (index, dotted-decimal)
+	PeerRouterID     string    // bgpPeerIdentifier
 	LocalASN         int64
 	RemoteASN        int64
 	State            string // "established" | "active" | "idle" | "connect" | "opensent" | "openconfirm" | "unknown"
@@ -145,7 +146,7 @@ type BGPSession struct {
 	UptimeSeconds    int64  // seconds since session established (0 if not established)
 	InUpdates        int64
 	OutUpdates       int64
-	FlapCount        int64  // bgpPeerFsmEstablishedTransitions — total times entered Established
+	FlapCount        int64 // bgpPeerFsmEstablishedTransitions — total times entered Established
 	PrefixesReceived int
 }
 

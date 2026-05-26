@@ -8,12 +8,12 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceInterfaces, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbors, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceInterfaces, fetchDeviceBaselines, overrideBaseline, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbors, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, type AddressEntry, type VlanEntry, type StpPort, type BaselineRow } from '../api/devices'
 import TimeSeriesChart from '../components/TimeSeriesChart'
 import { fetchCredentials } from '../api/credentials'
 import { fetchConfigStatus, fetchBackups, fetchDiffs, fetchBackup, fetchDiff, triggerCollect, fetchComplianceResults, deployConfig, type ConfigBackupMeta, type ConfigDiffMeta } from '../api/config'
 import { fetchCollectors } from '../api/collectors'
-import { fetchDeviceBGPSessions, fetchBGPSessionEvents, type BGPSession, type BGPSessionEvent } from '../api/bgp'
+import { fetchDeviceBGPSessions, fetchBGPSessionEvents, fetchBGPPrefixHistory, type BGPSession, type BGPSessionEvent, type BGPPeerSeries } from '../api/bgp'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
 import StatusBadge from '../components/StatusBadge'
 import VendorBadge from '../components/VendorBadge'
@@ -1209,6 +1209,15 @@ function HealthTab({ deviceId, currentHealth }: { deviceId: string; currentHealt
     refetchInterval: 60_000,
   })
 
+  // Baseline stats for CPU and memory (rolling, device-level)
+  const { data: blData } = useQuery({
+    queryKey:  ['device-baselines', deviceId],
+    queryFn:   () => fetchDeviceBaselines(deviceId),
+    staleTime: 5 * 60_000,
+  })
+  const cpuBl  = blData?.baselines?.['cpu_util_pct']?.find(r => r.bucket_type === 'rolling') ?? null
+  const memBl  = blData?.baselines?.['mem_util_pct']?.find(r => r.bucket_type === 'rolling') ?? null
+
   const temps: { sensor: string; celsius: number; ok: boolean }[] = currentHealth?.temperatures ?? []
   const domTemps    = temps.filter(t => t.sensor.toLowerCase().includes('dom'))
   const systemTemps = temps.filter(t => !t.sensor.toLowerCase().includes('dom'))
@@ -1273,6 +1282,17 @@ function HealthTab({ deviceId, currentHealth }: { deviceId: string; currentHealt
             <TimeSeriesChart height={160} yFmt={fmtPct}
               series={[{ name: 'CPU', color: '#7c3aed', data: (hist?.cpu_pct ?? []) as [number,number][] }]} />
           )}
+          {cpuBl && cpuBl.mean != null && (
+            <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-400">
+              <span className="inline-block w-2 h-2 rounded-full bg-violet-200 shrink-0" />
+              <span>
+                14d baseline: <span className="font-medium text-slate-500">{cpuBl.mean.toFixed(1)}%</span> avg
+                {cpuBl.stddev != null && cpuBl.stddev > 0 && (
+                  <> · alert floor <span className="font-medium text-slate-500">{Math.min(100, cpuBl.mean + 3 * cpuBl.stddev).toFixed(1)}%</span> (mean + 3σ)</>
+                )}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1311,6 +1331,17 @@ function HealthTab({ deviceId, currentHealth }: { deviceId: string; currentHealt
           ) : (
             <TimeSeriesChart height={160} yFmt={fmtPct}
               series={[{ name: 'Memory', color: '#2563eb', data: (hist?.mem_pct ?? []) as [number,number][] }]} />
+          )}
+          {memBl && memBl.mean != null && (
+            <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-400">
+              <span className="inline-block w-2 h-2 rounded-full bg-blue-200 shrink-0" />
+              <span>
+                14d baseline: <span className="font-medium text-slate-500">{memBl.mean.toFixed(1)}%</span> avg
+                {memBl.stddev != null && memBl.stddev > 0 && (
+                  <> · alert floor <span className="font-medium text-slate-500">{Math.min(100, memBl.mean + 3 * memBl.stddev).toFixed(1)}%</span> (mean + 3σ)</>
+                )}
+              </span>
+            </div>
           )}
         </div>
       </div>
@@ -1510,6 +1541,23 @@ export default function DeviceDetail() {
     enabled: !!id,
     refetchInterval: 15_000,
   })
+
+  const { data: baselines } = useQuery({
+    queryKey: ['device-baselines', id],
+    queryFn: () => fetchDeviceBaselines(id!),
+    enabled: !!id,
+    staleTime: 5 * 60_000,  // baselines are computed hourly — no need to hammer the API
+  })
+
+  // Build a lookup map: interface_id → BaselineRow for interface_down metric
+  const ifaceDownBaselines = React.useMemo(() => {
+    const rows = baselines?.baselines?.['interface_down'] ?? []
+    const map: Record<string, BaselineRow> = {}
+    for (const row of rows) {
+      if (row.interface_id) map[row.interface_id] = row
+    }
+    return map
+  }, [baselines])
 
   // SNMP form state — initialised from device once loaded
   const [snmpVersion, setSnmpVersion] = useState('')
@@ -2072,17 +2120,40 @@ export default function DeviceDetail() {
                       const ips: string[] = Array.isArray((iface as any).ip_addresses)
                         ? (iface as any).ip_addresses.map((a: any) => typeof a === 'string' ? a : a?.address ?? String(a))
                         : []
+                      const bl = ifaceDownBaselines[iface.id]
+                      const normallyDown = bl && !bl.force_alert && (bl.normal_up_pct ?? 1) <= 0.4
+                      const upPctLabel = bl?.normal_up_pct != null
+                        ? `Up ${Math.round(bl.normal_up_pct * 100)}% of last ${bl.window_days}d`
+                        : null
                       return (
                         <tr
                           key={iface.id}
-                          className="hover:bg-blue-50/40 cursor-pointer group transition-colors"
+                          className={`cursor-pointer group transition-colors ${
+                            normallyDown
+                              ? 'opacity-50 hover:opacity-80 hover:bg-slate-50'
+                              : 'hover:bg-blue-50/40'
+                          }`}
                           onClick={() => navigate(`/devices/${id}/interfaces/${iface.id}`)}
                         >
-                          <td className="px-4 py-2 font-medium text-slate-700 font-mono text-sm group-hover:text-blue-600 transition-colors">{iface.name}</td>
+                          <td className="px-4 py-2 font-medium font-mono text-sm transition-colors text-slate-700 group-hover:text-blue-600">
+                            <span>{iface.name}</span>
+                          </td>
                           <td className="px-4 py-2 text-slate-500 max-w-[180px] truncate text-xs hidden md:table-cell">{iface.description ?? '—'}</td>
                           <td className="px-4 py-2 text-slate-600 text-sm">{formatSpeed(iface.speed_bps)}</td>
                           <td className="px-4 py-2"><StatusBadge status={iface.admin_status} /></td>
-                          <td className="px-4 py-2"><StatusBadge status={iface.oper_status} /></td>
+                          <td className="px-4 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <StatusBadge status={iface.oper_status} />
+                              {normallyDown && (
+                                <span
+                                  title={upPctLabel ?? 'Alerts suppressed — normally down port'}
+                                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-400 border border-slate-200 cursor-default"
+                                >
+                                  normally down
+                                </span>
+                              )}
+                            </div>
+                          </td>
                           <td className="px-4 py-2 font-mono text-xs text-slate-500">
                             {ips.length > 0 ? ips[0] : <span className="text-slate-300">—</span>}
                             {ips.length > 1 && <span className="text-slate-400 ml-1">+{ips.length - 1}</span>}
@@ -2206,51 +2277,154 @@ function fmtUptime(secs: number | null): string {
   return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`
 }
 
-function BGPEventDrawer({ session }: { session: BGPSession }) {
+// Tiny inline prefix-count sparkline
+function PfxSparkline({ series, w = 80, h = 24 }: { series: [number, number][]; w?: number; h?: number }) {
+  if (series.length < 2) return <span className="text-slate-300 text-[10px]">no data</span>
+  const vals = series.map(([, v]) => v)
+  const times = series.map(([t]) => t)
+  const minV = Math.min(...vals), maxV = Math.max(...vals)
+  const rangeV = maxV - minV || 1
+  const minT = Math.min(...times), maxT = Math.max(...times)
+  const rangeT = maxT - minT || 1
+  const sx = (t: number) => ((t - minT) / rangeT) * w
+  const sy = (v: number) => h - 2 - ((v - minV) / rangeV) * (h - 4)
+  const pts = series.map(([t, v]) => `${sx(t)},${sy(v)}`).join(' ')
+  const last = vals[vals.length - 1]
+  const first = vals[0]
+  const delta = last - first
+  const color = delta < -1 ? '#dc2626' : delta > 1 ? '#16a34a' : '#94a3b8'
+  return (
+    <div className="flex items-center gap-1.5">
+      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0">
+        <polyline points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <span className="text-[10px] font-mono tabular-nums" style={{ color }}>
+        {delta > 0 ? `+${delta}` : delta}
+      </span>
+    </div>
+  )
+}
+
+const BGP_STATE_CLS: Record<string, string> = {
+  established: 'text-green-700 bg-green-50',
+  active:      'text-amber-700 bg-amber-50',
+  idle:        'text-slate-600 bg-slate-100',
+  connect:     'text-blue-700 bg-blue-50',
+  opensent:    'text-purple-700 bg-purple-50',
+  openconfirm: 'text-purple-700 bg-purple-50',
+}
+
+function BGPEventDrawer({
+  session,
+  pfxSeries,
+  updSeries,
+}: {
+  session:   BGPSession
+  pfxSeries: [number, number][]
+  updSeries: [number, number][]
+}) {
   const { data: events = [], isLoading } = useQuery({
     queryKey:  ['bgp-events', session.id],
     queryFn:   () => fetchBGPSessionEvents(session.id),
     staleTime: 60_000,
   })
 
-  const STATE_COLOR: Record<string, string> = {
-    established: 'text-green-700 bg-green-50',
-    active:      'text-amber-700 bg-amber-50',
-    idle:        'text-slate-600 bg-slate-100',
-    connect:     'text-blue-700 bg-blue-50',
-    opensent:    'text-purple-700 bg-purple-50',
-    openconfirm: 'text-purple-700 bg-purple-50',
+  const hasPfx = pfxSeries.length >= 2
+  const hasUpd = updSeries.length >= 2
+
+  // Build a simple SVG chart for prefix count history
+  const PfxChart = ({ series, w = 320, h = 64 }: { series: [number, number][]; w?: number; h?: number }) => {
+    const vals = series.map(([, v]) => v)
+    const times = series.map(([t]) => t)
+    const minV = Math.min(...vals), maxV = Math.max(...vals)
+    const rangeV = maxV - minV || 1
+    const minT = Math.min(...times), maxT = Math.max(...times)
+    const rangeT = maxT - minT || 1
+    const sx = (t: number) => ((t - minT) / rangeT) * w
+    const sy = (v: number) => h - 2 - ((v - minV) / rangeV) * (h - 6)
+    const pts = series.map(([t, v]) => `${sx(t)},${sy(v)}`).join(' ')
+    const areaD = `M${sx(times[0])},${h} L${series.map(([t, v]) => `${sx(t)},${sy(v)}`).join(' L')} L${sx(times[times.length - 1])},${h} Z`
+    return (
+      <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`}>
+        <path d={areaD} fill="#2563eb" fillOpacity={0.08} />
+        <polyline points={pts} fill="none" stroke="#2563eb" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+        {/* Min/max labels */}
+        <text x={2} y={h - 2} fontSize={8} fill="#94a3b8">{Math.round(minV)}</text>
+        <text x={2} y={10} fontSize={8} fill="#94a3b8">{Math.round(maxV)}</text>
+      </svg>
+    )
   }
 
   return (
     <tr>
-      <td colSpan={8} className="bg-slate-50 px-6 py-3 border-b border-slate-100">
-        <div className="text-xs font-medium text-slate-500 mb-2">State transition history</div>
-        {isLoading ? (
-          <span className="text-xs text-slate-400">Loading…</span>
-        ) : events.length === 0 ? (
-          <span className="text-xs text-slate-400">
-            No transitions observed yet — history records state changes seen during polling.
-            {' '}<span className="font-medium">flap count</span> reflects the device's own lifetime counter.
-          </span>
-        ) : (
-          <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
-            {events.map(e => (
-              <div key={e.id} className="flex items-center gap-2 text-xs">
-                <span className="text-slate-400 tabular-nums w-36 shrink-0">
-                  {new Date(e.recorded_at).toLocaleString()}
-                </span>
-                <span className={`px-1.5 py-0.5 rounded capitalize font-medium ${STATE_COLOR[e.prev_state] ?? 'text-slate-600 bg-slate-100'}`}>
-                  {e.prev_state}
-                </span>
-                <span className="text-slate-400">→</span>
-                <span className={`px-1.5 py-0.5 rounded capitalize font-medium ${STATE_COLOR[e.new_state] ?? 'text-slate-600 bg-slate-100'}`}>
-                  {e.new_state}
-                </span>
+      <td colSpan={9} className="bg-slate-50 px-6 py-4 border-b border-slate-100">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Prefix count chart */}
+          <div>
+            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">
+              Prefix count — 24h
+            </div>
+            {hasPfx ? (
+              <div className="rounded-xl bg-white border border-slate-100 px-2 py-2">
+                <PfxChart series={pfxSeries} />
+                <div className="mt-1 text-[10px] text-slate-400 flex justify-between">
+                  <span>24h ago</span>
+                  <span className="font-semibold text-slate-600">
+                    Now: {pfxSeries[pfxSeries.length - 1][1].toFixed(0)} prefixes
+                  </span>
+                </div>
               </div>
-            ))}
+            ) : (
+              <div className="text-xs text-slate-400 py-2">
+                No history yet — data appears after the first poll cycle.
+              </div>
+            )}
           </div>
-        )}
+
+          {/* State transition history */}
+          <div>
+            <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-2">
+              State transitions
+            </div>
+            {isLoading ? (
+              <span className="text-xs text-slate-400">Loading…</span>
+            ) : events.length === 0 ? (
+              <span className="text-xs text-slate-400">
+                No transitions observed yet.{' '}
+                <span className="font-medium">Flap count</span> reflects the device's own lifetime counter.
+              </span>
+            ) : (
+              <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
+                {events.map(e => (
+                  <div key={e.id} className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-400 tabular-nums w-36 shrink-0">
+                      {new Date(e.recorded_at).toLocaleString()}
+                    </span>
+                    <span className={`px-1.5 py-0.5 rounded capitalize font-medium ${BGP_STATE_CLS[e.prev_state] ?? 'text-slate-600 bg-slate-100'}`}>
+                      {e.prev_state}
+                    </span>
+                    <span className="text-slate-400">→</span>
+                    <span className={`px-1.5 py-0.5 rounded capitalize font-medium ${BGP_STATE_CLS[e.new_state] ?? 'text-slate-600 bg-slate-100'}`}>
+                      {e.new_state}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Update rate chart if available */}
+            {hasUpd && (
+              <div className="mt-3">
+                <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">
+                  UPDATE message rate (per min) — 24h
+                </div>
+                <div className="rounded-xl bg-white border border-slate-100 px-2 py-2">
+                  <PfxChart series={updSeries} />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
       </td>
     </tr>
   )
@@ -2265,6 +2439,28 @@ function BGPSection({ deviceId }: { deviceId: string }) {
     queryFn:         () => fetchDeviceBGPSessions(deviceId),
     refetchInterval: 30_000,
   })
+
+  // Prefix history — 24h time-series from VM
+  const { data: history } = useQuery({
+    queryKey:        ['bgp-prefix-history', deviceId],
+    queryFn:         () => fetchBGPPrefixHistory(deviceId, 24),
+    staleTime:       5 * 60_000,
+    refetchInterval: 5 * 60_000,
+    enabled:         sessions.length > 0,
+  })
+
+  // Build lookup: peer_ip → { pfx: series, upd: series }
+  const pfxByPeer = useMemo((): Record<string, [number, number][]> => {
+    const m: Record<string, [number, number][]> = {}
+    for (const s of history?.prefix_count ?? []) m[s.peer_ip] = s.values
+    return m
+  }, [history])
+
+  const updByPeer = useMemo((): Record<string, [number, number][]> => {
+    const m: Record<string, [number, number][]> = {}
+    for (const s of history?.update_rate ?? []) m[s.peer_ip] = s.values
+    return m
+  }, [history])
 
   // Prefetch event history for all sessions so drawer opens instantly
   useEffect(() => {
@@ -2317,6 +2513,7 @@ function BGPSection({ deviceId }: { deviceId: string }) {
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">Peer IP</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium text-slate-500">Peer AS</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium text-slate-500">Pfx Rx</th>
+                <th className="text-right px-4 py-2.5 text-xs font-medium text-slate-500">24h Trend</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium text-slate-500">Updates In/Out</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium text-slate-500">Flaps</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium text-slate-500">Uptime</th>
@@ -2355,8 +2552,11 @@ function BGPSection({ deviceId }: { deviceId: string }) {
                     <td className="px-4 py-3 text-xs text-slate-600">
                       {s.peer_asn ? `AS${s.peer_asn}` : '—'}
                     </td>
-                    <td className="px-4 py-3 text-xs text-slate-600 text-right tabular-nums">
-                      {s.prefixes_received ?? '—'}
+                    <td className="px-4 py-3 text-xs text-slate-600 text-right tabular-nums font-medium">
+                      {s.prefixes_received?.toLocaleString() ?? '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <PfxSparkline series={pfxByPeer[s.peer_ip] ?? []} />
                     </td>
                     <td className="px-4 py-3 text-xs text-slate-500 text-right tabular-nums">
                       {s.in_updates > 0 || s.out_updates > 0
@@ -2376,7 +2576,13 @@ function BGPSection({ deviceId }: { deviceId: string }) {
                       {s.session_state === 'established' ? fmtUptime(s.uptime_seconds) : '—'}
                     </td>
                   </tr>
-                  {expanded === s.id && <BGPEventDrawer session={s} />}
+                  {expanded === s.id && (
+                    <BGPEventDrawer
+                      session={s}
+                      pfxSeries={pfxByPeer[s.peer_ip] ?? []}
+                      updSeries={updByPeer[s.peer_ip] ?? []}
+                    />
+                  )}
                 </React.Fragment>
               ))}
             </tbody>
