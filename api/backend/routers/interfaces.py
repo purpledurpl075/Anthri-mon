@@ -194,7 +194,7 @@ async def interface_live_stream(
     _, cred = cred_row
     cred_data = cred.data if isinstance(cred.data, dict) else json.loads(cred.data)
 
-    host       = str(device.mgmt_ip).split("/")[0]
+    host       = device.mgmt_ip_str
     port       = device.snmp_port or 161
     if_index   = iface.if_index
     speed_bps  = iface.speed_bps

@@ -4,10 +4,13 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -23,6 +26,7 @@ const (
 type Server struct {
 	wgIP      string
 	port      int
+	authToken string // sha256hex(apiKey) — expected Bearer token on mutating endpoints
 	onRefresh func()
 	onUpdate  func() error
 	log       zerolog.Logger
@@ -30,21 +34,44 @@ type Server struct {
 
 // NewServer creates a Server.
 //
-//   - wgIP is the WireGuard-assigned IP (e.g. "10.100.0.2").
-//   - port is the listen port; 0 means use defaultPort (9090).
+//   - wgIP      is the WireGuard-assigned IP (e.g. "10.100.0.2").
+//   - port      is the listen port; 0 means use defaultPort (9090).
+//   - apiKey    is the collector's plaintext API key; its SHA-256 hex is used
+//               as the expected Bearer token on mutating endpoints so the hub
+//               can authenticate without storing the plaintext key.
 //   - onRefresh is called when POST /refresh is received.
-//   - onUpdate is called when POST /update is received; nil disables the endpoint.
-func NewServer(wgIP string, port int, onRefresh func(), onUpdate func() error, log zerolog.Logger) *Server {
+//   - onUpdate  is called when POST /update is received; nil disables the endpoint.
+func NewServer(wgIP string, port int, apiKey string, onRefresh func(), onUpdate func() error, log zerolog.Logger) *Server {
 	if port == 0 {
 		port = defaultPort
 	}
+	h := sha256.Sum256([]byte(apiKey))
+	authToken := fmt.Sprintf("%x", h)
 	return &Server{
 		wgIP:      wgIP,
 		port:      port,
+		authToken: authToken,
 		onRefresh: onRefresh,
 		onUpdate:  onUpdate,
 		log:       log.With().Str("component", "control_server").Logger(),
 	}
+}
+
+// checkAuth validates the Authorization: Bearer header against the expected
+// token using a constant-time comparison to prevent timing side-channels.
+// Returns false and writes a 401 response if auth fails.
+func (s *Server) checkAuth(w http.ResponseWriter, r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	token, ok := strings.CutPrefix(auth, "Bearer ")
+	if !ok || subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) != 1 {
+		s.log.Warn().
+			Str("remote_addr", r.RemoteAddr).
+			Str("path", r.URL.Path).
+			Msg("control server: unauthorized request")
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
 }
 
 // Run starts the HTTP server and blocks until ctx is cancelled.
@@ -104,6 +131,9 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.checkAuth(w, r) {
+		return
+	}
 	if s.onRefresh != nil {
 		go s.onRefresh()
 	}
@@ -116,6 +146,9 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.checkAuth(w, r) {
 		return
 	}
 	if s.onUpdate == nil {

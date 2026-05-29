@@ -1839,47 +1839,6 @@ export default function DeviceDetail() {
 
               <CollectorSection deviceId={id!} currentCollectorId={(device as any).collector_id ?? null} onSave={(cid) => patchMutation.mutate({ collector_id: cid })} />
 
-              {device.vendor === 'aruba_cx' && (
-                <Section title="REST API Collection">
-                  <div className="space-y-3">
-                    <label className="flex items-center justify-between gap-3 cursor-pointer">
-                      <div>
-                        <p className="text-xs font-medium text-slate-700">Enable REST API collection</p>
-                        <p className="text-[10px] text-slate-400 mt-0.5">
-                          Collects BGP and OSPF state via ArubaOS-CX REST API every 5 minutes.
-                          Standard SNMP MIBs are not supported on this platform.
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => patchMutation.mutate({ rest_collection_enabled: !(device as any).rest_collection_enabled })}
-                        disabled={patchMutation.isPending}
-                        className={`relative shrink-0 w-10 h-5 rounded-full transition-colors ${
-                          (device as any).rest_collection_enabled ? 'bg-blue-600' : 'bg-slate-200'
-                        }`}
-                      >
-                        <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                          (device as any).rest_collection_enabled ? 'translate-x-5' : 'translate-x-0.5'
-                        }`} />
-                      </button>
-                    </label>
-                    {!(device as any).rest_collection_enabled && (
-                      <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-[10px] font-mono text-slate-600 space-y-0.5">
-                        <p className="text-[9px] text-slate-400 font-sans mb-1">Enable REST API on the switch first:</p>
-                        <p>conf t</p>
-                        <p>https-server vrf mgmt</p>
-                        <p>https-server rest swagger</p>
-                        <p>end</p>
-                        <p>wr mem</p>
-                      </div>
-                    )}
-                    {(device as any).rest_collection_enabled && (
-                      <p className="text-[10px] text-slate-400">
-                        If authentication fails or the device becomes unreachable, collection will be disabled automatically and must be re-enabled here.
-                      </p>
-                    )}
-                  </div>
-                </Section>
-              )}
 
               <Section title="Tags">
                 <div className="flex flex-wrap gap-1.5 mb-2 min-h-[24px]">
@@ -2064,38 +2023,156 @@ export default function DeviceDetail() {
 
       <main className="p-6 space-y-4">
 
-        {/* Tabbed panel */}
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="border-b border-slate-100 px-2 md:px-4 flex items-center gap-0 overflow-x-auto scrollbar-hide"
-            style={{ WebkitOverflowScrolling: 'touch' }}>
-            {([
-              { id: 'interfaces', label: 'Interfaces', badge: totalIfaces || undefined },
-              { id: 'neighbors',  label: 'Neighbors' },
-              { id: 'addresses',  label: 'Addresses' },
-              { id: 'routes',     label: 'Routes' },
-              { id: 'vlans',      label: 'VLANs' },
-              { id: 'stp',        label: 'STP' },
-              { id: 'health',     label: 'Health' },
-              ...(bgpCount > 0 ? [{ id: 'bgp' as const, label: 'BGP', badge: bgpCount, badgeAlert: bgpDownCount > 0 }] : []),
-              ...(hasConfigCred ? [{ id: 'config' as const, label: 'Config' }] : []),
-            ] as { id: typeof tab; label: string; badge?: number; badgeAlert?: boolean }[]).map(t => (
-              <button key={t.id} onClick={() => setTab(t.id as typeof tab)}
-                className={`flex items-center gap-1 px-2.5 md:px-3 py-2.5 md:py-3 text-xs md:text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 ${
-                  tab === t.id
-                    ? 'border-blue-500 text-blue-600'
-                    : 'border-transparent text-slate-500 hover:text-slate-700'
+        {/* Tabbed panel — sidebar + content */}
+        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden flex flex-1 min-h-0" style={{ minHeight: 480 }}>
+
+          {/* Left sidebar nav */}
+          <div className="w-48 shrink-0 border-r border-slate-200 bg-slate-50 overflow-y-auto">
+            <nav className="py-1">
+
+              {/* Network */}
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest px-4 pt-3 pb-1">Network</p>
+              <button onClick={() => setTab('interfaces')}
+                className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                  tab === 'interfaces'
+                    ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
                 }`}>
-                {t.label}
-                {t.badge ? (
-                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
-                    t.badgeAlert
-                      ? 'bg-red-100 text-red-600'
-                      : tab === t.id ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
-                  }`}>{t.badge}</span>
+                <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'interfaces' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
+                  <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+                </svg>
+                <span className="flex-1">Interfaces</span>
+                {(totalIfaces ?? 0) > 0 && (
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${
+                    tab === 'interfaces' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
+                  }`}>{totalIfaces}</span>
+                )}
+              </button>
+              <button onClick={() => setTab('addresses')}
+                className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                  tab === 'addresses'
+                    ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                }`}>
+                <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'addresses' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+                  <circle cx="12" cy="9" r="2.5"/>
+                </svg>
+                Addresses
+              </button>
+
+              {/* Layer 2 */}
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest px-4 pt-3 pb-1">Layer 2</p>
+              <button onClick={() => setTab('vlans')}
+                className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                  tab === 'vlans'
+                    ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                }`}>
+                <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'vlans' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>
+                </svg>
+                VLANs
+              </button>
+              <button onClick={() => setTab('stp')}
+                className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                  tab === 'stp'
+                    ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                }`}>
+                <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'stp' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <circle cx="12" cy="3" r="2"/><circle cx="4" cy="20" r="2"/><circle cx="20" cy="20" r="2"/>
+                  <path d="M12 5v6M12 11l-6.3 7.5M12 11l6.3 7.5"/>
+                </svg>
+                STP
+              </button>
+
+              {/* Routing */}
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest px-4 pt-3 pb-1">Routing</p>
+              <button onClick={() => setTab('routes')}
+                className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                  tab === 'routes'
+                    ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                }`}>
+                <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'routes' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
+                </svg>
+                Routes
+              </button>
+              <button onClick={() => setTab('bgp')}
+                className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                  tab === 'bgp'
+                    ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                }`}>
+                <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'bgp' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>
+                  <path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/>
+                </svg>
+                <span className="flex-1">BGP</span>
+                {bgpDownCount > 0 ? (
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 bg-red-100 text-red-600">{bgpDownCount}</span>
+                ) : bgpCount > 0 ? (
+                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 ${
+                    tab === 'bgp' ? 'bg-blue-100 text-blue-600' : 'bg-slate-100 text-slate-500'
+                  }`}>{bgpCount}</span>
                 ) : null}
               </button>
-            ))}
+              <button onClick={() => setTab('neighbors')}
+                className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                  tab === 'neighbors'
+                    ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                }`}>
+                <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'neighbors' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+                </svg>
+                Neighbors
+              </button>
+
+              {/* Monitoring */}
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest px-4 pt-3 pb-1">Monitoring</p>
+              <button onClick={() => setTab('health')}
+                className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                  tab === 'health'
+                    ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                    : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                }`}>
+                <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'health' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                  <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                </svg>
+                Health
+              </button>
+
+              {/* Configuration */}
+              {hasConfigCred && (
+                <>
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest px-4 pt-3 pb-1">Configuration</p>
+                  <button onClick={() => setTab('config')}
+                    className={`w-full flex items-center gap-2.5 px-4 py-2 text-sm text-left transition-colors relative ${
+                      tab === 'config'
+                        ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                        : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                    }`}>
+                    <svg className={`w-3.5 h-3.5 shrink-0 ${tab === 'config' ? 'text-blue-500' : 'text-slate-400'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+                      <polyline points="10 9 9 9 8 9"/>
+                    </svg>
+                    Config
+                  </button>
+                </>
+              )}
+
+            </nav>
           </div>
+
+          {/* Content area */}
+          <div className="flex-1 min-w-0 overflow-y-auto">
 
           {tab === 'interfaces' && (
             ifaceLoading ? (
@@ -2213,7 +2290,9 @@ export default function DeviceDetail() {
               <DeviceConfigTab deviceId={id} vendor={device?.vendor} />
             </div>
           )}
-        </div>
+
+          </div>{/* end content area */}
+        </div>{/* end sidebar+content panel */}
 
       </main>
     </div>
@@ -2664,8 +2743,8 @@ function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: stri
         <div className="flex items-center gap-4 text-sm">
           {status?.has_backup ? (
             <>
-              <span className="text-slate-600">
-                Last backup: <span className="font-medium">{status.last_collected ? fmtTime(status.last_collected) : '—'}</span>
+              <span className="text-slate-600" title="Config is polled hourly — only changes are stored as snapshots">
+                Last change: <span className="font-medium">{status.last_collected ? fmtTime(status.last_collected) : '—'}</span>
               </span>
               <span className="text-slate-400">·</span>
               <span className="text-slate-600">{status.backup_count} snapshots</span>
@@ -2681,7 +2760,7 @@ function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: stri
               )}
             </>
           ) : (
-            <span className="text-slate-400">No config backup yet</span>
+            <span className="text-slate-400">No config captured yet</span>
           )}
         </div>
         <button onClick={handleCollect} disabled={collecting}
@@ -2714,7 +2793,7 @@ function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: stri
               <span className="text-xs text-slate-400">{backups.length} total</span>
             </div>
             {backups.length === 0 ? (
-              <div className="px-5 py-8 text-center text-sm text-slate-400">No backups yet</div>
+              <div className="px-5 py-8 text-center text-sm text-slate-400">No snapshots yet</div>
             ) : (
               <div className="divide-y divide-slate-50 max-h-96 overflow-y-auto">
                 {backups.map(b => (
@@ -2922,7 +3001,7 @@ function DeployPanel({ deviceId, vendor }: { deviceId: string; vendor?: string }
         </svg>
         <p className="text-xs text-amber-700">
           Commands are pushed via SSH in config mode. Supports <code className="bg-amber-100 px-0.5 rounded">{'{{variable}}'}</code> substitution.
-          A backup is taken automatically after deploy.
+          A config snapshot is captured automatically after deploy.
         </p>
       </div>
 

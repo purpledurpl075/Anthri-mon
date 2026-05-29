@@ -106,6 +106,34 @@ class OSPFNeighbor(Base):
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
 
+class ISISNeighbor(Base):
+    __tablename__ = "isis_neighbors"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    instance: Mapped[str] = mapped_column(Text, nullable=False, default="default")
+    sys_id: Mapped[str] = mapped_column(Text, nullable=False)
+    hostname: Mapped[Optional[str]] = mapped_column(Text)
+    interface_name: Mapped[Optional[str]] = mapped_column(Text)
+    circuit_type: Mapped[Optional[str]] = mapped_column(Text)
+    adjacency_state: Mapped[str] = mapped_column(Text, nullable=False, default="unknown")
+    ipv4_address: Mapped[Optional[str]] = mapped_column(Text)
+    ipv6_address: Mapped[Optional[str]] = mapped_column(Text)
+    uptime_seconds: Mapped[Optional[int]] = mapped_column(BigInteger)
+    last_state_change: Mapped[Optional[datetime]] = mapped_column()
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
+class ISISArea(Base):
+    __tablename__ = "isis_areas"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    instance: Mapped[str] = mapped_column(Text, nullable=False, default="default")
+    area_addr: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
+
+
 class ARPEntry(Base):
     __tablename__ = "arp_entries"
 

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..dependencies import get_current_user, get_db
 from ..models.bgp import BGPSession, BGPSessionEvent
 from ..models.device import Device
+from ..models.interface import OSPFNeighbor, ISISNeighbor, ISISArea
 from ..models.tenant import User
 
 VM_BASE = "http://localhost:8428"
@@ -73,7 +74,7 @@ async def list_all_sessions(
     if state:
         q = q.where(BGPSession.session_state == state)
     rows = (await db.execute(q)).all()
-    return [_session_out(s, dev.fqdn or dev.hostname) for s, dev in rows]
+    return [_session_out(s, dev.display_name) for s, dev in rows]
 
 
 @router.get("/devices/{device_id}/sessions", summary="BGP sessions for a device")
@@ -90,7 +91,7 @@ async def device_sessions(
     rows = (await db.execute(
         select(BGPSession).where(BGPSession.device_id == device_id).order_by(BGPSession.peer_ip)
     )).scalars().all()
-    name = dev.fqdn or dev.hostname
+    name = dev.display_name
     return [_session_out(s, name) for s in rows]
 
 
@@ -159,7 +160,7 @@ async def bgp_summary(
         "top_flappers": [
             {
                 "session_id":  str(s.id),
-                "device_name": dev.fqdn or dev.hostname,
+                "device_name": dev.display_name,
                 "peer_ip":     str(s.peer_ip),
                 "peer_asn":    s.peer_asn,
                 "flap_count":  s.flap_count,
@@ -205,7 +206,7 @@ async def bgp_prefix_totals(
         "total_tx":    int(rows["total_tx"]   or 0),
         "top_receivers": [
             {
-                "device":      dev.fqdn or dev.hostname,
+                "device":      dev.display_name,
                 "peer_ip":     str(s.peer_ip),
                 "peer_asn":    s.peer_asn,
                 "prefixes_rx": s.prefixes_received,
@@ -236,9 +237,10 @@ async def bgp_prefix_history(
         from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Device not found")
 
-    step  = "5m"
-    end   = "now()"
-    start = f"now()-{hours}h"
+    import time as _time
+    step  = 300  # 5-minute resolution
+    end   = int(_time.time())
+    start = end - hours * 3600
 
     async def vm_range(query: str) -> list[dict]:
         try:
@@ -295,13 +297,43 @@ async def bgp_flap_log(
     return [
         {
             "recorded_at": e.recorded_at.isoformat(),
-            "device":      dev.fqdn or dev.hostname,
+            "device":      dev.display_name,
             "peer_ip":     str(s.peer_ip),
             "peer_asn":    s.peer_asn,
             "prev_state":  e.prev_state,
             "new_state":   e.new_state,
         }
         for e, s, dev in rows
+    ]
+
+
+@router.get("/ospf-neighbors", summary="All OSPF neighbours across tenant devices")
+async def ospf_neighbors_all(
+    current_user: User         = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> list[dict]:
+    rows = (await db.execute(
+        select(OSPFNeighbor, Device)
+        .join(Device, OSPFNeighbor.device_id == Device.id)
+        .where(Device.tenant_id == current_user.tenant_id)
+        .order_by(Device.hostname, OSPFNeighbor.area, OSPFNeighbor.neighbor_ip)
+    )).all()
+    return [
+        {
+            "id":                 str(n.id),
+            "device_id":          str(n.device_id),
+            "device_name":        dev.display_name,
+            "vrf":                n.vrf,
+            "neighbor_router_id": str(n.neighbor_router_id) if n.neighbor_router_id else None,
+            "neighbor_ip":        str(n.neighbor_ip) if n.neighbor_ip else None,
+            "interface_name":     n.interface_name,
+            "area":               n.area or "backbone",
+            "state":              n.state,
+            "priority":           n.priority,
+            "uptime_seconds":     n.uptime_seconds,
+            "last_state_change":  n.last_state_change.isoformat() if n.last_state_change else None,
+        }
+        for n, dev in rows
     ]
 
 
@@ -332,4 +364,85 @@ async def ospf_areas(
             "not_full": int(r["total"]) - int(r["full"]),
         }
         for r in rows
+    ]
+
+
+# ── IS-IS ─────────────────────────────────────────────────────────────────────
+
+@router.get("/isis-neighbors", summary="All IS-IS adjacencies across tenant devices")
+async def isis_neighbors_all(
+    current_user: User         = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> list[dict]:
+    rows = (await db.execute(
+        select(ISISNeighbor, Device)
+        .join(Device, ISISNeighbor.device_id == Device.id)
+        .where(Device.tenant_id == current_user.tenant_id)
+        .order_by(Device.hostname, ISISNeighbor.interface_name, ISISNeighbor.sys_id)
+    )).all()
+    return [
+        {
+            "id":               str(n.id),
+            "device_id":        str(n.device_id),
+            "device_name":      dev.display_name,
+            "instance":         n.instance,
+            "sys_id":           n.sys_id,
+            "hostname":         n.hostname,
+            "interface_name":   n.interface_name,
+            "circuit_type":     n.circuit_type or "level-1-2",
+            "adjacency_state":  n.adjacency_state,
+            "ipv4_address":     str(n.ipv4_address) if n.ipv4_address else None,
+            "ipv6_address":     str(n.ipv6_address) if n.ipv6_address else None,
+            "uptime_seconds":   n.uptime_seconds,
+            "last_state_change": n.last_state_change.isoformat() if n.last_state_change else None,
+        }
+        for n, dev in rows
+    ]
+
+
+@router.get("/isis-summary", summary="IS-IS adjacency counts by device")
+async def isis_summary(
+    current_user: User         = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    rows = (await db.execute(text("""
+        SELECT
+            COUNT(*)                                                                  AS total,
+            COUNT(*) FILTER (WHERE i.adjacency_state = 'up'::isis_adj_state)         AS up,
+            COUNT(*) FILTER (WHERE i.adjacency_state != 'up'::isis_adj_state
+                               AND i.adjacency_state != 'unknown'::isis_adj_state)   AS down,
+            COUNT(DISTINCT i.device_id)                                               AS devices
+        FROM isis_neighbors i
+        JOIN devices d ON d.id = i.device_id
+        WHERE d.tenant_id = :tid
+    """), {"tid": str(current_user.tenant_id)})).mappings().all()
+
+    r = rows[0] if rows else {}
+    return {
+        "total":   int(r.get("total") or 0),
+        "up":      int(r.get("up") or 0),
+        "down":    int(r.get("down") or 0),
+        "devices": int(r.get("devices") or 0),
+    }
+
+
+@router.get("/isis-areas", summary="IS-IS area addresses per device and instance")
+async def isis_areas(
+    current_user: User         = Depends(get_current_user),
+    db:           AsyncSession = Depends(get_db),
+) -> list[dict]:
+    rows = (await db.execute(
+        select(ISISArea, Device)
+        .join(Device, ISISArea.device_id == Device.id)
+        .where(Device.tenant_id == current_user.tenant_id)
+        .order_by(Device.hostname, ISISArea.instance, ISISArea.area_addr)
+    )).all()
+    return [
+        {
+            "device_id":   str(a.device_id),
+            "device_name": dev.display_name,
+            "instance":    a.instance,
+            "area_addr":   a.area_addr,
+        }
+        for a, dev in rows
     ]

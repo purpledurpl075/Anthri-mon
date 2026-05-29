@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  fetchCollectors, fetchCollectorDetails, fetchCollectorLogs,
+  fetchCollectors, fetchCollectorDetails, fetchCollectorLogs, fetchCollectorOwnLogs,
   createCollector, deleteCollector, regenerateToken, patchCollector,
   downloadPackage, fetchBuildStatus, triggerBuild, triggerUpdate,
-  type RemoteCollector, type CollectorDetails, type SyslogMessage, type BuildStatus,
+  type RemoteCollector, type CollectorDetails, type SyslogMessage,
+  type CollectorLogEntry, type BuildStatus,
 } from '../api/collectors'
 import { useRole, hasRole } from '../hooks/useCurrentUser'
 
@@ -51,6 +52,16 @@ const SEV_COLOR: Record<number, string> = {
   7: 'text-slate-400',  // debug
 }
 const SEV_NAME = ['EMERG','ALERT','CRIT','ERR','WARN','NOTICE','INFO','DEBUG']
+
+const LEVEL_COLOR: Record<string, string> = {
+  trace: 'text-slate-400',
+  debug: 'text-slate-500',
+  info:  'text-green-400',
+  warn:  'text-amber-400',
+  error: 'text-red-500',
+  fatal: 'text-red-600',
+  panic: 'text-red-600',
+}
 
 // ── Token modal ───────────────────────────────────────────────────────────────
 
@@ -168,7 +179,8 @@ function CollectorDrawer({ collectorId, canEdit, onClose, onToken }: {
 }) {
   const qc        = useQueryClient()
   const [tab, setTab] = useState<'overview' | 'logs'>('overview')
-  const [logWindow, setLogWindow] = useState(120)
+  const [logWindow, setLogWindow]   = useState(120)
+  const [logSource, setLogSource]   = useState<'device' | 'collector'>('device')
 
   const { data: details, isLoading } = useQuery<CollectorDetails>({
     queryKey:        ['collector-details', collectorId],
@@ -179,7 +191,14 @@ function CollectorDrawer({ collectorId, canEdit, onClose, onToken }: {
   const { data: logs, isLoading: logsLoading } = useQuery({
     queryKey:        ['collector-logs', collectorId, logWindow],
     queryFn:         () => fetchCollectorLogs(collectorId, logWindow),
-    enabled:         tab === 'logs',
+    enabled:         tab === 'logs' && logSource === 'device',
+    refetchInterval: 30_000,
+  })
+
+  const { data: ownLogs, isLoading: ownLogsLoading } = useQuery({
+    queryKey:        ['collector-own-logs', collectorId, logWindow],
+    queryFn:         () => fetchCollectorOwnLogs(collectorId, logWindow),
+    enabled:         tab === 'logs' && logSource === 'collector',
     refetchInterval: 30_000,
   })
 
@@ -448,7 +467,22 @@ function CollectorDrawer({ collectorId, canEdit, onClose, onToken }: {
           {tab === 'logs' && (
             <div className="flex flex-col h-full">
               {/* Log toolbar */}
-              <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-3 shrink-0">
+              <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-3 shrink-0 flex-wrap">
+                {/* Source toggle */}
+                <div className="flex rounded-lg border border-slate-200 overflow-hidden shrink-0">
+                  {([['device', 'Device syslog'], ['collector', 'Collector']] as const).map(([src, label]) => (
+                    <button key={src} onClick={() => setLogSource(src)}
+                      className={`px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        logSource === src
+                          ? 'bg-slate-800 text-white'
+                          : 'text-slate-500 hover:bg-slate-50'
+                      }`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <span className="text-slate-300">|</span>
                 <span className="text-xs text-slate-500">Window:</span>
                 {[
                   [30, '30 min'], [120, '2 h'], [720, '12 h'], [1440, '24 h'],
@@ -460,7 +494,7 @@ function CollectorDrawer({ collectorId, canEdit, onClose, onToken }: {
                     {label}
                   </button>
                 ))}
-                {logsLoading && (
+                {(logsLoading || ownLogsLoading) && (
                   <svg className="w-3.5 h-3.5 text-slate-400 animate-spin ml-auto" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
@@ -470,25 +504,43 @@ function CollectorDrawer({ collectorId, canEdit, onClose, onToken }: {
 
               {/* Log lines */}
               <div className="flex-1 overflow-y-auto bg-slate-950 p-3 font-mono text-[11px] leading-relaxed">
-                {!logs || logs.messages.length === 0 ? (
-                  <p className="text-slate-500 italic p-2">
-                    {logsLoading ? 'Loading…' :
-                     !details || details.devices.length === 0
-                       ? 'No devices assigned to this collector yet.'
-                       : 'No syslog messages in this window.'}
-                  </p>
+                {logSource === 'device' ? (
+                  !logs || logs.messages.length === 0 ? (
+                    <p className="text-slate-500 italic p-2">
+                      {logsLoading ? 'Loading…' :
+                       !details || details.devices.length === 0
+                         ? 'No devices assigned to this collector yet.'
+                         : 'No syslog messages in this window.'}
+                    </p>
+                  ) : (
+                    logs.messages.map((msg: SyslogMessage, i: number) => (
+                      <div key={i} className="flex gap-2 py-0.5 hover:bg-white/5 rounded px-1">
+                        <span className="text-slate-600 shrink-0 w-[155px]">{formatTs(msg.received_at)}</span>
+                        <span className={`shrink-0 w-12 font-semibold ${SEV_COLOR[msg.severity] ?? 'text-slate-400'}`}>
+                          {SEV_NAME[msg.severity] ?? msg.severity}
+                        </span>
+                        <span className="text-slate-400 shrink-0 max-w-[80px] truncate">{msg.hostname || msg.device_ip}</span>
+                        <span className="text-indigo-400 shrink-0 max-w-[80px] truncate">{msg.program}</span>
+                        <span className="text-slate-200 flex-1 min-w-0 break-words">{msg.message}</span>
+                      </div>
+                    ))
+                  )
                 ) : (
-                  logs.messages.map((msg: SyslogMessage, i: number) => (
-                    <div key={i} className="flex gap-2 py-0.5 hover:bg-white/5 rounded px-1 group">
-                      <span className="text-slate-600 shrink-0 w-[155px]">{formatTs(msg.received_at)}</span>
-                      <span className={`shrink-0 w-12 font-semibold ${SEV_COLOR[msg.severity] ?? 'text-slate-400'}`}>
-                        {SEV_NAME[msg.severity] ?? msg.severity}
-                      </span>
-                      <span className="text-slate-400 shrink-0 max-w-[80px] truncate">{msg.hostname || msg.device_ip}</span>
-                      <span className="text-indigo-400 shrink-0 max-w-[80px] truncate">{msg.program}</span>
-                      <span className="text-slate-200 flex-1 min-w-0 break-words">{msg.message}</span>
-                    </div>
-                  ))
+                  !ownLogs || ownLogs.logs.length === 0 ? (
+                    <p className="text-slate-500 italic p-2">
+                      {ownLogsLoading ? 'Loading…' : 'No collector logs in this window.'}
+                    </p>
+                  ) : (
+                    ownLogs.logs.map((entry: CollectorLogEntry, i: number) => (
+                      <div key={i} className="flex gap-2 py-0.5 hover:bg-white/5 rounded px-1">
+                        <span className="text-slate-600 shrink-0 w-[155px]">{formatTs(entry.ts)}</span>
+                        <span className={`shrink-0 w-10 font-semibold uppercase ${LEVEL_COLOR[entry.level] ?? 'text-slate-400'}`}>
+                          {entry.level}
+                        </span>
+                        <span className="text-slate-200 flex-1 min-w-0 break-words">{entry.message}</span>
+                      </div>
+                    ))
+                  )
                 )}
               </div>
             </div>

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import React, { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import {
@@ -315,170 +315,239 @@ export default function ConfigPage() {
   const failCount = results.filter(r => r.status === 'fail').length
   const passCount = results.filter(r => r.status === 'pass').length
 
+  const NAV_ITEMS: { id: View; label: string; desc: string; icon: React.ReactNode }[] = [
+    {
+      id: 'compliance',
+      label: 'Compliance',
+      desc: 'Audit results across all devices',
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0 1 12 2.944a11.955 11.955 0 0 1-8.618 3.04A12.02 12.02 0 0 0 3 9c0 5.591 3.824 10.29 9 11.622C17.176 19.29 21 14.591 21 9c0-1.052-.135-2.078-.382-3.016z"/>
+        </svg>
+      ),
+    },
+    {
+      id: 'policies',
+      label: 'Policies',
+      desc: 'Define compliance rules',
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2M9 5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2M9 5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2m-6 9 2 2 4-4"/>
+        </svg>
+      ),
+    },
+    {
+      id: 'deploy',
+      label: 'Deploy',
+      desc: 'Push config to multiple devices',
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-8-4-4m0 0L8 8m4-4v12"/>
+        </svg>
+      ),
+    },
+  ]
+
   return (
-    <div className="flex flex-col h-full">
-      {/* Title bar */}
-      <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between shrink-0">
-        <div>
-          <h1 className="text-base font-semibold text-slate-800">Config Management</h1>
-          <p className="text-xs text-slate-400 mt-0.5">Backup, diff, and compliance</p>
+    <div className="flex h-full overflow-hidden">
+      {/* Left sidebar */}
+      <aside className="w-52 shrink-0 border-r border-slate-200 bg-slate-50 flex flex-col overflow-y-auto">
+        {/* Sidebar header */}
+        <div className="px-5 pt-5 pb-4 border-b border-slate-200">
+          <p className="text-sm font-semibold text-slate-800 leading-tight">Config Management</p>
+          <p className="text-[10px] text-slate-400 mt-0.5">Backup, diff, and compliance</p>
         </div>
-        <div className="flex items-center gap-3">
-          {runResult && (
-            <div className="text-xs text-slate-600 bg-slate-100 px-3 py-1 rounded-lg">
-              Ran: {runResult.pass ?? 0} pass · {runResult.fail ?? 0} fail · {runResult.skip ?? 0} skip
-            </div>
-          )}
-          <div className="flex rounded-lg overflow-hidden border border-slate-200">
-            {(['compliance', 'policies', 'deploy'] as const).map(v => (
-              <button key={v} onClick={() => setView(v)}
-                className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${
-                  view === v ? 'bg-slate-800 text-white' : 'text-slate-500 hover:bg-slate-50'
-                } ${v !== 'compliance' ? 'border-l border-slate-200' : ''}`}>
-                {v}
-                {v === 'compliance' && failCount > 0 && (
-                  <span className="ml-1.5 bg-red-500 text-white text-[9px] font-bold rounded-full px-1.5">{failCount}</span>
-                )}
-              </button>
-            ))}
-          </div>
-          {canEdit && view === 'policies' && (
-            <button onClick={() => setShowForm(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors">
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-              New policy
-            </button>
-          )}
-        </div>
-      </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
-
-        {view === 'compliance' ? (
-          <>
-            {/* Summary */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-              {[
-                { label: 'Failing',  value: failCount, accent: failCount > 0 ? '#dc2626' : '#94a3b8' },
-                { label: 'Passing',  value: passCount, accent: '#16a34a' },
-                { label: 'Policies', value: policies.length, accent: '#6366f1' },
-                { label: 'Devices checked', value: new Set(results.map(r => r.device_id)).size, accent: '#0891b2' },
-              ].map(c => (
-                <div key={c.label} className="relative bg-white rounded-xl border border-slate-200 px-4 py-3 overflow-hidden">
-                  <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl" style={{ backgroundColor: c.accent }} />
-                  <p className="text-xs text-slate-400 mb-1">{c.label}</p>
-                  <p className="text-2xl font-bold text-slate-800">{c.value}</p>
-                </div>
-              ))}
-            </div>
-
-            {/* Results table */}
-            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-              <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-slate-800">Compliance results</h2>
-                <span className="text-xs text-slate-400">{results.length} checks</span>
-              </div>
-              {resultsLoading ? (
-                <div className="px-5 py-8 text-center text-sm text-slate-400">Loading…</div>
-              ) : results.length === 0 ? (
-                <div className="px-5 py-12 text-center">
-                  <p className="text-sm text-slate-400">No compliance results yet</p>
-                  <p className="text-xs text-slate-300 mt-1">Create a policy and run it, or wait for the hourly collection cycle</p>
-                </div>
-              ) : (
-                <div>
-                  {results.map(r => <ResultRow key={r.id} result={r as any} />)}
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <>
-            {/* Create form */}
-            {showForm && (
-              <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-5">
-                <h3 className="text-sm font-semibold text-slate-800 mb-4">New compliance policy</h3>
-                <PolicyForm
-                  onSave={data => createMut.mutate(data)}
-                  onCancel={() => setShowForm(false)}
-                  saving={createMut.isPending}
-                />
-              </div>
-            )}
-
-            {/* Edit form */}
-            {editPolicy && (
-              <div className="bg-white rounded-2xl border border-blue-200 p-6 mb-5">
-                <h3 className="text-sm font-semibold text-slate-800 mb-4">Edit — {editPolicy.name}</h3>
-                <PolicyForm
-                  initial={editPolicy}
-                  onSave={data => updateMut.mutate({ id: editPolicy.id, data })}
-                  onCancel={() => setEditPolicy(null)}
-                  saving={updateMut.isPending}
-                />
-              </div>
-            )}
-
-            {/* Policy list */}
-            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-              <div className="px-5 py-3.5 border-b border-slate-100">
-                <h2 className="text-sm font-semibold text-slate-800">Policies ({policies.length})</h2>
-              </div>
-              {policiesLoading ? (
-                <div className="px-5 py-8 text-center text-sm text-slate-400">Loading…</div>
-              ) : policies.length === 0 ? (
-                <div className="px-5 py-12 text-center">
-                  <p className="text-sm text-slate-400">No policies yet</p>
-                  {canEdit && (
-                    <button onClick={() => setShowForm(true)} className="mt-2 text-sm text-blue-600 hover:underline">
-                      Create your first policy
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-50">
-                  {policies.map(p => (
-                    <div key={p.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-slate-50 transition-colors">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-slate-800">{p.name}</span>
-                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded capitalize ${SEV_STYLE[p.severity] ?? SEV_STYLE.warning}`}>{p.severity}</span>
-                          {!p.is_enabled && <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">disabled</span>}
-                        </div>
-                        <p className="text-xs text-slate-400 mt-0.5">{p.rules.length} rule{p.rules.length !== 1 ? 's' : ''}{p.description ? ` · ${p.description}` : ''}</p>
-                      </div>
-                      {canEdit && (
-                        <div className="flex items-center gap-1 shrink-0">
-                          <button onClick={() => runMut.mutate(p.id)} disabled={runMut.isPending}
-                            className="px-2.5 py-1 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50">
-                            {runMut.isPending ? 'Running…' : 'Run'}
-                          </button>
-                          <button onClick={() => setEditPolicy(p)}
-                            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors">
-                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                          </button>
-                          {confirmDel === p.id ? (
-                            <>
-                              <button onClick={() => deleteMut.mutate(p.id)} className="text-xs text-red-600 hover:underline font-medium">Confirm</button>
-                              <button onClick={() => setConfirmDel(null)} className="text-xs text-slate-400 hover:underline ml-1">Cancel</button>
-                            </>
-                          ) : (
-                            <button onClick={() => setConfirmDel(p.id)}
-                              className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
-                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3M4 7h16"/></svg>
-                            </button>
-                          )}
-                        </div>
+        {/* Nav section */}
+        <div className="pt-4 pb-2">
+          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest px-5 mb-1">Views</p>
+          <nav className="flex flex-col">
+            {NAV_ITEMS.map(item => {
+              const active = view === item.id
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setView(item.id)}
+                  className={`w-full flex items-start gap-2.5 px-5 py-2.5 text-left transition-colors relative ${
+                    active
+                      ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                      : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                  }`}
+                >
+                  <span className={`mt-0.5 ${active ? 'text-blue-500' : ''}`}>{item.icon}</span>
+                  <span className="flex flex-col min-w-0">
+                    <span className="flex items-center gap-1.5 text-xs leading-tight">
+                      {item.label}
+                      {item.id === 'compliance' && failCount > 0 && (
+                        <span className="bg-red-500 text-white text-[9px] font-bold rounded-full px-1.5 leading-4">{failCount}</span>
                       )}
-                    </div>
-                  ))}
+                    </span>
+                    <span className="text-[10px] text-slate-400 mt-0.5 leading-tight font-normal">{item.desc}</span>
+                  </span>
+                </button>
+              )
+            })}
+          </nav>
+        </div>
+      </aside>
+
+      {/* Content area */}
+      <div className="flex-1 min-w-0 overflow-y-auto flex flex-col">
+        {/* Page header */}
+        <div className="px-6 py-4 border-b border-slate-200 bg-white flex items-center justify-between shrink-0">
+          <div>
+            <h1 className="text-base font-semibold text-slate-800">
+              {NAV_ITEMS.find(n => n.id === view)?.label}
+            </h1>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              {NAV_ITEMS.find(n => n.id === view)?.desc}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {runResult && (
+              <div className="text-xs text-slate-600 bg-slate-100 px-3 py-1 rounded-lg">
+                Ran: {runResult.pass ?? 0} pass · {runResult.fail ?? 0} fail · {runResult.skip ?? 0} skip
+              </div>
+            )}
+            {canEdit && view === 'policies' && (
+              <button onClick={() => setShowForm(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                New policy
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="p-6">
+          {view === 'compliance' && (
+            <>
+              {/* Summary */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+                {[
+                  { label: 'Failing',  value: failCount, accent: failCount > 0 ? '#dc2626' : '#94a3b8' },
+                  { label: 'Passing',  value: passCount, accent: '#16a34a' },
+                  { label: 'Policies', value: policies.length, accent: '#6366f1' },
+                  { label: 'Devices checked', value: new Set(results.map(r => r.device_id)).size, accent: '#0891b2' },
+                ].map(c => (
+                  <div key={c.label} className="relative bg-white rounded-xl border border-slate-200 px-4 py-3 overflow-hidden">
+                    <div className="absolute left-0 top-0 bottom-0 w-1 rounded-l-xl" style={{ backgroundColor: c.accent }} />
+                    <p className="text-xs text-slate-400 mb-1">{c.label}</p>
+                    <p className="text-2xl font-bold text-slate-800">{c.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* Results table */}
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-800">Compliance results</h2>
+                  <span className="text-xs text-slate-400">{results.length} checks</span>
+                </div>
+                {resultsLoading ? (
+                  <div className="px-5 py-8 text-center text-sm text-slate-400">Loading…</div>
+                ) : results.length === 0 ? (
+                  <div className="px-5 py-12 text-center">
+                    <p className="text-sm text-slate-400">No compliance results yet</p>
+                    <p className="text-xs text-slate-300 mt-1">Create a policy and run it, or wait for the hourly collection cycle</p>
+                  </div>
+                ) : (
+                  <div>
+                    {results.map(r => <ResultRow key={r.id} result={r as any} />)}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {view === 'policies' && (
+            <>
+              {/* Create form */}
+              {showForm && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-5">
+                  <h3 className="text-sm font-semibold text-slate-800 mb-4">New compliance policy</h3>
+                  <PolicyForm
+                    onSave={data => createMut.mutate(data)}
+                    onCancel={() => setShowForm(false)}
+                    saving={createMut.isPending}
+                  />
                 </div>
               )}
-            </div>
-          </>
-        )}
 
-        {view === 'deploy' && <MultiDeployTab />}
+              {/* Edit form */}
+              {editPolicy && (
+                <div className="bg-white rounded-2xl border border-blue-200 p-6 mb-5">
+                  <h3 className="text-sm font-semibold text-slate-800 mb-4">Edit — {editPolicy.name}</h3>
+                  <PolicyForm
+                    initial={editPolicy}
+                    onSave={data => updateMut.mutate({ id: editPolicy.id, data })}
+                    onCancel={() => setEditPolicy(null)}
+                    saving={updateMut.isPending}
+                  />
+                </div>
+              )}
+
+              {/* Policy list */}
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-slate-100">
+                  <h2 className="text-sm font-semibold text-slate-800">Policies ({policies.length})</h2>
+                </div>
+                {policiesLoading ? (
+                  <div className="px-5 py-8 text-center text-sm text-slate-400">Loading…</div>
+                ) : policies.length === 0 ? (
+                  <div className="px-5 py-12 text-center">
+                    <p className="text-sm text-slate-400">No policies yet</p>
+                    {canEdit && (
+                      <button onClick={() => setShowForm(true)} className="mt-2 text-sm text-blue-600 hover:underline">
+                        Create your first policy
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-50">
+                    {policies.map(p => (
+                      <div key={p.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-slate-50 transition-colors">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-slate-800">{p.name}</span>
+                            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded capitalize ${SEV_STYLE[p.severity] ?? SEV_STYLE.warning}`}>{p.severity}</span>
+                            {!p.is_enabled && <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">disabled</span>}
+                          </div>
+                          <p className="text-xs text-slate-400 mt-0.5">{p.rules.length} rule{p.rules.length !== 1 ? 's' : ''}{p.description ? ` · ${p.description}` : ''}</p>
+                        </div>
+                        {canEdit && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button onClick={() => runMut.mutate(p.id)} disabled={runMut.isPending}
+                              className="px-2.5 py-1 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50">
+                              {runMut.isPending ? 'Running…' : 'Run'}
+                            </button>
+                            <button onClick={() => setEditPolicy(p)}
+                              className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors">
+                              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                            </button>
+                            {confirmDel === p.id ? (
+                              <>
+                                <button onClick={() => deleteMut.mutate(p.id)} className="text-xs text-red-600 hover:underline font-medium">Confirm</button>
+                                <button onClick={() => setConfirmDel(null)} className="text-xs text-slate-400 hover:underline ml-1">Cancel</button>
+                              </>
+                            ) : (
+                              <button onClick={() => setConfirmDel(p.id)}
+                                className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3M4 7h16"/></svg>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {view === 'deploy' && <MultiDeployTab />}
+        </div>
       </div>
     </div>
   )

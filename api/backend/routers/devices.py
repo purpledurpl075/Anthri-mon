@@ -783,7 +783,7 @@ async def get_ospf_neighbors(
     from sqlalchemy import cast, String, or_
 
     device = await _assert_device_visible(device_id, current_user, db)
-    device_ip = str(device.mgmt_ip).split("/")[0]
+    device_ip = device.mgmt_ip_str
 
     # Direct: rows where this device is the reporter
     direct = (await db.execute(
@@ -845,13 +845,13 @@ async def get_ospf_neighbors(
             if mac in arp_by_mac:
                 ospf_ip = arp_by_mac[mac]
                 break
-        peer_ip = ospf_ip or str(peer_device.mgmt_ip).split("/")[0]
+        peer_ip = ospf_ip or peer_device.mgmt_ip_str
 
         if peer_ip not in seen_ips:
             results.append({
                 "neighbor_ip":      peer_ip,
                 "router_id":         peer_ip,
-                "display_name":      str(peer_device.fqdn or peer_device.hostname),
+                "display_name":      str(peer_device.display_name),
                 "state":             row.state,
                 "area":              row.area,
                 "interface_name":    None,
@@ -953,7 +953,7 @@ async def snmp_diag(
 
     dc, cred = cred_row
     cred_data = cred.data if isinstance(cred.data, dict) else _json.loads(cred.data)
-    host = str(device.mgmt_ip).split("/")[0]
+    host = device.mgmt_ip_str
 
     try:
         from pysnmp.hlapi.v3arch.asyncio import (

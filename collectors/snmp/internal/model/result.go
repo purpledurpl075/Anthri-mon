@@ -211,6 +211,19 @@ type InterfaceVLANResult struct {
 	Tagged   bool // true = tagged (trunk), false = untagged (access/native)
 }
 
+// ISISAdjacency is one row from isisISAdjTable for a device.
+type ISISAdjacency struct {
+	DeviceID      uuid.UUID
+	Instance      string // IS-IS instance name, "" = default
+	SysID         string // neighbour system-id, dotted notation "0100.1001.0001"
+	InterfaceName string // local interface name, resolved from isisCircIfIndex
+	CircuitType   string // "level-1" | "level-2" | "level-1-2"
+	AdjState      string // "down" | "initializing" | "up" | "failed" | "unknown"
+	IPv4Address   string // neighbour IPv4, "" if unavailable
+	IPv6Address   string // neighbour IPv6, "" if unavailable
+	UptimeSeconds int64  // seconds since adjacency last entered Up, 0 if down
+}
+
 // STPPortResult is the STP state for one bridge port.
 // IfIndex is resolved to interface_id by the writer.
 type STPPortResult struct {

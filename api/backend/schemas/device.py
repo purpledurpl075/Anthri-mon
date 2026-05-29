@@ -97,7 +97,7 @@ class DeviceRead(BaseModel):
     @field_validator("mgmt_ip", mode="before")
     @classmethod
     def coerce_ip(cls, v: object) -> str:
-        return str(v)
+        return str(v).split("/")[0]
     fqdn: Optional[str] = None
     mgmt_ip: str
     vendor: str
@@ -144,7 +144,7 @@ class DeviceListRead(BaseModel):
     @field_validator("mgmt_ip", mode="before")
     @classmethod
     def coerce_ip(cls, v: object) -> str:
-        return str(v)
+        return str(v).split("/")[0]
     vendor: str
     device_type: str
     platform: Optional[str] = None

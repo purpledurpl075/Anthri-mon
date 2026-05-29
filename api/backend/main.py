@@ -29,8 +29,10 @@ from .alerting.engine import start_alert_engine
 from .alerting.baselines import start_baseline_task
 from .configmgmt.collector import start_config_collector
 from .configmgmt.rest_state import start_rest_state_collector
+from .configmgmt.api_orchestrator import start_api_probe_loop
+from .configmgmt.eapi_collector import start_eapi_isis_collector
 from .collectors.monitor import start_collector_monitor
-from .routers import (admin_router, alerts_router, auth_router, channels_router,
+from .routers import (admin_router, alerts_router, api_methods_router, auth_router, channels_router,
                       bgp_router, collectors_router, config_router, credentials_router, devices_router,
                       discovery_router, flow_router, syslog_router, interfaces_router,
                       maintenance_router, overview_router, policies_router, topology_router,
@@ -113,7 +115,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     ssh_state_task   = start_rest_state_collector(interval_s=300)
     monitor_task     = start_collector_monitor()
     baseline_task    = start_baseline_task(interval_s=3600)
+    probe_task       = start_api_probe_loop(interval_s=300)
+    eapi_isis_task   = start_eapi_isis_collector(interval_s=300)
     yield
+    eapi_isis_task.cancel()
+    probe_task.cancel()
     engine_task.cancel()
     topology_task.cancel()
     config_task.cancel()
@@ -142,6 +148,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     try:
         await baseline_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await eapi_isis_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await probe_task
     except asyncio.CancelledError:
         pass
     await engine.dispose()
@@ -209,6 +223,7 @@ app.include_router(flow_router,        prefix=PREFIX)
 app.include_router(syslog_router,      prefix=PREFIX)
 app.include_router(config_router,      prefix=PREFIX)
 app.include_router(bgp_router,         prefix=PREFIX)
+app.include_router(api_methods_router, prefix=PREFIX)
 app.include_router(collectors_router,  prefix=PREFIX)
 app.include_router(policies_router,    prefix=PREFIX)
 app.include_router(topology_router,    prefix=PREFIX)

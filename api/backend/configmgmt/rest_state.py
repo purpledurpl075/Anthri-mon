@@ -476,7 +476,7 @@ async def collect_device_rest_state(device_id: uuid.UUID) -> None:
             except Exception:
                 pass
 
-    host     = str(dev.mgmt_ip).split("/")[0]
+    host     = dev.mgmt_ip_str
     username = cred_data.get("username", "admin")
     password = cred_data.get("password", "")
 

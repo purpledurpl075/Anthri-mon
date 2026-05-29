@@ -137,13 +137,21 @@ const (
 
 const (
 	// hpicfChassisCpuUtil: 1-minute CPU utilisation % scalar.
-	// Present on ProCurve/Aruba switches running YA/WA/WB firmware.
-	// hrProcessorLoad returns 0 on these devices — use this instead.
+	// WB.16 firmware (HP 2920) does NOT expose this OID; use HpicfSwitchCpuStatUtil instead.
+	// Left here for completeness; procurve.go uses HpicfSwitchCpuStatUtil.
 	HpicfChassisCpuUtil = "1.3.6.1.4.1.11.2.14.11.5.1.7.1.4.0"
 
-	// hpicfMemEntry: walk from the entry-level OID so splitTableOID sees col.idx.
-	// Column 3 (hpicfMemAllocated) = bytes allocated, column 4 (hpicfMemFree) = bytes free.
-	// The parent table OID is 1.3.6.1.4.1.11.2.14.11.5.1.1.2; .1 is the entry object.
+	// hpicfSwitchCpuStatUtilization: instantaneous CPU % on HP 2920/2930/5400R (WA/WB firmware).
+	// This scalar is at hpicfCpuStat.6.1.0 and returns an INTEGER 0-100.
+	HpicfSwitchCpuStatUtil = "1.3.6.1.4.1.11.2.14.11.5.1.9.6.1.0"
+
+	// hpicfMemEntryData: walk base for hpicfMemEntry on HP 2920/2930/5400R (WA/WB firmware).
+	// Must walk from the deeper .1.1 path so splitTableOID (col.row) resolves correctly.
+	// Column 6 = bytes allocated (used), column 7 = bytes free.
+	// Total = col6 + col7.  Columns 3-4 exist but are always 0 on this firmware.
+	HpicfMemEntryData = "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1.1.1"
+
+	// HpicfMemEntry is kept for reference; use HpicfMemEntryData in profiles.
 	HpicfMemEntry = "1.3.6.1.4.1.11.2.14.11.5.1.1.2.1"
 )
 
@@ -279,6 +287,38 @@ const (
 	// tagged trunk member.  Index = ifIndex.  Value = OctetString bitmap where
 	// bit N (1-indexed MSB-first) means the port trunks VLAN N.
 	HpicfVlanPortInfoTaggedVlans = "1.3.6.1.4.1.11.2.14.11.5.1.7.1.15.3.1.3"
+)
+
+// ── ISIS-MIB (RFC 4444) ───────────────────────────────────────────────────────
+// Indexed by (isisSysInstance[OctetString], isisCircIndex, isisISAdjIndex).
+// isisSysInstance is length-prefixed in the OID: 0 = empty/default instance.
+
+const (
+	// isisCircTable: circuit (interface) config.
+	// Index: instanceLen[.instanceChars*].circIndex
+	// Col 2: isisCircIfIndex — maps circuit index to ifIndex.
+	ISISCircTable    = "1.3.6.1.2.1.138.1.3.1"
+	ISISCircIfIndex  = "1.3.6.1.2.1.138.1.3.1.2"
+
+	// isisISAdjTable: IS-IS adjacency table.
+	// Index: instanceLen[.instanceChars*].circIndex.adjIndex
+	// Col 2: isisISAdjState       — 1=down,2=initializing,3=up,4=failed
+	// Col 5: isisISAdjNeighSysID  — 6-byte neighbour system ID
+	// Col 7: isisISAdjUsage       — 1=undefined,2=level-1,3=level-2,4=level-1-2
+	// Col 10: isisISAdjLastUpTime — TimeTicks when adjacency last entered Up
+	ISISAdjTable = "1.3.6.1.2.1.138.1.6.1"
+
+	// isisISAdjIPAddrTable: IP addresses for each adjacency.
+	// Index: instanceLen[.instanceChars*].circIndex.adjIndex.ipAddrIndex
+	// Col 2: isisISAdjIPAddrType    — 1=IPv4, 2=IPv6
+	// Col 3: isisISAdjIPAddrAddress — InetAddress (4 or 16 bytes)
+	ISISAdjIPTable = "1.3.6.1.2.1.138.1.6.2"
+
+	// isisSysAreaAddrTable: area addresses configured on the device.
+	// Index: instanceLen[.instanceChars*].areaAddrLen.areaAddrBytes*
+	// Col 2: isisSysAreaAddrExistState — RowStatus
+	// The area address itself is encoded in the index, not a column.
+	ISISSysAreaAddrTable = "1.3.6.1.2.1.138.1.2.1"
 )
 
 // ── BRIDGE-MIB STP (IEEE 802.1D) ─────────────────────────────────────────────

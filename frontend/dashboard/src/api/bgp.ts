@@ -92,6 +92,65 @@ export const fetchBGPFlapLog = (limit = 20) =>
 export const fetchOSPFAreas = () =>
   api.get<OSPFArea[]>('/bgp/ospf-areas').then(r => r.data)
 
+export interface OSPFNeighbor {
+  id:                 string
+  device_id:          string
+  device_name:        string
+  vrf:                string
+  neighbor_router_id: string | null
+  neighbor_ip:        string | null
+  interface_name:     string | null
+  area:               string
+  state:              string
+  priority:           number | null
+  uptime_seconds:     number | null
+  last_state_change:  string | null
+}
+
+export const fetchOSPFNeighbors = () =>
+  api.get<OSPFNeighbor[]>('/bgp/ospf-neighbors').then(r => r.data)
+
+// ── IS-IS ─────────────────────────────────────────────────────────────────────
+
+export interface ISISNeighbor {
+  id:               string
+  device_id:        string
+  device_name:      string
+  instance:         string
+  sys_id:           string
+  hostname:         string | null
+  interface_name:   string | null
+  circuit_type:     string
+  adjacency_state:  string
+  ipv4_address:     string | null
+  ipv6_address:     string | null
+  uptime_seconds:   number | null
+  last_state_change: string | null
+}
+
+export interface ISISSummary {
+  total:   number
+  up:      number
+  down:    number
+  devices: number
+}
+
+export interface ISISArea {
+  device_id:   string
+  device_name: string
+  instance:    string
+  area_addr:   string
+}
+
+export const fetchISISNeighbors = () =>
+  api.get<ISISNeighbor[]>('/bgp/isis-neighbors').then(r => r.data)
+
+export const fetchISISSummary = () =>
+  api.get<ISISSummary>('/bgp/isis-summary').then(r => r.data)
+
+export const fetchISISAreas = () =>
+  api.get<ISISArea[]>('/bgp/isis-areas').then(r => r.data)
+
 // ── BGP prefix history (time-series from VictoriaMetrics) ─────────────────
 
 export interface BGPPeerSeries {

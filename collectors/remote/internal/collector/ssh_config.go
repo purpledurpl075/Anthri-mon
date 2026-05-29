@@ -55,6 +55,7 @@ var (
 	}
 
 	// needsEnable lists vendors that require entering privileged exec mode.
+	// ArubaOS-CX uses RBAC — admin credentials log in at full privilege already.
 	needsEnable = map[string]bool{
 		"arista":      true,
 		"cisco_ios":   true,
@@ -63,7 +64,6 @@ var (
 		"cisco_nxos":  true,
 		"hp_procurve": true,
 		"procurve":    true,
-		"aruba_cx":    true,
 	}
 )
 
@@ -368,16 +368,18 @@ READLOOP:
 	return cleanOutput(outputBuf.String(), showCmd), nil
 }
 
-// cleanOutput normalises line endings, strips the command echo, and removes
-// the trailing shell prompt from captured device output.
+// cleanOutput normalises line endings, strips the command echo if present, and
+// removes the trailing shell prompt from captured device output.
+//
+// Some devices (e.g. ArubaOS-CX) do not echo the typed command back over the
+// PTY; in that case the output starts directly with the config.  If no command
+// echo is found we fall through and include all lines up to the trailing prompt.
 func cleanOutput(raw, cmd string) string {
 	// Normalise CR+LF → LF.
 	raw = strings.ReplaceAll(raw, "\r\n", "\n")
 	raw = strings.ReplaceAll(raw, "\r", "\n")
 
 	lines := strings.Split(raw, "\n")
-
-	// The first word of the command is enough to identify the echo line.
 	cmdFirst := strings.Split(cmd, " ")[0]
 
 	var out []string
@@ -386,19 +388,29 @@ func cleanOutput(raw, cmd string) string {
 		stripped := strings.TrimRight(line, " \t")
 
 		if !started {
-			// Skip lines until (and including) the command echo.
+			// Skip lines up to and including the command echo.
 			if strings.Contains(stripped, cmd) || strings.Contains(stripped, cmdFirst) {
 				started = true
 			}
 			continue
 		}
 
-		// Stop at the trailing shell prompt.
 		if promptRE.MatchString(stripped) {
 			break
 		}
-
 		out = append(out, stripped)
+	}
+
+	// Device didn't echo the command — include everything up to the trailing prompt.
+	if !started {
+		out = out[:0]
+		for _, line := range lines {
+			stripped := strings.TrimRight(line, " \t")
+			if promptRE.MatchString(stripped) {
+				break
+			}
+			out = append(out, stripped)
+		}
 	}
 
 	return strings.TrimSpace(strings.Join(out, "\n"))

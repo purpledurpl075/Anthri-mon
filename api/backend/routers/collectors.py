@@ -19,8 +19,10 @@ import os
 import re
 import secrets
 import subprocess
+import time
 import uuid
 import zipfile
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -30,13 +32,17 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import cast, select, update
+from sqlalchemy import cast, select, text, update
 from sqlalchemy.dialects.postgresql import INET as PG_INET
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..database import AsyncSessionLocal
+
 from ..dependencies import get_current_user, get_db, require_role
+from ..models.api_method import DeviceApiMethod
 from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
+from ..models.health import DeviceHealthLatest
 from ..models.site import RemoteCollector, WgIpPool
 from ..models.tenant import User
 from .admin import load_platform_settings
@@ -63,6 +69,38 @@ _BUILD_TARGETS: list[tuple[str, dict]] = [
 ]
 
 TOKEN_TTL_HOURS = 24
+
+# ── Bootstrap rate limiter ────────────────────────────────────────────────────
+# Sliding-window counter keyed by source IP.  Prevents brute-force token
+# enumeration on the only unauthenticated endpoint.
+_BOOTSTRAP_WINDOW_S    = 900   # 15-minute window
+_BOOTSTRAP_MAX_TRIES   = 10    # attempts allowed per window per IP
+
+# ip → deque of monotonic timestamps within the current window
+_bootstrap_attempts: dict[str, deque] = {}
+
+
+def _check_bootstrap_rate_limit(ip: str) -> None:
+    """Raise 429 before token validation if source IP is over the attempt limit."""
+    now    = time.monotonic()
+    cutoff = now - _BOOTSTRAP_WINDOW_S
+    bucket = _bootstrap_attempts.get(ip)
+    if bucket is None:
+        bucket = deque()
+        _bootstrap_attempts[ip] = bucket
+    # Evict timestamps that have slid out of the window
+    while bucket and bucket[0] < cutoff:
+        bucket.popleft()
+    if len(bucket) >= _BOOTSTRAP_MAX_TRIES:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=(
+                f"Too many bootstrap attempts from this IP. "
+                f"Try again in {_BOOTSTRAP_WINDOW_S // 60} minutes."
+            ),
+            headers={"Retry-After": str(_BOOTSTRAP_WINDOW_S)},
+        )
+    bucket.append(now)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -453,6 +491,22 @@ async def collector_config(
         )
     )).scalars().all()
 
+    device_ids = [dev.id for dev in device_rows]
+
+    # Build set of device IDs that have eAPI enabled and reachable (one query)
+    eapi_enabled_ids: set[str] = set()
+    if device_ids:
+        eapi_rows = (await db.execute(
+            select(DeviceApiMethod.device_id)
+            .where(
+                DeviceApiMethod.device_id.in_(device_ids),
+                DeviceApiMethod.method == "arista_eapi",
+                DeviceApiMethod.enabled == True,  # noqa: E712
+                DeviceApiMethod.reachable == True,  # noqa: E712
+            )
+        )).all()
+        eapi_enabled_ids = {str(r[0]) for r in eapi_rows}
+
     devices_out = []
     for dev in device_rows:
         # Load credentials
@@ -486,14 +540,15 @@ async def collector_config(
 
         devices_out.append({
             "id":                      str(dev.id),
-            "hostname":                dev.fqdn or dev.hostname,
-            "mgmt_ip":                 str(dev.mgmt_ip).split("/")[0],
+            "hostname":                dev.display_name,
+            "mgmt_ip":                 dev.mgmt_ip_str,
             "vendor":                  dev.vendor,
             "device_type":             dev.device_type,
             "snmp_port":               dev.snmp_port,
             "polling_interval_s":      dev.polling_interval_s,
             "credentials":             cred_list,
             "rest_collection_enabled": dev.rest_collection_enabled,
+            "eapi_enabled":            str(dev.id) in eapi_enabled_ids,
             "config_interval_s":       3600,
         })
 
@@ -595,8 +650,8 @@ async def collector_details(
         "devices": [
             {
                 "id":          str(d.id),
-                "hostname":    d.hostname,
-                "mgmt_ip":     str(d.mgmt_ip) if d.mgmt_ip else None,
+                "hostname":    d.display_name,
+                "mgmt_ip":     d.mgmt_ip_str if d.mgmt_ip else None,
                 "vendor":      d.vendor,
                 "device_type": d.device_type,
                 "last_polled": d.last_polled.isoformat() if d.last_polled else None,
@@ -645,6 +700,38 @@ async def collector_logs(
         f" LIMIT {limit}"
     )
     return {"messages": rows, "device_count": len(device_ids)}
+
+
+@router.get("/{collector_id}/collector-logs",
+            summary="Recent operational logs from the collector process itself")
+async def collector_own_logs(
+    collector_id: str,
+    limit:   int = Query(default=200, ge=1, le=1000),
+    minutes: int = Query(default=120, ge=1, le=10080),
+    current_user: User         = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+
+    rows = await _ch_query(
+        f"SELECT toString(ts) AS log_ts, level, message, fields"
+        f" FROM collector_logs"
+        f" WHERE toString(collector_id) = '{str(c.id)}'"
+        f"   AND ts >= now() - INTERVAL {minutes} MINUTE"
+        f" ORDER BY ts DESC"
+        f" LIMIT {limit}"
+    )
+    # Normalise key name for the frontend
+    for r in rows:
+        r["ts"] = r.pop("log_ts", "")
+    return {"logs": rows}
 
 
 @router.delete("/{collector_id}", status_code=204, response_model=None,
@@ -740,7 +827,10 @@ async def trigger_collector_update(
     control_url = f"http://{str(c.wg_ip).split('/')[0]}:9090/update"
     try:
         async with httpx.AsyncClient(timeout=10) as hc:
-            resp = await hc.post(control_url)
+            resp = await hc.post(
+                control_url,
+                headers={"Authorization": f"Bearer {c.api_key_hash}"},
+            )
         if resp.status_code == 200:
             logger.info("collector_update_triggered",
                         collector=c.name, wg_ip=str(c.wg_ip))
@@ -748,6 +838,67 @@ async def trigger_collector_update(
                 "status":    "update_triggered",
                 "collector": c.name,
                 "detail":    "Collector is downloading and installing the latest binary",
+            }
+        return {
+            "status": "error",
+            "detail": f"Collector control server returned HTTP {resp.status_code}",
+        }
+    except httpx.ConnectError:
+        return {
+            "status": "offline",
+            "detail": "Collector unreachable — trigger again once it comes back online",
+        }
+    except Exception as exc:
+        return {"status": "error", "detail": str(exc)}
+
+
+@router.post("/{collector_id}/refresh", summary="Trigger an immediate device-config refresh on a remote collector")
+async def trigger_collector_refresh(
+    collector_id: str,
+    current_user: User         = Depends(require_role("admin", "superadmin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    """Tell a running collector to re-fetch its device list from the hub immediately.
+
+    Useful after assigning or removing devices from a collector — rather than
+    waiting up to 5 minutes for the collector's periodic config pull, this
+    pushes the trigger instantly.
+
+    The hub sends POST /refresh to the collector's control server on its
+    WireGuard IP (:9090).  The collector re-fetches GET /collectors/config and
+    updates its in-memory device list without restarting.
+
+    If the collector is offline the response indicates so.
+    """
+    c = (await db.execute(
+        select(RemoteCollector).where(
+            RemoteCollector.id == collector_id,
+            RemoteCollector.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if c is None:
+        raise HTTPException(status_code=404, detail="Collector not found")
+
+    if not c.wg_ip:
+        raise HTTPException(
+            status_code=409,
+            detail="Collector has no WireGuard IP — bootstrap it first",
+        )
+
+    control_url = f"http://{str(c.wg_ip).split('/')[0]}:9090/refresh"
+    try:
+        async with httpx.AsyncClient(timeout=10) as hc:
+            resp = await hc.post(
+                control_url,
+                headers={"Authorization": f"Bearer {c.api_key_hash}"},
+            )
+        if resp.status_code == 200:
+            logger.info("collector_refresh_triggered",
+                        collector=c.name, wg_ip=str(c.wg_ip))
+            return {
+                "status":    "refresh_triggered",
+                "collector": c.name,
+                "detail":    "Collector is re-fetching its device configuration",
             }
         return {
             "status": "error",
@@ -982,6 +1133,10 @@ async def bootstrap(
     request: Request,
     db:      AsyncSession = Depends(get_db),
 ) -> dict:
+    # Rate-limit before any DB work to prevent token enumeration.
+    client_ip = request.client.host if request.client else "unknown"
+    _check_bootstrap_rate_limit(client_ip)
+
     token_hash = _sha256(body.token)
     now        = datetime.now(timezone.utc)
 
@@ -1005,16 +1160,20 @@ async def bootstrap(
                    "Run: sudo bash scripts/setup-wireguard.sh",
         )
 
-    # If re-bootstrapping (collector already has WG state), clean up old resources.
-    # Null out wg_ip on the ORM object and flush it to DB *before* allocating a
-    # new IP — otherwise the old non-NULL value stays in the unique partial index
-    # and causes a duplicate-key error when the new value is written via autoflush.
-    if c.wg_public_key:
-        _wg_remove_peer(c.wg_public_key)
-        c.wg_public_key = None
-    if c.wg_ip:
-        await _free_wg_ip(db, str(c.wg_ip))
+    # Capture old WireGuard state BEFORE touching anything — used for cleanup
+    # after the DB commit so we never touch WireGuard before the DB is durable.
+    old_wg_pubkey = c.wg_public_key
+    old_wg_ip     = str(c.wg_ip) if c.wg_ip else None
+
+    # ── Phase 1: all DB work (no WireGuard calls yet) ─────────────────────────
+
+    # Free old WG IP in the pool and null out the ORM fields so the unique
+    # partial index doesn't block the new allocation.
+    if old_wg_ip:
+        await _free_wg_ip(db, old_wg_ip)
         c.wg_ip = None
+    if old_wg_pubkey:
+        c.wg_public_key = None
     await db.flush()  # push NULLs before allocation to clear the unique index
 
     # Allocate WireGuard IP
@@ -1024,13 +1183,6 @@ async def bootstrap(
 
     # Generate API key
     api_key, api_key_hash = _generate_token()
-
-    # Add WireGuard peer
-    try:
-        _wg_add_peer(body.wg_public_key, wg_ip)
-    except Exception as exc:
-        await _free_wg_ip(db, wg_ip)
-        raise HTTPException(status_code=502, detail=f"Failed to add WireGuard peer: {exc}")
 
     # Update collector record
     c.wg_public_key  = body.wg_public_key
@@ -1046,11 +1198,38 @@ async def bootstrap(
     c.token_hash     = _sha256(secrets.token_hex(32))  # invalidate token
     c.token_expires_at = None
 
-    # Update wg_ip_pool assigned_to
     await db.execute(
         update(WgIpPool).where(WgIpPool.ip == cast(wg_ip, PG_INET)).values(assigned_to=c.id)
     )
+
+    # ── Phase 2: commit DB first — if this fails nothing in WireGuard has changed
     await db.commit()
+
+    # ── Phase 3: apply WireGuard changes after DB is durable ─────────────────
+
+    # Remove the old peer (best-effort — it may already be absent).
+    # _wg_remove_peer logs a warning on failure and never raises.
+    if old_wg_pubkey:
+        _wg_remove_peer(old_wg_pubkey)
+
+    # Add the new peer.  If this fails after a successful DB commit we do a
+    # compensating transaction to leave the DB consistent (no dangling wg_ip).
+    try:
+        _wg_add_peer(body.wg_public_key, wg_ip)
+    except Exception as exc:
+        logger.error("wg_add_peer_failed_after_commit",
+                     collector=c.name, wg_ip=wg_ip, error=str(exc))
+        async with AsyncSessionLocal() as comp_db:
+            await comp_db.execute(
+                update(RemoteCollector)
+                .where(RemoteCollector.id == c.id)
+                .values(wg_public_key=None, wg_ip=None,
+                        is_active=False, status="pending")
+            )
+            await _free_wg_ip(comp_db, wg_ip)
+            await comp_db.commit()
+        raise HTTPException(status_code=502,
+                            detail=f"Failed to add WireGuard peer: {exc}")
 
     logger.info("collector_bootstrapped", collector=c.name, wg_ip=wg_ip,
                 hostname=body.hostname)
@@ -1093,6 +1272,42 @@ async def heartbeat(
 
 _DEVICE_ID_RE = re.compile(rb'device_id="([0-9a-f-]{36})"')
 
+# ── Prometheus line parsers for health metrics ────────────────────────────────
+# Match: metric_name{...device_id="UUID"...} value [timestamp_ms]
+_CPU_RE  = re.compile(rb'anthrimon_device_cpu_util_pct\{[^}]*device_id="([0-9a-f-]{36})"[^}]*\}\s+([\d.]+)')
+_MEM_USED_RE  = re.compile(rb'anthrimon_device_mem_used_bytes\{[^}]*device_id="([0-9a-f-]{36})"[^}]*mem_type="ram"[^}]*\}\s+([\d.]+)')
+_MEM_TOTAL_RE = re.compile(rb'anthrimon_device_mem_total_bytes\{[^}]*device_id="([0-9a-f-]{36})"[^}]*mem_type="ram"[^}]*\}\s+([\d.]+)')
+_UPTIME_RE = re.compile(rb'anthrimon_uptime_seconds\{[^}]*device_id="([0-9a-f-]{36})"[^}]*\}\s+([\d.]+)')
+
+
+def _parse_health_from_metrics(body: bytes) -> dict[str, dict]:
+    """Extract per-device health snapshots from a Prometheus exposition body."""
+    health: dict[str, dict] = {}
+
+    def ensure(did: str) -> dict:
+        if did not in health:
+            health[did] = {"cpu_samples": [], "mem_used": None, "mem_total": None, "uptime": None}
+        return health[did]
+
+    for m in _CPU_RE.finditer(body):
+        did, val = m.group(1).decode(), float(m.group(2))
+        ensure(did)["cpu_samples"].append(val)
+
+    for m in _MEM_USED_RE.finditer(body):
+        did, val = m.group(1).decode(), int(m.group(2))
+        ensure(did)["mem_used"] = val
+
+    for m in _MEM_TOTAL_RE.finditer(body):
+        did, val = m.group(1).decode(), int(m.group(2))
+        ensure(did)["mem_total"] = val
+
+    for m in _UPTIME_RE.finditer(body):
+        did, val = m.group(1).decode(), int(m.group(2))
+        ensure(did)["uptime"] = val
+
+    return health
+
+
 @router.post("/metrics", summary="Ingest Prometheus metrics from collector → VictoriaMetrics")
 async def ingest_metrics(
     request: Request,
@@ -1115,26 +1330,64 @@ async def ingest_metrics(
                        collector=collector.name, status=resp.status_code)
 
     # Stamp last_polled + status='up' for every device_id seen in the payload.
-    # The remote collector emits device_id="<uuid>" on every metric line.
     device_ids = {m.group(1).decode() for m in _DEVICE_ID_RE.finditer(body)}
-    if device_ids:
-        valid_ids = []
-        for did in device_ids:
-            try:
-                valid_ids.append(uuid.UUID(did))
-            except ValueError:
-                pass
-        if valid_ids:
-            now = datetime.utcnow()  # naive UTC — matches TIMESTAMP WITHOUT TIME ZONE columns
-            await db.execute(
-                update(Device)
-                .where(
-                    Device.id.in_(valid_ids),
-                    Device.tenant_id == collector.tenant_id,
-                )
-                .values(status="up", last_polled=now, last_seen=now)
+    valid_ids: list[uuid.UUID] = []
+    for did in device_ids:
+        try:
+            valid_ids.append(uuid.UUID(did))
+        except ValueError:
+            pass
+
+    if valid_ids:
+        now = datetime.utcnow()
+        await db.execute(
+            update(Device)
+            .where(
+                Device.id.in_(valid_ids),
+                Device.tenant_id == collector.tenant_id,
             )
-            await db.commit()
+            .values(status="up", last_polled=now, last_seen=now)
+        )
+
+    # Parse and upsert device_health_latest for remote-collector-managed devices.
+    # The local SNMP collector writes this table directly; remote collectors must
+    # go via this endpoint because they have no direct DB access.
+    health_data = _parse_health_from_metrics(body)
+    if health_data:
+        now_health = datetime.utcnow()
+        for did_str, h in health_data.items():
+            samples = h["cpu_samples"]
+            cpu_pct = round(sum(samples) / len(samples), 2) if samples else None
+            mem_used  = h["mem_used"]
+            mem_total = h["mem_total"]
+            uptime    = h["uptime"]
+            if cpu_pct is None and mem_used is None:
+                continue
+            await db.execute(
+                text("""
+                INSERT INTO device_health_latest
+                    (device_id, collected_at, cpu_util_pct, mem_used_bytes, mem_total_bytes, uptime_seconds, updated_at)
+                VALUES
+                    (:did, :ts, :cpu, :mem_used, :mem_total, :uptime, :ts)
+                ON CONFLICT (device_id) DO UPDATE SET
+                    collected_at    = EXCLUDED.collected_at,
+                    cpu_util_pct    = EXCLUDED.cpu_util_pct,
+                    mem_used_bytes  = EXCLUDED.mem_used_bytes,
+                    mem_total_bytes = EXCLUDED.mem_total_bytes,
+                    uptime_seconds  = EXCLUDED.uptime_seconds,
+                    updated_at      = EXCLUDED.updated_at
+                """),
+                {
+                    "did":      did_str,
+                    "ts":       now_health,
+                    "cpu":      cpu_pct,
+                    "mem_used": mem_used,
+                    "mem_total": mem_total,
+                    "uptime":   uptime,
+                },
+            )
+
+    await db.commit()
 
     lines = body.count(b"\n")
     logger.debug("collector_metrics_ingested", collector=collector.name, lines=lines)
@@ -1381,6 +1634,44 @@ async def ingest_bgp_sessions(
 
 # ── OSPF neighbors ingest ─────────────────────────────────────────────────────
 
+@router.post("/collector-logs",
+             summary="Ingest operational logs from the collector process → ClickHouse")
+async def ingest_collector_logs(
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    """Accept zerolog JSON entries from the remote collector itself and store them
+    in ClickHouse collector_logs.  Authenticated by collector API key over WireGuard."""
+    collector = await _require_collector(request, db)
+    records   = await request.json()
+    if not records:
+        return {"written": 0}
+
+    rows = []
+    for r in records:
+        fields = {k: v for k, v in r.items() if k not in ("ts", "level", "message")}
+        rows.append(
+            f"{str(collector.id)}\t"
+            f"{_fix_ts(r.get('ts', '1970-01-01 00:00:00'))}\t"
+            f"{_tsv_escape(str(r.get('level', 'info') or 'info'))}\t"
+            f"{_tsv_escape(str(r.get('message', '') or ''))}\t"
+            f"{_tsv_escape(json.dumps(fields) if fields else '{}')}"
+        )
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{_CH_URL}/?query=INSERT+INTO+collector_logs+"
+            "(collector_id,ts,level,message,fields)"
+            "+FORMAT+TabSeparated",
+            content="\n".join(rows),
+            headers={"Content-Type": "text/plain"},
+        )
+    if resp.status_code not in (200, 204):
+        logger.warning("collector_logs_ingest_failed", collector=collector.name,
+                       status=resp.status_code, detail=resp.text[:200])
+    return {"written": len(rows)}
+
+
 @router.post("/ospf-neighbors",
              summary="Ingest OSPF neighbor state collected by the remote collector")
 async def ingest_ospf_neighbors(
@@ -1424,6 +1715,65 @@ async def ingest_ospf_neighbors(
             written += len(nbrs)
         except Exception as exc:
             logger.warning("ospf_ingest_failed", collector=collector.name,
+                           device_id=did, error=str(exc))
+
+    return {"written": written}
+
+
+# ── IS-IS neighbors ingest ────────────────────────────────────────────────────
+
+@router.post("/isis-neighbors",
+             summary="Ingest IS-IS adjacency state collected by the remote collector")
+async def ingest_isis_neighbors(
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    """Accept a list of IS-IS adjacency records (each with a device_id field) from a
+    remote collector and upsert them into isis_neighbors.
+
+    Each record must include at minimum: device_id, instance, sys_id, interface_name,
+    circuit_type, adj_state.  Optional: hostname, ipv4_address, ipv6_address,
+    uptime_seconds, last_state_change (ISO-8601 string).
+    """
+    collector = await _require_collector(request, db)
+    records   = await request.json()
+    if not records:
+        return {"written": 0}
+
+    import uuid as _uuid
+    from datetime import datetime as _dt
+    from ..configmgmt.eapi_collector import _write_isis_neighbors
+
+    allowed = {
+        str(did) for (did,) in (await db.execute(
+            select(Device.id).where(
+                Device.collector_id == collector.id,
+                Device.is_active == True,  # noqa: E712
+            )
+        )).all()
+    }
+
+    by_device: dict[str, list] = {}
+    for r in records:
+        did = r.get("device_id")
+        if did and did in allowed:
+            # Coerce last_state_change string → datetime if present
+            row = {k: v for k, v in r.items() if k != "device_id"}
+            lsc = row.get("last_state_change")
+            if isinstance(lsc, str) and lsc:
+                try:
+                    row["last_state_change"] = _dt.fromisoformat(lsc.replace("Z", "+00:00"))
+                except ValueError:
+                    row["last_state_change"] = None
+            by_device.setdefault(did, []).append(row)
+
+    written = 0
+    for did, adjs in by_device.items():
+        try:
+            await _write_isis_neighbors(_uuid.UUID(did), adjs)
+            written += len(adjs)
+        except Exception as exc:
+            logger.warning("isis_ingest_failed", collector=collector.name,
                            device_id=did, error=str(exc))
 
     return {"written": written}

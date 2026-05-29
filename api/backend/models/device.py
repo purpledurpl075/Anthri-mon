@@ -82,6 +82,16 @@ class Device(Base):
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 
+    @property
+    def display_name(self) -> str:
+        """Preferred display name: SNMP-discovered FQDN, falling back to the provisioned hostname."""
+        return self.fqdn or self.hostname
+
+    @property
+    def mgmt_ip_str(self) -> str:
+        """Management IP without CIDR prefix length (PostgreSQL INET columns include it)."""
+        return str(self.mgmt_ip).split("/")[0]
+
     # Relationships
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="devices", lazy="noload")
     site: Mapped[Optional["Site"]] = relationship("Site", back_populates="devices", lazy="noload")

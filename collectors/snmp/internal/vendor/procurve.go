@@ -39,15 +39,17 @@ func init() {
 		// OID prefix and "Aruba" text match (belt-and-suspenders safety).
 		Priority: 5,
 
-		// hpicfChassisCpuUtil scalar — 1-minute CPU % average.
+		// hpicfSwitchCpuStatUtilization: instantaneous CPU % (0-100).
+		// WA/WB firmware (2920/2930/5400R) does not expose hpicfChassisCpuUtil (.7.1.4.0);
+		// the correct OID is at hpicfCpuStat.6.1.0 (= HpicfSwitchCpuStatUtil).
 		CPUOIDs: &OIDSet{
-			Scalar: []string{oid.HpicfChassisCpuUtil},
+			Scalar: []string{oid.HpicfSwitchCpuStatUtil},
 		},
 
-		// HP-ICF memory table entry: col 3 = allocated bytes, col 4 = free bytes.
-		// Walk the entry-level OID so splitTableOID resolves col.idx correctly.
+		// HP-ICF memory table: walk from the deeper .1.1 path so splitTableOID
+		// sees col.row correctly.  Column 6 = used bytes, column 7 = free bytes.
 		MemoryOIDs: &OIDSet{
-			Walk: []string{oid.HpicfMemEntry},
+			Walk: []string{oid.HpicfMemEntryData},
 		},
 
 		// ENTITY-SENSOR-MIB temperature works on WA/WB firmware.

@@ -29,6 +29,7 @@ import (
 	"github.com/purpledurpl075/anthri-mon/collectors/remote/internal/collector"
 	"github.com/purpledurpl075/anthri-mon/collectors/remote/internal/config"
 	"github.com/purpledurpl075/anthri-mon/collectors/remote/internal/hub"
+	"github.com/purpledurpl075/anthri-mon/collectors/remote/internal/logfwd"
 	"github.com/purpledurpl075/anthri-mon/collectors/remote/internal/server"
 	"github.com/purpledurpl075/anthri-mon/collectors/remote/internal/state"
 	"github.com/purpledurpl075/anthri-mon/collectors/remote/internal/tunnel"
@@ -114,25 +115,42 @@ func run(cfgPath string) error {
 	hubURL := "https://10.100.0.1"
 	hubClient := hub.NewClient(hubURL, st.APIKey, cfg.CACert)
 
+	// ── Log forwarder ─────────────────────────────────────────────────────────
+	// Upgrade the logger to also forward log entries to the hub, so operators
+	// can view process logs in the UI.  The forwarder uses a stderr-only sub-
+	// logger for its own error messages to avoid infinite loops.
+	stderrLog := zerolog.New(os.Stderr).With().
+		Timestamp().
+		Str("service", "remote-collector").
+		Str("version", version).
+		Logger()
+	fwd := logfwd.New(hubClient, stderrLog)
+	logger = zerolog.New(zerolog.MultiLevelWriter(os.Stderr, fwd)).With().
+		Timestamp().
+		Str("service", "remote-collector").
+		Str("version", version).
+		Logger()
+
 	// ── Collectors ────────────────────────────────────────────────────────────
 
-	snmpCol   := collector.NewSNMPCollector(hubClient, cfg.SNMP, logger)
-	sshCfgCol := collector.NewSSHConfigCollector(hubClient, logger)
-	restCol   := collector.NewArubaRESTCollector(hubClient, logger)
+	snmpCol    := collector.NewSNMPCollector(hubClient, cfg.SNMP, logger)
+	sshCfgCol  := collector.NewSSHConfigCollector(hubClient, logger)
+	restCol    := collector.NewArubaRESTCollector(hubClient, logger)
+	eapiCol    := collector.NewAristaEAPICollector(hubClient, logger)
 
 	devicesByIP := make(map[string]string)
 	flowCol   := collector.NewFlowCollector(hubClient, cfg.Flow, cfg.Forward, devicesByIP, logger)
 	syslogCol := collector.NewSyslogCollector(hubClient, cfg.Syslog, cfg.Forward, devicesByIP, logger)
 
 	// Initial config fetch.
-	if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, flowCol, syslogCol, logger); err != nil {
+	if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, eapiCol, flowCol, syslogCol, logger); err != nil {
 		logger.Warn().Err(err).Msg("initial config fetch failed — will retry")
 	}
 
 	// ── Control server callbacks ──────────────────────────────────────────────
 
 	onRefresh := func() {
-		if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, flowCol, syslogCol, logger); err != nil {
+		if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, eapiCol, flowCol, syslogCol, logger); err != nil {
 			logger.Warn().Err(err).Msg("on-demand config refresh failed")
 		}
 	}
@@ -149,11 +167,17 @@ func run(cfgPath string) error {
 
 	// ── Mini HTTP server on the WireGuard IP ─────────────────────────────────
 
-	controlSrv := server.NewServer(st.WGAssignedIP, 9090, onRefresh, onUpdate, logger)
+	controlSrv := server.NewServer(st.WGAssignedIP, 9090, st.APIKey, onRefresh, onUpdate, logger)
 
 	// ── Launch all goroutines ─────────────────────────────────────────────────
 
 	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fwd.Run(ctx)
+	}()
 
 	wg.Add(1)
 	go func() {
@@ -164,7 +188,7 @@ func run(cfgPath string) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		configRefreshLoop(ctx, hubClient, snmpCol, sshCfgCol, restCol, flowCol, syslogCol, logger)
+		configRefreshLoop(ctx, hubClient, snmpCol, sshCfgCol, restCol, eapiCol, flowCol, syslogCol, logger)
 	}()
 
 	wg.Add(1)
@@ -183,6 +207,12 @@ func run(cfgPath string) error {
 	go func() {
 		defer wg.Done()
 		restCol.Run(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		eapiCol.Run(ctx)
 	}()
 
 	wg.Add(1)
@@ -381,6 +411,7 @@ func configRefreshLoop(
 	snmpCol   *collector.SNMPCollector,
 	sshCfgCol *collector.SSHConfigCollector,
 	restCol   *collector.ArubaRESTCollector,
+	eapiCol   *collector.AristaEAPICollector,
 	flowCol   *collector.FlowCollector,
 	syslogCol *collector.SyslogCollector,
 	logger    zerolog.Logger,
@@ -393,7 +424,7 @@ func configRefreshLoop(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, flowCol, syslogCol, logger); err != nil {
+			if err := refreshDevices(ctx, hubClient, snmpCol, sshCfgCol, restCol, eapiCol, flowCol, syslogCol, logger); err != nil {
 				logger.Warn().Err(err).Msg("periodic config refresh failed")
 			}
 		}
@@ -407,6 +438,7 @@ func refreshDevices(
 	snmpCol   *collector.SNMPCollector,
 	sshCfgCol *collector.SSHConfigCollector,
 	restCol   *collector.ArubaRESTCollector,
+	eapiCol   *collector.AristaEAPICollector,
 	flowCol   *collector.FlowCollector,
 	syslogCol *collector.SyslogCollector,
 	logger    zerolog.Logger,
@@ -424,6 +456,7 @@ func refreshDevices(
 	snmpCol.SetDevices(devCfg.Devices)
 	sshCfgCol.SetDevices(devCfg.Devices)
 	restCol.SetDevices(devCfg.Devices)
+	eapiCol.SetDevices(devCfg.Devices)
 	flowCol.UpdateDevices(byIP)
 	syslogCol.UpdateDevices(byIP)
 	syslogCol.SetTimezone(devCfg.Timezone)

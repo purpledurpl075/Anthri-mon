@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchSmtpSettings, saveSmtpSettings, testSmtpSettings } from '../api/admin'
 import { fetchChannels, createChannel, updateChannel, deleteChannel, testChannel, type NotificationChannel } from '../api/channels'
@@ -622,18 +622,16 @@ function SettingRow({ label, description, children, badge }: {
   )
 }
 
-function PlatformTab() {
+// Shared hook for platform settings mutations — avoids repeating boilerplate in each sub-tab.
+function usePlatformSettings() {
   const qc = useQueryClient()
   const [f, setF] = useState<PlatformSettings | null>(null)
   const [saved, setSaved] = useState(false)
-
   const { data, isLoading } = useQuery<PlatformSettings>({
     queryKey: ['platform-settings'],
     queryFn:  () => api.get<PlatformSettings>('/admin/settings/platform').then(r => r.data),
   })
-
   useEffect(() => { if (data) setF(data) }, [data])
-
   const saveMut = useMutation({
     mutationFn: () => api.put('/admin/settings/platform', f),
     onSuccess:  () => {
@@ -642,71 +640,124 @@ function PlatformTab() {
       setTimeout(() => setSaved(false), 2000)
     },
   })
-
   const set = <K extends keyof PlatformSettings>(k: K, v: PlatformSettings[K]) =>
     setF(p => p ? { ...p, [k]: v } : p)
+  return { f, set, isLoading, saveMut, saved }
+}
 
-  if (isLoading || !f) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
-
-  const numInput = (k: keyof PlatformSettings, placeholder = '') => (
-    <input type="number" value={String(f[k])} placeholder={placeholder}
-      onChange={e => set(k as any, Number(e.target.value))}
-      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+function SaveBar({ saveMut, saved }: { saveMut: ReturnType<typeof usePlatformSettings>['saveMut']; saved: boolean }) {
+  return (
+    <div className="flex items-center justify-end gap-3 mb-6">
+      <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
+        className={`px-4 py-2 text-xs font-medium rounded-xl transition-colors disabled:opacity-50 ${
+          saved ? 'bg-green-600 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'
+        }`}>
+        {saved ? 'Saved!' : saveMut.isPending ? 'Saving…' : 'Save changes'}
+      </button>
+      {saveMut.isError && (
+        <p className="text-xs text-red-500">{(saveMut.error as any)?.response?.data?.detail ?? 'Failed to save'}</p>
+      )}
+    </div>
   )
+}
 
-  const textInput = (k: keyof PlatformSettings, placeholder = '', type = 'text') => (
-    <input type={type} value={String(f[k])} placeholder={placeholder}
+// ── General tab (app identity + session) ──────────────────────────────────────
+
+function GeneralTab() {
+  const { f, set, isLoading, saveMut, saved } = usePlatformSettings()
+  if (isLoading || !f) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
+  const txt = (k: keyof PlatformSettings, ph = '', type = 'text') => (
+    <input type={type} value={String(f[k])} placeholder={ph}
       onChange={e => set(k as any, e.target.value)}
       className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
   )
-
   return (
-    <div className="p-6 max-w-3xl overflow-y-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-800">Platform Configuration</h2>
-          <p className="text-xs text-slate-400 mt-0.5">Global settings that apply across the entire installation</p>
-        </div>
-        <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
-          className={`px-4 py-2 text-xs font-medium rounded-xl transition-colors disabled:opacity-50 ${
-            saved ? 'bg-green-600 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'
-          }`}>
-          {saved ? 'Saved!' : saveMut.isPending ? 'Saving…' : 'Save changes'}
-        </button>
+    <div className="p-6 max-w-3xl">
+      <div className="mb-6">
+        <h2 className="text-sm font-semibold text-slate-800">General</h2>
+        <p className="text-xs text-slate-400 mt-0.5">Application identity and session settings</p>
       </div>
-
-      {/* General */}
       <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">General</h3>
-        <SettingRow label="Application URL"
-          description="Base URL for deep links in alert emails. Include protocol, no trailing slash.">
-          {textInput('base_url', 'https://anthrimon.lab.local', 'url')}
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Application</h3>
+        <SettingRow label="Application URL" description="Base URL for deep links in alert emails. Include protocol, no trailing slash.">
+          {txt('base_url', 'https://anthrimon.lab.local', 'url')}
         </SettingRow>
-        <SettingRow label="Platform name"
-          description="Display name used in email notifications and templates.">
-          {textInput('platform_name', 'Anthrimon')}
+        <SettingRow label="Platform name" description="Display name used in email notifications and templates.">
+          {txt('platform_name', 'Anthrimon')}
         </SettingRow>
-        <SettingRow label="Timezone"
-          description="IANA timezone used for timestamps in alert emails (e.g. Europe/London, America/New_York).">
-          {textInput('timezone', 'UTC')}
+        <SettingRow label="Timezone" description="IANA timezone for timestamps in alert emails (e.g. Europe/London, America/New_York).">
+          {txt('timezone', 'UTC')}
         </SettingRow>
       </div>
-
-      {/* Session & security */}
-      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-6">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Session &amp; Security</h3>
-        <SettingRow label="Session timeout"
-          description="How long a login session stays valid. Takes effect on next login.">
+        <SettingRow label="Session timeout" description="How long a login session stays valid. Takes effect on next login.">
           <div className="flex items-center gap-2">
-            {numInput('session_timeout_hours')}
+            <input type="number" value={String(f.session_timeout_hours)}
+              onChange={e => set('session_timeout_hours', Number(e.target.value))}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             <span className="text-xs text-slate-400 shrink-0">hours</span>
           </div>
         </SettingRow>
       </div>
+      <SaveBar saveMut={saveMut} saved={saved} />
+    </div>
+  )
+}
 
-      {/* Notifications */}
+// ── Alerting Engine tab (firing behaviour + notification schedule) ─────────────
+
+function AlertingEngineTab() {
+  const { f, set, isLoading, saveMut, saved } = usePlatformSettings()
+  if (isLoading || !f) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
+  const num = (k: keyof PlatformSettings, ph = '') => (
+    <input type="number" value={String(f[k])} placeholder={ph}
+      onChange={e => set(k as any, Number(e.target.value))}
+      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+  )
+  return (
+    <div className="p-6 max-w-3xl overflow-y-auto">
+      <div className="mb-6">
+        <h2 className="text-sm font-semibold text-slate-800">Alerting Engine</h2>
+        <p className="text-xs text-slate-400 mt-0.5">Controls how alerts fire, re-notify, and when notifications are sent</p>
+      </div>
+
       <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Notifications</h3>
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Firing Behaviour</h3>
+        <SettingRow label="Evaluation interval"
+          description="How often the alert engine checks all rules. Requires API restart to take effect.">
+          <div className="flex items-center gap-2">
+            {num('alert_eval_interval_s')}
+            <span className="text-xs text-slate-400 shrink-0">seconds</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Default re-notify interval"
+          description="Default interval for re-alerting on active alerts when creating new rules.">
+          <div className="flex items-center gap-2">
+            <input type="number" value={Math.round(f.default_renotify_s / 60)}
+              onChange={e => set('default_renotify_s', Number(e.target.value) * 60)}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            <span className="text-xs text-slate-400 shrink-0">minutes</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Storm protection"
+          description="Maximum new alerts per device per hour. Set to 0 to disable.">
+          <div className="flex items-center gap-2">
+            {num('max_alerts_per_device_per_hour', '0 = unlimited')}
+            <span className="text-xs text-slate-400 shrink-0">/hr</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Stale alert auto-close"
+          description="Auto-close open/acknowledged alerts with no activity after this many days. Set to 0 to disable.">
+          <div className="flex items-center gap-2">
+            {num('auto_close_stale_days', '0 = disabled')}
+            <span className="text-xs text-slate-400 shrink-0">days</span>
+          </div>
+        </SettingRow>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-6">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Notification Schedule</h3>
         <SettingRow label="Pause all notifications"
           badge={f.notifications_paused ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Active</span> : undefined}
           description="Temporarily silence all outgoing alert notifications globally.">
@@ -759,9 +810,7 @@ function PlatformTab() {
                         set('business_days', days)
                       }}
                       className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
-                        f.business_days.includes(i)
-                          ? 'bg-blue-600 text-white'
-                          : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                        f.business_days.includes(i) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                       }`}>
                       {d}
                     </button>
@@ -772,76 +821,42 @@ function PlatformTab() {
           </div>
         </SettingRow>
       </div>
+      <SaveBar saveMut={saveMut} saved={saved} />
+    </div>
+  )
+}
 
-      {/* Alerting engine */}
-      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Alerting Engine</h3>
-        <SettingRow label="Evaluation interval"
-          description="How often the alert engine checks all rules. Requires API restart to take effect.">
-          <div className="flex items-center gap-2">
-            {numInput('alert_eval_interval_s')}
-            <span className="text-xs text-slate-400 shrink-0">seconds</span>
-          </div>
-        </SettingRow>
-        <SettingRow label="Default re-notify interval"
-          description="Default interval for re-alerting on active alerts when creating new rules.">
-          <div className="flex items-center gap-2">
-            <input type="number" value={Math.round(f.default_renotify_s / 60)}
-              onChange={e => set('default_renotify_s', Number(e.target.value) * 60)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            <span className="text-xs text-slate-400 shrink-0">minutes</span>
-          </div>
-        </SettingRow>
-        <SettingRow label="Storm protection"
-          description="Maximum new alerts per device per hour. Prevents alert storms. Set to 0 to disable.">
-          <div className="flex items-center gap-2">
-            {numInput('max_alerts_per_device_per_hour', '0 = unlimited')}
-            <span className="text-xs text-slate-400 shrink-0">/hr</span>
-          </div>
-        </SettingRow>
-        <SettingRow label="Stale alert auto-close"
-          description="Auto-close open/acknowledged alerts with no activity after this many days. Set to 0 to disable.">
-          <div className="flex items-center gap-2">
-            {numInput('auto_close_stale_days', '0 = disabled')}
-            <span className="text-xs text-slate-400 shrink-0">days</span>
-          </div>
-        </SettingRow>
+// ── Integrations tab (threat intel + remote collectors) ───────────────────────
+
+function IntegrationsTab() {
+  const { f, set, isLoading, saveMut, saved } = usePlatformSettings()
+  if (isLoading || !f) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
+  const txt = (k: keyof PlatformSettings, ph = '', type = 'text') => (
+    <input type={type} value={String(f[k])} placeholder={ph}
+      onChange={e => set(k as any, e.target.value)}
+      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+  )
+  return (
+    <div className="p-6 max-w-3xl">
+      <div className="mb-6">
+        <h2 className="text-sm font-semibold text-slate-800">Integrations</h2>
+        <p className="text-xs text-slate-400 mt-0.5">External services and infrastructure connectivity</p>
       </div>
-
-      {/* Data */}
-      <div className="bg-white rounded-2xl border border-slate-200 px-6">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Data</h3>
-        <SettingRow label="Alert retention"
-          description="Days to keep resolved and closed alerts before they are eligible for purging.">
-          <div className="flex items-center gap-2">
-            {numInput('alert_retention_days')}
-            <span className="text-xs text-slate-400 shrink-0">days</span>
-          </div>
-        </SettingRow>
-      </div>
-
       <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Threat Intelligence</h3>
         <SettingRow label="AbuseIPDB API key"
           description="Used to score IPs in flow data. Free key at abuseipdb.com — 1 000 checks/day. Leave blank to disable.">
-          {textInput('abuseipdb_api_key', 'Paste API key here', 'password')}
+          {txt('abuseipdb_api_key', 'Paste API key here', 'password')}
         </SettingRow>
       </div>
-
-      {/* Remote collectors */}
-      <div className="bg-white rounded-2xl border border-slate-200 px-6">
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-6">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Remote Collectors</h3>
         <SettingRow label="WireGuard public endpoint"
-          description="Override the endpoint given to remote collectors during bootstrap. Required when this hub is behind NAT — auto-detection returns the private LAN address, which external collectors cannot reach. Use your public IP or hostname, e.g. 203.0.113.5 or 203.0.113.5:51820. Leave blank to auto-detect.">
-          {textInput('wg_public_endpoint', 'e.g. 203.0.113.5 or 203.0.113.5:51820')}
+          description="Override the endpoint given to remote collectors during bootstrap. Required when this hub is behind NAT — external collectors cannot reach a private LAN address. Use your public IP or hostname, e.g. 203.0.113.5:51820. Leave blank to auto-detect.">
+          {txt('wg_public_endpoint', 'e.g. 203.0.113.5 or 203.0.113.5:51820')}
         </SettingRow>
       </div>
-
-      {saveMut.isError && (
-        <p className="mt-3 text-xs text-red-500">
-          {(saveMut.error as any)?.response?.data?.detail ?? 'Failed to save settings'}
-        </p>
-      )}
+      <SaveBar saveMut={saveMut} saved={saved} />
     </div>
   )
 }
@@ -1097,11 +1112,440 @@ function EmailTemplateTab() {
   )
 }
 
-type Tab = 'platform' | 'smtp' | 'channels' | 'users' | 'template' | 'data'
+// ── API Methods tab ───────────────────────────────────────────────────────────
+
+interface ApiMethod {
+  id: string
+  device_id: string
+  method: string
+  label: string
+  enabled: boolean
+  reachable: boolean | null
+  last_probe_at: string | null
+  probe_error: string | null
+  configure_status: string | null
+  configure_at: string | null
+}
+
+interface ApiDevice {
+  device_id: string
+  hostname: string
+  mgmt_ip: string
+  vendor: string
+  supported_methods: string[]
+  has_ssh_cred: boolean
+  methods: ApiMethod[]
+}
+
+const METHOD_ORDER = ['snmp', 'arista_eapi', 'aruba_cx_rest', 'gnmi']
+
+function MethodBadge({ m }: { m: ApiMethod | undefined; method: string }) {
+  if (!m) return <span className="text-xs text-slate-300">—</span>
+  const dot = m.reachable === true ? 'bg-green-500'
+    : m.reachable === false ? 'bg-red-400'
+    : m.enabled ? 'bg-slate-300' : 'bg-slate-200'
+  const text = m.reachable === true ? 'Reachable'
+    : m.reachable === false ? 'Unreachable'
+    : m.enabled ? 'Enabled'
+    : 'Disabled'
+  const cls = m.reachable === true ? 'text-green-700 bg-green-50'
+    : m.reachable === false ? 'text-red-700 bg-red-50'
+    : 'text-slate-500 bg-slate-100'
+  return (
+    <span className={`inline-flex items-center gap-1 text-xs font-medium px-1.5 py-0.5 rounded ${cls}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} />
+      {text}
+    </span>
+  )
+}
+
+function ConfigureModal({ device, method, onClose, onDone }: {
+  device: ApiDevice; method: string; onClose: () => void; onDone: () => void
+}) {
+  const [status, setStatus] = useState<'idle' | 'running' | 'done'>('idle')
+  const [output, setOutput] = useState('')
+  const [success, setSuccess] = useState(false)
+
+  const { data: cmdData } = useQuery<{ commands: string[]; vrf?: string }>({
+    queryKey: ['api-method-commands', device.device_id, method],
+    queryFn: () => api.get(`/api-methods/${device.device_id}/${method}/commands`).then(r => r.data as { commands: string[]; vrf?: string }),
+  })
+  const preview = cmdData?.commands.join('\n') ?? '…'
+
+  const run = async () => {
+    setStatus('running')
+    try {
+      const r = await api.post(`/api-methods/${device.device_id}/${method}/configure`)
+      const rd = r.data as { output?: string; status?: string }
+      setOutput(rd.output ?? '')
+      setSuccess(rd.status === 'success')
+    } catch (e: any) {
+      setOutput(e?.response?.data?.detail ?? String(e))
+      setSuccess(false)
+    }
+    setStatus('done')
+    onDone()
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg">
+        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-slate-800">
+            Auto-configure {method === 'arista_eapi' ? 'Arista eAPI' : 'CX REST'} — {device.hostname}
+          </h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">✕</button>
+        </div>
+        <div className="px-6 py-4 space-y-4">
+          <div>
+            <p className="text-xs text-slate-500 mb-2">
+              Commands to be pushed via SSH (config mode, saved to startup){cmdData?.vrf ? ` · management VRF: ${cmdData.vrf}` : ''}:
+            </p>
+            <pre className="bg-slate-900 text-green-400 rounded-lg p-3 text-xs font-mono whitespace-pre leading-relaxed">
+              {preview}
+            </pre>
+          </div>
+          {status === 'done' && (
+            <div>
+              <p className={`text-xs font-semibold mb-1 ${success ? 'text-green-700' : 'text-red-700'}`}>
+                {success ? '✓ Configuration applied successfully' : '✗ Configuration failed'}
+              </p>
+              <pre className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs font-mono max-h-48 overflow-auto whitespace-pre-wrap">
+                {output || '(no output)'}
+              </pre>
+            </div>
+          )}
+        </div>
+        <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50">
+            {status === 'done' ? 'Close' : 'Cancel'}
+          </button>
+          {status !== 'done' && (
+            <button onClick={run} disabled={status === 'running'}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50">
+              {status === 'running' ? 'Configuring…' : 'Deploy'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ApiMethodsTab() {
+  const qc = useQueryClient()
+  const [probing, setProbing] = useState<Record<string, boolean>>({})
+  const [bulkConfiguring, setBulkConfiguring] = useState<Record<string, boolean>>({})
+  const [modal, setModal] = useState<{ device: ApiDevice; method: string } | null>(null)
+  const [vendorFilter, setVendorFilter] = useState('all')
+
+  const { data: devicesData, isLoading } = useQuery<ApiDevice[]>({
+    queryKey: ['api-methods'],
+    queryFn: () => api.get('/api-methods/').then(r => r.data as ApiDevice[]),
+    refetchInterval: 60_000,
+  })
+  const devices: ApiDevice[] = devicesData ?? []
+
+  const vendors = useMemo(() => ['all', ...new Set(devices.map(d => d.vendor))].sort(), [devices])
+
+  const filtered = useMemo(() =>
+    vendorFilter === 'all' ? devices : devices.filter(d => d.vendor === vendorFilter),
+    [devices, vendorFilter]
+  )
+
+  const probe = async (deviceId: string, method: string, ip: string) => {
+    const key = `${deviceId}:${method}`
+    setProbing(p => ({ ...p, [key]: true }))
+    try {
+      await api.post(`/api-methods/${deviceId}/${method}/probe`)
+      qc.invalidateQueries({ queryKey: ['api-methods'] })
+    } finally {
+      setProbing(p => ({ ...p, [key]: false }))
+    }
+  }
+
+  const probeAll = async () => {
+    setProbing(p => ({ ...p, _all: true }))
+    try {
+      await api.post('/api-methods/probe-all')
+      qc.invalidateQueries({ queryKey: ['api-methods'] })
+    } finally {
+      setProbing(p => ({ ...p, _all: false }))
+    }
+  }
+
+  const toggle = async (deviceId: string, method: string) => {
+    await api.patch(`/api-methods/${deviceId}/${method}/toggle`)
+    qc.invalidateQueries({ queryKey: ['api-methods'] })
+  }
+
+  const configureBulk = async (devs: ApiDevice[], method: string) => {
+    setBulkConfiguring(p => ({ ...p, [method]: true }))
+    try {
+      await Promise.all(devs.map(d => api.post(`/api-methods/${d.device_id}/${method}/configure`)))
+      qc.invalidateQueries({ queryKey: ['api-methods'] })
+    } finally {
+      setBulkConfiguring(p => ({ ...p, [method]: false }))
+    }
+  }
+
+  if (isLoading) return <div className="p-6 text-sm text-slate-400">Loading…</div>
+
+  const configurable = filtered.filter(d =>
+    d.supported_methods.some(m => m !== 'snmp') && d.has_ssh_cred
+  )
+
+  // Count summary
+  const totalMethods = devices.flatMap(d => d.methods).filter(m => m.method !== 'snmp')
+  const reachableCount = totalMethods.filter(m => m.reachable).length
+  const pendingCount = totalMethods.filter(m => !m.reachable && m.method !== 'snmp').length
+
+  return (
+    <div className="p-6 space-y-5 max-w-6xl">
+      {modal && (
+        <ConfigureModal
+          device={modal.device}
+          method={modal.method}
+          onClose={() => setModal(null)}
+          onDone={() => qc.invalidateQueries({ queryKey: ['api-methods'] })}
+        />
+      )}
+
+      {/* Header + bulk actions */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-800">API Method Orchestration</h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {devices.length} devices · {reachableCount} methods reachable · {pendingCount} pending enablement
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="flex gap-1">
+            {vendors.map(v => (
+              <button key={v} onClick={() => setVendorFilter(v)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${vendorFilter === v ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}>
+                {v === 'all' ? 'All vendors' : v}
+              </button>
+            ))}
+          </div>
+          <button onClick={probeAll} disabled={!!probing['_all']}
+            className="px-3 py-1.5 text-xs font-medium border border-slate-300 rounded-lg bg-white hover:bg-slate-50 disabled:opacity-50">
+            {probing['_all'] ? 'Probing…' : 'Probe all'}
+          </button>
+        </div>
+      </div>
+
+      {/* Bulk configure callout — shown when there are configurable devices not yet reachable */}
+      {configurable.length > 0 && (() => {
+        const needsConfig = configurable.filter(d =>
+          d.methods.some(m => m.method !== 'snmp' && !m.reachable && m.configure_status !== 'success')
+        )
+        if (!needsConfig.length) return null
+        // Group by method
+        const byMethod: Record<string, ApiDevice[]> = {}
+        for (const d of needsConfig) {
+          for (const m of d.methods) {
+            if (m.method !== 'snmp' && !m.reachable && m.configure_status !== 'success') {
+              byMethod[m.method] = [...(byMethod[m.method] ?? []), d]
+            }
+          }
+        }
+        return (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+            <p className="text-xs font-semibold text-amber-800 mb-2">
+              {needsConfig.length} device{needsConfig.length !== 1 ? 's' : ''} have unconfigured API methods
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {Object.entries(byMethod).map(([method, devs]) => (
+                <button key={method}
+                  onClick={() => configureBulk(devs, method)}
+                  disabled={!!bulkConfiguring[method]}
+                  className="px-3 py-1.5 text-xs font-medium bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-60">
+                  {bulkConfiguring[method]
+                    ? `Configuring ${devs.length} device${devs.length !== 1 ? 's' : ''}…`
+                    : `Configure ${method === 'arista_eapi' ? 'Arista eAPI' : 'CX REST'} on ${devs.length} device${devs.length !== 1 ? 's' : ''}`}
+                </button>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Device table */}
+      {filtered.length === 0 ? (
+        <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center text-sm text-slate-400">
+          No devices found
+        </div>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-200">
+                <th className="text-left px-5 py-3 text-xs font-medium text-slate-400">Device</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-slate-400">Vendor</th>
+                {METHOD_ORDER.filter(m =>
+                  filtered.some(d => d.supported_methods.includes(m))
+                ).map(m => (
+                  <th key={m} className="text-left px-4 py-3 text-xs font-medium text-slate-400">
+                    {{snmp:'SNMP', arista_eapi:'Arista eAPI', aruba_cx_rest:'CX REST', gnmi:'gNMI'}[m] ?? m}
+                  </th>
+                ))}
+                <th className="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filtered.map(dev => {
+                const byMethod = Object.fromEntries(dev.methods.map(m => [m.method, m]))
+                const visibleMethods = METHOD_ORDER.filter(m =>
+                  filtered.some(d => d.supported_methods.includes(m))
+                )
+                return (
+                  <tr key={dev.device_id} className="hover:bg-slate-50">
+                    <td className="px-5 py-3">
+                      <div className="text-sm font-medium text-slate-800">{dev.hostname || dev.mgmt_ip}</div>
+                      <div className="text-xs text-slate-400 font-mono">{dev.mgmt_ip}</div>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{dev.vendor}</td>
+                    {visibleMethods.map(method => {
+                      const m = byMethod[method]
+                      const key = `${dev.device_id}:${method}`
+                      if (!dev.supported_methods.includes(method)) {
+                        return <td key={method} className="px-4 py-3 text-slate-200 text-xs">—</td>
+                      }
+                      return (
+                        <td key={method} className="px-4 py-3">
+                          <div className="space-y-1.5">
+                            <MethodBadge m={m} method={method} />
+                            {m?.last_probe_at && (
+                              <div className="text-[10px] text-slate-400">
+                                {new Date(m.last_probe_at).toLocaleTimeString()}
+                              </div>
+                            )}
+                            {method !== 'snmp' && m && (
+                              <div className="flex gap-1.5">
+                                <button
+                                  onClick={() => probe(dev.device_id, method, dev.mgmt_ip)}
+                                  disabled={!!probing[key]}
+                                  className="text-[10px] px-1.5 py-0.5 border border-slate-200 rounded bg-white hover:bg-slate-50 disabled:opacity-50">
+                                  {probing[key] ? '…' : 'Probe'}
+                                </button>
+                                <button
+                                  onClick={() => toggle(dev.device_id, method)}
+                                  className={`text-[10px] px-1.5 py-0.5 border rounded ${m.enabled ? 'border-red-200 text-red-600 hover:bg-red-50' : 'border-blue-200 text-blue-600 hover:bg-blue-50'}`}>
+                                  {m.enabled ? 'Disable' : 'Enable'}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      )
+                    })}
+                    <td className="px-4 py-3">
+                      {(() => {
+                        const unconfigured = dev.supported_methods.filter(m =>
+                          m !== 'snmp' && !byMethod[m]?.reachable && byMethod[m]?.configure_status !== 'success'
+                        )
+                        if (!unconfigured.length) return null
+                        if (!dev.has_ssh_cred)
+                          return <span className="text-xs text-slate-300">No SSH cred</span>
+                        return (
+                          <div className="flex gap-1.5">
+                            {unconfigured.map(method => (
+                              <button key={method}
+                                onClick={() => setModal({ device: dev, method })}
+                                className="text-xs px-2 py-1 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                                Configure {method === 'arista_eapi' ? 'eAPI' : 'REST'}
+                              </button>
+                            ))}
+                          </div>
+                        )
+                      })()}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
+type Tab =
+  | 'general' | 'alerting-engine'
+  | 'users'
+  | 'smtp' | 'channels' | 'template'
+  | 'api-methods'
+  | 'storage' | 'integrations'
+
+const ADMIN_NAV: { section: string; items: { id: Tab; label: string; icon: React.ReactNode }[] }[] = [
+  {
+    section: 'Platform',
+    items: [
+      {
+        id: 'general', label: 'General',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
+      },
+      {
+        id: 'alerting-engine', label: 'Alerting Engine',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
+      },
+    ],
+  },
+  {
+    section: 'Access',
+    items: [
+      {
+        id: 'users', label: 'Users',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+      },
+    ],
+  },
+  {
+    section: 'Notifications',
+    items: [
+      {
+        id: 'smtp', label: 'SMTP Server',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>,
+      },
+      {
+        id: 'channels', label: 'Channels',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>,
+      },
+      {
+        id: 'template', label: 'Email Templates',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>,
+      },
+    ],
+  },
+  {
+    section: 'Collection',
+    items: [
+      {
+        id: 'api-methods', label: 'API Methods',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 0 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>,
+      },
+    ],
+  },
+  {
+    section: 'Data',
+    items: [
+      {
+        id: 'storage', label: 'Storage',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>,
+      },
+      {
+        id: 'integrations', label: 'Integrations',
+        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>,
+      },
+    ],
+  },
+]
 
 export default function AdminPage() {
   const role = useRole()
-  const [tab, setTab] = useState<Tab>('platform')
+  const [tab, setTab] = useState<Tab>('general')
 
   useQuery({ queryKey: ['smtp-settings'], queryFn: fetchSmtpSettings })
   useQuery({ queryKey: ['channels'],      queryFn: fetchChannels })
@@ -1118,42 +1562,50 @@ export default function AdminPage() {
     )
   }
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'platform', label: 'Platform' },
-    { id: 'smtp',     label: 'SMTP Server' },
-    { id: 'channels', label: 'Notification Channels' },
-    { id: 'users',    label: 'Users' },
-    { id: 'template', label: 'Email Template' },
-    { id: 'data',     label: 'Data' },
-  ]
-
   return (
-    <div className={tab === 'template' ? 'flex flex-col h-screen' : ''}>
-      <div className="px-6 py-4 border-b border-slate-200 bg-white shrink-0">
-        <h1 className="text-base font-semibold text-slate-800">Administration</h1>
-      </div>
-
-      <div className="bg-white border-b border-slate-200 px-6 shrink-0">
-        <nav className="flex gap-1 -mb-px">
-          {tabs.map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)}
-              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
-                tab === t.id
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}>
-              {t.label}
-            </button>
+    <div className="flex h-full overflow-hidden">
+      {/* Left settings nav */}
+      <div className="w-52 shrink-0 border-r border-slate-200 bg-slate-50 flex flex-col overflow-y-auto">
+        <div className="px-5 py-4 border-b border-slate-200">
+          <h1 className="text-sm font-semibold text-slate-800">Administration</h1>
+        </div>
+        <nav className="flex-1 py-2">
+          {ADMIN_NAV.map(({ section, items }) => (
+            <div key={section} className="mb-2">
+              <p className="px-5 pt-3 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">
+                {section}
+              </p>
+              {items.map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => setTab(item.id)}
+                  className={`w-full flex items-center gap-2.5 px-5 py-2 text-sm text-left transition-colors relative ${
+                    tab === item.id
+                      ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
+                      : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
+                  }`}
+                >
+                  <span className={tab === item.id ? 'text-blue-500' : 'text-slate-400'}>{item.icon}</span>
+                  {item.label}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
       </div>
 
-      {tab === 'platform' && <PlatformTab />}
-      {tab === 'smtp'     && <SmtpTab />}
-      {tab === 'channels' && <ChannelsTab />}
-      {tab === 'users'    && <UsersTab />}
-      {tab === 'template' && <EmailTemplateTab />}
-      {tab === 'data'     && <DataTab />}
+      {/* Content area */}
+      <div className={`flex-1 min-w-0 bg-white ${tab === 'template' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}>
+        {tab === 'general'          && <GeneralTab />}
+        {tab === 'alerting-engine'  && <AlertingEngineTab />}
+        {tab === 'users'            && <UsersTab />}
+        {tab === 'smtp'             && <SmtpTab />}
+        {tab === 'channels'         && <ChannelsTab />}
+        {tab === 'template'         && <EmailTemplateTab />}
+        {tab === 'api-methods'      && <ApiMethodsTab />}
+        {tab === 'storage'          && <DataTab />}
+        {tab === 'integrations'     && <IntegrationsTab />}
+      </div>
     </div>
   )
 }

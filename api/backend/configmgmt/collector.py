@@ -184,6 +184,37 @@ def _collect_ssh(host: str, port: int, vendor_key: str, cred_data: dict) -> str:
     return output.strip()
 
 
+def _ssh_exec(host: str, port: int, vendor_key: str, cred_data: dict, command: str) -> str:
+    """Run a single exec-mode command via SSH and return output. Not config mode."""
+    from netmiko import ConnectHandler
+
+    _NEEDS_ENABLE_EXEC = {"arista", "cisco_ios", "cisco_iosxe", "cisco_iosxr",
+                          "cisco_nxos", "hp_procurve", "aruba_cx"}
+    device_type = _NETMIKO_TYPE.get(vendor_key, "cisco_ios")
+    conn_params = {
+        "device_type":  device_type,
+        "host":         host,
+        "port":         port,
+        "username":     cred_data.get("username", ""),
+        "password":     cred_data.get("password", ""),
+        "timeout":      30,
+        "conn_timeout": 15,
+        "fast_cli":     False,
+    }
+    if cred_data.get("enable_secret"):
+        conn_params["secret"] = cred_data["enable_secret"]
+    elif vendor_key in _NEEDS_ENABLE_EXEC:
+        conn_params["secret"] = cred_data.get("password", "")
+
+    with ConnectHandler(**conn_params) as conn:
+        if vendor_key in _NEEDS_ENABLE_EXEC:
+            try:
+                conn.enable()
+            except Exception:
+                pass
+        return conn.send_command(command, read_timeout=30)
+
+
 # Vendor-specific config mode entry/exit commands
 _CONFIG_ENTER: dict[str, str] = {
     "arista":     "configure terminal",
@@ -520,7 +551,7 @@ async def collect_device(device_id: str, db: AsyncSession) -> Optional[ConfigBac
         except Exception:
             pass
 
-    host   = str(dev.mgmt_ip).split("/")[0]
+    host   = dev.mgmt_ip_str
     port   = 22
     vendor = _vendor_key(dev)
 
@@ -577,7 +608,7 @@ async def _fire_config_change_alerts(
 
         fp = _fingerprint(str(rule.id), str(dev.id))
         title = (
-            f"{dev.fqdn or dev.hostname}: "
+            f"{dev.display_name}: "
             f"config changed (+{lines_added} -{lines_removed} lines)"
         )
 
@@ -592,7 +623,7 @@ async def _fire_config_change_alerts(
             message=rule.description,
             context={
                 "metric":        "config_change",
-                "device_name":   dev.fqdn or dev.hostname,
+                "device_name":   dev.display_name,
                 "lines_added":   lines_added,
                 "lines_removed": lines_removed,
                 "backup_id":     backup_id,

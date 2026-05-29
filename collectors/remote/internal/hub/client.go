@@ -38,6 +38,7 @@ type Device struct {
 	PollingIntervalS      int          `json:"polling_interval_s"`
 	Credentials           []Credential `json:"credentials"`
 	RestCollectionEnabled bool         `json:"rest_collection_enabled"`
+	EapiEnabled           bool         `json:"eapi_enabled"`
 	ConfigIntervalS       int          `json:"config_interval_s"`
 }
 
@@ -175,10 +176,21 @@ func (c *Client) PostBGPSessions(ctx context.Context, sessions []map[string]any)
 	return c.postJSON(ctx, "/api/v1/collectors/bgp-sessions", sessions, nil)
 }
 
+// PostLogs sends a batch of collector operational log entries to the hub.
+func (c *Client) PostLogs(ctx context.Context, entries []map[string]any) error {
+	return c.postJSON(ctx, "/api/v1/collectors/collector-logs", entries, nil)
+}
+
 // PostOSPFNeighbors sends a batch of OSPF neighbor state records to the hub.
 // Each record must contain a device_id field plus the OSPF neighbor fields.
 func (c *Client) PostOSPFNeighbors(ctx context.Context, neighbors []map[string]any) error {
 	return c.postJSON(ctx, "/api/v1/collectors/ospf-neighbors", neighbors, nil)
+}
+
+// PostISISNeighbors sends a batch of IS-IS adjacency records to the hub.
+// Each record must contain a device_id field plus the adjacency fields.
+func (c *Client) PostISISNeighbors(ctx context.Context, neighbors []map[string]any) error {
+	return c.postJSON(ctx, "/api/v1/collectors/isis-neighbors", neighbors, nil)
 }
 
 // DownloadBinary fetches the latest collector binary for the given architecture

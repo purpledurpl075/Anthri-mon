@@ -51,7 +51,7 @@ async def _compute_edges(devices: list, db: AsyncSession) -> list[dict]:
     dev_ids = [d.id for d in devices]
 
     dev_by_ip: dict[str, str] = {
-        str(d.mgmt_ip).split("/")[0]: str(d.id) for d in devices
+        d.mgmt_ip_str: str(d.id) for d in devices
     }
     dev_by_host: dict[str, str] = {}
     for d in devices:
@@ -237,8 +237,8 @@ async def _refresh_topology(tenant_id: str) -> None:
             "nodes": [
                 {
                     "id":          str(d.id),
-                    "hostname":    d.fqdn or d.hostname,
-                    "mgmt_ip":     str(d.mgmt_ip).split("/")[0],
+                    "hostname":    d.display_name,
+                    "mgmt_ip":     d.mgmt_ip_str,
                     "vendor":      d.vendor,
                     "device_type": d.device_type,
                     "status":      d.status,
@@ -324,8 +324,8 @@ async def get_topology(
             "nodes": [
                 {
                     "id":          str(d.id),
-                    "hostname":    d.fqdn or d.hostname,
-                    "mgmt_ip":     str(d.mgmt_ip).split("/")[0],
+                    "hostname":    d.display_name,
+                    "mgmt_ip":     d.mgmt_ip_str,
                     "vendor":      d.vendor,
                     "device_type": d.device_type,
                     "status":      d.status,

@@ -84,6 +84,12 @@ func (w *PostgresWriter) Handle(ctx context.Context, result *poller.PollResult) 
 		}
 	}
 
+	if len(result.ISISAdjacencies) > 0 {
+		if err := w.upsertISISAdjacencies(ctx, result.DeviceID, result.ISISAdjacencies); err != nil {
+			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert isis adjacencies failed")
+		}
+	}
+
 	if len(result.BGPSessions) > 0 {
 		if err := w.upsertBGPSessions(ctx, result.DeviceID, result.BGPSessions); err != nil {
 			w.log.Error().Err(err).Str("device_id", result.DeviceID.String()).Msg("upsert bgp sessions failed")
@@ -388,6 +394,60 @@ func (w *PostgresWriter) upsertOSPFNeighbours(ctx context.Context, deviceID uuid
 	for i := 0; i < batch.Len(); i++ {
 		if _, err := br.Exec(); err != nil {
 			w.log.Error().Err(err).Msg("ospf neighbour batch exec error")
+		}
+	}
+	return nil
+}
+
+// ── IS-IS ─────────────────────────────────────────────────────────────────────
+
+func (w *PostgresWriter) upsertISISAdjacencies(ctx context.Context, deviceID uuid.UUID, adjs []*model.ISISAdjacency) error {
+	// Mark all existing rows unknown first; upserts below restore active ones.
+	if _, err := w.pool.Exec(ctx,
+		`UPDATE isis_neighbors SET adjacency_state = 'unknown', updated_at = NOW() WHERE device_id = $1`,
+		deviceID,
+	); err != nil {
+		w.log.Error().Err(err).Msg("isis stale-row mark failed")
+	}
+	batch := &pgx.Batch{}
+	for _, a := range adjs {
+		instance := a.Instance
+		if instance == "" {
+			instance = "default"
+		}
+		batch.Queue(`
+			INSERT INTO isis_neighbors (
+				device_id, instance, sys_id, interface_name,
+				circuit_type, adjacency_state, ipv4_address, ipv6_address,
+				uptime_seconds, updated_at
+			) VALUES (
+				$1, $2, $3, $4,
+				$5, $6::isis_adj_state, $7::inet, $8::inet,
+				$9, NOW()
+			)
+			ON CONFLICT (device_id, instance, sys_id, interface_name) DO UPDATE SET
+				circuit_type    = EXCLUDED.circuit_type,
+				adjacency_state = EXCLUDED.adjacency_state,
+				ipv4_address    = EXCLUDED.ipv4_address,
+				ipv6_address    = EXCLUDED.ipv6_address,
+				uptime_seconds  = EXCLUDED.uptime_seconds,
+				last_state_change = CASE
+					WHEN isis_neighbors.adjacency_state != EXCLUDED.adjacency_state THEN NOW()
+					ELSE isis_neighbors.last_state_change
+				END,
+				updated_at      = NOW()
+		`,
+			deviceID,
+			instance, a.SysID, &a.InterfaceName, // always non-nil so unique constraint fires
+			nullStr(a.CircuitType), a.AdjState, nullStr(a.IPv4Address), nullStr(a.IPv6Address),
+			nullInt64(a.UptimeSeconds),
+		)
+	}
+	br := w.pool.SendBatch(ctx, batch)
+	defer br.Close()
+	for i := 0; i < batch.Len(); i++ {
+		if _, err := br.Exec(); err != nil {
+			w.log.Error().Err(err).Msg("isis adjacency batch exec error")
 		}
 	}
 	return nil
@@ -856,6 +916,13 @@ func nullUint64(v uint64) *uint64 {
 }
 
 func nullInt(v int) *int {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
+func nullInt64(v int64) *int64 {
 	if v == 0 {
 		return nil
 	}

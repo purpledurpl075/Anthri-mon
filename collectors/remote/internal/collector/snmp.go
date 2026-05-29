@@ -263,10 +263,15 @@ func pollInterfaces(g *gosnmp.GoSNMP, dev hub.Device, ts int64, log zerolog.Logg
 		}
 		labels := fmt.Sprintf(`device_id=%q,if_index="%d",if_name=%q,vendor=%q`,
 			dev.ID, ifIdx, name, dev.Vendor)
+		// Normalise oper_status to 1=up / 0=down (SNMP raw: 1=up, 2=down).
+		operBit := 0
+		if r.operStatus == 1 {
+			operBit = 1
+		}
 		lines = append(lines,
 			fmt.Sprintf("anthrimon_if_in_octets_total{%s} %d %d", labels, r.inOctets, ts),
 			fmt.Sprintf("anthrimon_if_out_octets_total{%s} %d %d", labels, r.outOctets, ts),
-			fmt.Sprintf("anthrimon_if_oper_status{%s} %d %d", labels, r.operStatus, ts),
+			fmt.Sprintf("anthrimon_if_oper_status{%s} %d %d", labels, operBit, ts),
 		)
 	}
 	return lines, nil
@@ -278,8 +283,8 @@ func pollCPU(g *gosnmp.GoSNMP, dev hub.Device, ts int64) ([]string, error) {
 	err := g.BulkWalk(oidHrProcessorLoad, func(pdu gosnmp.SnmpPDU) error {
 		load := pduUint64(pdu)
 		lines = append(lines,
-			fmt.Sprintf(`anthrimon_cpu_load_pct{device_id=%q,cpu_index="%d",vendor=%q} %d %d`,
-				dev.ID, idx, dev.Vendor, load, ts))
+			fmt.Sprintf(`anthrimon_device_cpu_util_pct{device_id=%q,cpu_index="%d",hostname=%q,vendor=%q} %d %d`,
+				dev.ID, idx, dev.Hostname, dev.Vendor, load, ts))
 		idx++
 		return nil
 	})
@@ -346,10 +351,10 @@ func pollMemory(g *gosnmp.GoSNMP, dev hub.Device, ts int64) ([]string, error) {
 		usedBytes := r.used * r.allocUnits
 		ts2 := time.Now().UnixMilli()
 		lines = append(lines,
-			fmt.Sprintf(`anthrimon_memory_total_bytes{device_id=%q,vendor=%q} %d %d`,
-				dev.ID, dev.Vendor, totalBytes, ts2),
-			fmt.Sprintf(`anthrimon_memory_used_bytes{device_id=%q,vendor=%q} %d %d`,
-				dev.ID, dev.Vendor, usedBytes, ts2),
+			fmt.Sprintf(`anthrimon_device_mem_total_bytes{device_id=%q,hostname=%q,vendor=%q,mem_type="ram"} %d %d`,
+				dev.ID, dev.Hostname, dev.Vendor, totalBytes, ts2),
+			fmt.Sprintf(`anthrimon_device_mem_used_bytes{device_id=%q,hostname=%q,vendor=%q,mem_type="ram"} %d %d`,
+				dev.ID, dev.Hostname, dev.Vendor, usedBytes, ts2),
 		)
 	}
 	return lines, nil

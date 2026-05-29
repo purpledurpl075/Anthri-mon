@@ -87,4 +87,8 @@ type Profile struct {
 	// SkipBGP: when true, skip bgpPeerTable polling.
 	// Set when the vendor does not implement BGP4-MIB (RFC 1657).
 	SkipBGP bool
+
+	// SkipISIS: when true, skip ISIS-MIB (RFC 4444) polling.
+	// Set when the vendor does not implement ISIS-MIB or IS-IS is not deployed.
+	SkipISIS bool
 }

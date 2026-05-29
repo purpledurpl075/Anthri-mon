@@ -397,7 +397,7 @@ async def compliance_results(
         out.append({
             "id":          str(result.id),
             "device_id":   str(result.device_id),
-            "device_name": device.fqdn or device.hostname,
+            "device_name": device.display_name,
             "policy_id":   str(result.policy_id),
             "policy_name": policy.name,
             "severity":    policy.severity,
@@ -453,7 +453,7 @@ async def deploy_config(
         except Exception:
             pass
 
-    host   = str(dev.mgmt_ip).split("/")[0]
+    host   = dev.mgmt_ip_str
     vendor = _vendor_key(dev)
 
     loop = asyncio.get_running_loop()
@@ -477,7 +477,7 @@ async def deploy_config(
 
     return {
         "device_id": device_id,
-        "hostname":  dev.fqdn or dev.hostname,
+        "hostname":  dev.display_name,
         "commands":  len(commands),
         "saved":     body.save,
         "output":    output,
@@ -499,11 +499,11 @@ def _substitute(commands: list[str], variables: dict) -> list[str]:
 def _device_vars(dev: Device) -> dict:
     """Built-in per-device template variables."""
     return {
-        "hostname":    dev.fqdn or dev.hostname,
-        "mgmt_ip":     str(dev.mgmt_ip).split("/")[0],
+        "hostname":    dev.display_name,
+        "mgmt_ip":     dev.mgmt_ip_str,
         "vendor":      dev.vendor or "",
         "device_type": dev.device_type or "",
-        "fqdn":        dev.fqdn or dev.hostname,
+        "fqdn":        dev.display_name,
     }
 
 
@@ -574,7 +574,7 @@ async def deploy_config_multi(
                     "error": "Device not found", "output": ""}
         cred_data = cred_map.get(did)
         if not cred_data:
-            return {"device_id": did, "hostname": dev_obj.fqdn or dev_obj.hostname,
+            return {"device_id": did, "hostname": dev_obj.display_name,
                     "success": False, "error": "No SSH credential", "output": ""}
 
         # Merge built-in device vars with user vars (user vars take precedence)
@@ -583,7 +583,7 @@ async def deploy_config_multi(
         # Filter out empty commands after substitution
         resolved_cmds = [c for c in resolved_cmds if c.strip()]
 
-        host   = str(dev_obj.mgmt_ip).split("/")[0]
+        host   = dev_obj.mgmt_ip_str
         vendor = _vendor_key(dev_obj)
 
         async with sem:
@@ -598,10 +598,10 @@ async def deploy_config_multi(
                     async with AsyncSessionLocal() as s:
                         await collect_device(did, s)
                 asyncio.create_task(_bk())
-                return {"device_id": did, "hostname": dev_obj.fqdn or dev_obj.hostname,
+                return {"device_id": did, "hostname": dev_obj.display_name,
                         "success": True, "error": None, "output": output}
             except Exception as exc:
-                return {"device_id": did, "hostname": dev_obj.fqdn or dev_obj.hostname,
+                return {"device_id": did, "hostname": dev_obj.display_name,
                         "success": False, "error": str(exc), "output": ""}
 
     results = await asyncio.gather(*[_deploy_one(d["id"]) for d in devices])

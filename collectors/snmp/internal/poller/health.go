@@ -403,12 +403,13 @@ func pollMemoryVendor(s *client.Session, profile *vendor.Profile) ([]model.Memor
 			if idx < 0 {
 				continue
 			}
-			// HP-ICF hpicfMemEntry: col 3 = allocated (used), col 4 = free.
-			// Derive total = allocated + free.
+			// HP-ICF hpicfMemEntryData (WA/WB firmware, walked from .1.1.1):
+			// col 6 = bytes allocated (used), col 7 = bytes free.
+			// Older MIB cols 3/4 exist but return 0 on WB.16+ firmware.
 			switch col {
-			case 3:
+			case 6:
 				ensureRow(idx).used = client.PDUUint64(pdu)
-			case 4:
+			case 7:
 				ensureRow(idx).free = client.PDUUint64(pdu)
 			}
 		}

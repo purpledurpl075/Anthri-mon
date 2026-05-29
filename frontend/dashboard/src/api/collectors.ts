@@ -51,6 +51,18 @@ export interface CollectorLogs {
   device_count: number
 }
 
+export interface CollectorLogEntry {
+  collector_id: string
+  ts:           string
+  level:        string  // zerolog levels: trace/debug/info/warn/error/fatal/panic
+  message:      string
+  fields:       string  // JSON blob of any extra zerolog fields
+}
+
+export interface CollectorOwnLogs {
+  logs: CollectorLogEntry[]
+}
+
 export interface CollectorCreate { name: string; site_id?: string }
 
 export const fetchCollectors    = () =>
@@ -67,6 +79,9 @@ export const fetchCollectorDetails = (id: string) =>
 
 export const fetchCollectorLogs = (id: string, minutes = 120, limit = 100) =>
   api.get<CollectorLogs>(`/collectors/${id}/logs`, { params: { minutes, limit } }).then(r => r.data)
+
+export const fetchCollectorOwnLogs = (id: string, minutes = 120, limit = 200) =>
+  api.get<CollectorOwnLogs>(`/collectors/${id}/collector-logs`, { params: { minutes, limit } }).then(r => r.data)
 
 export const patchCollector     = (id: string, body: { timezone?: string; name?: string }) =>
   api.patch<RemoteCollector>(`/collectors/${id}`, body).then(r => r.data)
