@@ -14,13 +14,14 @@ Complete reference for installation, configuration, operation, and extension of 
 6. [Alerting](#alerting)
 7. [Flow Monitoring](#flow-monitoring)
 8. [Syslog](#syslog)
-9. [Config Management](#config-management)
-10. [Topology](#topology)
-11. [Remote Collectors](#remote-collectors)
-12. [Administration](#administration)
-13. [API Reference](#api-reference)
-14. [Troubleshooting](#troubleshooting)
-15. [Data Retention](#data-retention)
+9. [SNMP Traps](#snmp-traps)
+10. [Config Management](#config-management)
+11. [Topology](#topology)
+12. [Remote Collectors](#remote-collectors)
+13. [Administration](#administration)
+14. [API Reference](#api-reference)
+15. [Troubleshooting](#troubleshooting)
+16. [Data Retention](#data-retention)
 
 ---
 
@@ -28,13 +29,14 @@ Complete reference for installation, configuration, operation, and extension of 
 
 Anthrimon is a self-hosted network monitoring and orchestration platform. It provides:
 
-- **Deep SNMP polling** — interfaces, health metrics, optical power, neighbors, routes, VLANs, STP
+- **Deep SNMP polling** — interfaces, health metrics, optical power, neighbors, routes, VLANs, STP, IS-IS
 - **Flow analysis** — NetFlow v5/v9, IPFIX, sFlow v5 with top-talkers and per-interface breakdown
 - **Syslog ingest** — RFC 3164/5424, severity analysis, pattern-match alerts
+- **SNMP traps** — v1/v2c/v3 authPriv, vendor-aware classification, hub and remote-site collection
 - **Config management** — SSH backup, diff viewer, compliance policies, multi-device deploy
 - **Alerting** — 13 metric types, email notifications, maintenance windows, syslog correlation
 - **Topology** — live L2/L3 map from LLDP/CDP with bandwidth sparklines
-- **Remote collectors** — WireGuard-tunnelled distributed polling agents
+- **Remote collectors** — WireGuard-tunnelled distributed polling agents with local trap collection
 
 ### Default credentials
 
@@ -56,15 +58,17 @@ Browser ──HTTPS:443──▶ nginx ──▶ /dist (React SPA)
                     ┌──────────────────┼──────────────────┐
                     ▼                  ▼                   ▼
               PostgreSQL        VictoriaMetrics        ClickHouse
-           (config, alerts)    (SNMP time-series)   (flows, syslog)
+           (config, alerts)    (SNMP time-series)  (flows, syslog, traps)
 
-Network devices:
-  SNMP ◀────── snmp-collector (Go)        polls every 60s
-  Flow ───────▶ flow-collector (Go)       :2055 NetFlow, :6343 sFlow
-  Syslog ─────▶ syslog-collector (Go)    :514 UDP/TCP
+Network devices (hub site):
+  SNMP ◀────── snmp-collector (Go)              polls every 60s
+  Flow ───────▶ flow-collector (Go)             :2055 NetFlow, :6343 sFlow
+  Syslog ─────▶ syslog-collector (Go)          :514 UDP/TCP
+  Traps ──────▶ anthrimon-trap-receiver (Go)   :162 UDP
 
 Remote sites (WireGuard 10.100.0.0/24):
-  wg0:10.100.0.1 ◀── remote-collector    SNMP + flow + syslog at branch
+  wg0:10.100.0.1 ◀── anthrimon-collector (Go)  SNMP + flow + syslog + trap forwarding
+                 ◀── snmptrapd + anthrimon-traphandler  trap collection from local devices
 ```
 
 ### Component versions
@@ -82,7 +86,7 @@ Remote sites (WireGuard 10.100.0.0/24):
 ### Database schema
 
 - **PostgreSQL** — 22 migrations (`storage/migrations/postgres/`): tenants, users, devices, interfaces, alerts, credentials, config backups, sites, remote collectors, and more
-- **ClickHouse** — 3 migrations (`storage/migrations/clickhouse/`): flow_records + 4 aggregate views, syslog_messages + hourly aggregate
+- **ClickHouse** — 3 migrations (`storage/migrations/clickhouse/`): flow_records + 4 aggregate views, syslog_messages + hourly aggregate, trap_events
 
 ---
 
@@ -99,38 +103,41 @@ Remote sites (WireGuard 10.100.0.0/24):
 ```bash
 git clone https://github.com/purpledurpl075/Anthri-mon.git
 cd Anthri-mon
-sudo bash infra/scripts/install-dev.sh
+sudo bash infra/scripts/install.sh
 ```
 
 The installer prompts for database credentials, public URL, and flow/syslog ports, then installs all services automatically.
 
 ### What the installer does
 
-1. System packages (nginx, wireguard-tools, Go, Node.js, Python)
+1. System packages (nginx, wireguard-tools, snmp, snmptrapd, Go, Node.js, Python)
 2. PostgreSQL 14 — creates role, database, runs all migrations
 3. ClickHouse — installs, runs all ClickHouse migrations
 4. VictoriaMetrics — installs binary, creates systemd service
 5. Builds SNMP, flow, and syslog collectors (Go)
-6. Builds the remote collector binary (`/usr/local/bin/anthrimon-collector`)
-7. Builds the React frontend production bundle
-8. Generates self-signed TLS CA + server certificate
-9. Configures nginx with HTTPS (port 443, port 80 redirects)
-10. Sets up WireGuard hub interface (wg0 at 10.100.0.1/24)
-11. Installs all systemd units
-12. Seeds platform settings (base_url)
+6. Builds the remote collector binary for amd64 and arm64 (`anthrimon-remote-collector-linux-{arch}`)
+7. Builds the trap handler binary for amd64 and arm64 (`anthrimon-trap-handler-linux-{arch}`)
+8. Builds the hub trap receiver binary (`anthrimon-trap-receiver`)
+9. Builds the React frontend production bundle
+10. Generates self-signed TLS CA + server certificate
+11. Configures nginx with HTTPS (port 443, port 80 redirects)
+12. Sets up WireGuard hub interface (wg0 at 10.100.0.1/24)
+13. Installs all systemd units
+14. Seeds platform settings (base_url)
 
 ### Systemd services
 
 ```bash
-systemctl status anthrimon-api        # FastAPI backend
-systemctl status snmp-collector       # SNMP polling
-systemctl status flow-collector       # NetFlow/sFlow
-systemctl status syslog-collector     # Syslog
-systemctl status nginx                # HTTPS reverse proxy
-systemctl status victoria-metrics     # Time-series
-systemctl status clickhouse-server    # Analytics
-systemctl status postgresql           # Relational DB
-systemctl status wg-quick@wg0         # WireGuard hub
+systemctl status anthrimon-api            # FastAPI backend
+systemctl status snmp-collector           # SNMP polling
+systemctl status flow-collector           # NetFlow/sFlow
+systemctl status syslog-collector         # Syslog
+systemctl status anthrimon-trap-receiver  # SNMP trap receiver (:162 UDP)
+systemctl status nginx                    # HTTPS reverse proxy
+systemctl status victoria-metrics         # Time-series
+systemctl status clickhouse-server        # Analytics
+systemctl status postgresql               # Relational DB
+systemctl status wg-quick@wg0             # WireGuard hub
 ```
 
 ### TLS
@@ -188,12 +195,13 @@ sudo bash scripts/setup-tls.sh
 | LLDP neighbors | IEEE + IETF OID spaces |
 | CDP neighbors | CISCO-CDP-MIB |
 | OSPF neighbors | ospfNbrTable |
+| IS-IS neighbors | ISIS-MIB isisSysTable |
 | ARP table | ipNetToMediaTable |
 | MAC forwarding | dot1dTpFdbTable |
 | Routing table | ipCidrRouteTable |
 | VLANs | dot1qVlanStaticTable + port bitmaps |
 | STP | dot1dStpPortTable |
-| BGP (schema ready) | bgpPeerTable (RFC 1657) — pending lab |
+| BGP | bgpPeerTable (RFC 1657); Aruba CX via REST API |
 
 ### Polling intervals
 
@@ -356,6 +364,44 @@ Every new alert automatically captures the last 5 syslog messages from the affec
 
 ---
 
+## SNMP Traps
+
+### Hub trap receiver
+
+The hub runs `anthrimon-trap-receiver` which listens on **UDP 162** for traps from all hub-site devices. Traps are classified by OID, mapped to a severity, and stored in ClickHouse `trap_events`.
+
+### Remote site trap collection
+
+Remote collectors run `snmptrapd` alongside the main collector process. The trap handler binary (`anthrimon-traphandler`) is automatically downloaded from the hub on collector startup. Traps received by snmptrapd are forwarded to the hub API over the WireGuard tunnel.
+
+### SNMPv3 trap authentication
+
+When an SNMPv3 credential is linked to a device, the hub automatically pushes the v3 user keys to the remote collector responsible for that device's site. The collector reconfigures `snmptrapd` so that `authPriv` traps from the device are accepted — no manual snmptrapd configuration needed.
+
+### Trap classification
+
+| OID prefix | Type | Severity |
+|---|---|---|
+| 1.3.6.1.6.3.1.1.5.3 | linkDown | critical |
+| 1.3.6.1.6.3.1.1.5.4 | linkUp | info |
+| 1.3.6.1.6.3.1.1.5.1 | coldStart | warning |
+| 1.3.6.1.6.3.1.1.5.2 | warmStart | info |
+| 1.3.6.1.6.3.1.1.5.5 | authenticationFailure | warning |
+| 1.3.6.1.4.1.9.9.187.* | cisco.bgpBackwardTransition | critical |
+| 1.3.6.1.4.1.9.* | cisco.trap | info |
+| 1.3.6.1.4.1.30065.3.9 | arista.bgpPeerStateChange | warning |
+| 1.3.6.1.4.1.30065.3.10 | arista.linkStateChange | warning |
+| 1.3.6.1.4.1.30065.* | arista.trap | info |
+| 1.3.6.1.4.1.47196.4.1.1.3.20 | aruba_cx.linkStateChange | warning |
+| 1.3.6.1.4.1.47196.* | aruba_cx.trap | info |
+| 1.3.6.1.4.1.11.2.14.12.1 | hp.linkChange | warning |
+| 1.3.6.1.4.1.11.2.* | hp.trap | info |
+| 1.3.6.1.4.1.2636.* | juniper.trap | info |
+
+Longest-prefix match wins. SNMPv1 traps are normalised to v2c format by snmptrapd.
+
+---
+
 ## Config Management
 
 ### How it works
@@ -443,24 +489,19 @@ wg0: 10.100.0.X ──UDP 51820──▶ hub WireGuard endpoint
 
 ### Deploying a collector
 
+1. In the Anthrimon UI go to **Configuration → Collectors → New collector**
+2. Complete the setup wizard — name the collector and select the site
+3. Download the deployment package (`anthrimon-remote-collector-linux-amd64.zip`)
+4. On the remote server:
+
 ```bash
-# 1. Install binary on remote host
-scp /usr/local/bin/anthrimon-collector remote-host:/usr/local/bin/
-scp /etc/anthrimon/tls/ca.crt remote-host:/etc/anthrimon/ca.crt
-
-# 2. Register in UI: Configuration → Collectors → New collector
-#    Save the registration token shown (one-time)
-
-# 3. Configure on remote host
-mkdir -p /etc/anthrimon
-cat > /etc/anthrimon/collector.env <<EOF
-ANTHRIMON_TOKEN=<paste-token-here>
-EOF
-chmod 600 /etc/anthrimon/collector.env
-
-# 4. Start
-systemctl enable --now anthrimon-collector
+unzip anthrimon-remote-collector-linux-amd64.zip
+sudo bash install.sh
 ```
+
+The install script handles everything: installs `wireguard-tools` and `snmptrapd`, copies the binary, config, and hub CA cert, configures capability overrides for port 162 binding, and starts `anthrimon-collector.service`.
+
+The collector self-registers over HTTPS, establishes the WireGuard tunnel, downloads the trap handler binary, and appears **online** in the UI within seconds.
 
 ### Device assignment
 
@@ -468,7 +509,7 @@ Assign devices to a remote collector in **Device Settings → Collection**. The 
 
 ### Collector health
 
-The hub monitors each collector's heartbeat (sent every 30s). If no heartbeat is received for 5 minutes, a **major** alert fires. It auto-resolves when the collector reconnects.
+The hub monitors each collector's heartbeat (sent every 30s). If no heartbeat is received for 90 seconds, the collector is marked offline and a **major** alert fires. It auto-resolves when the collector reconnects.
 
 ### Mini HTTP server
 
@@ -626,4 +667,4 @@ VictoriaMetrics compresses aggressively — real usage is typically 30–50% low
 
 ---
 
-*This wiki covers Anthrimon as of Phases 1–10 complete. For the latest changes see [PLAN.md](PLAN.md).*
+*This wiki covers Anthrimon as of Phases 1–10 complete.*
