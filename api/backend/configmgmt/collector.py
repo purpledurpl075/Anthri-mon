@@ -191,15 +191,19 @@ def _ssh_exec(host: str, port: int, vendor_key: str, cred_data: dict, command: s
     _NEEDS_ENABLE_EXEC = {"arista", "cisco_ios", "cisco_iosxe", "cisco_iosxr",
                           "cisco_nxos", "hp_procurve", "aruba_cx"}
     device_type = _NETMIKO_TYPE.get(vendor_key, "cisco_ios")
+    is_procurve  = vendor_key in {"hp_procurve", "procurve"}
     conn_params = {
-        "device_type":  device_type,
-        "host":         host,
-        "port":         port,
-        "username":     cred_data.get("username", ""),
-        "password":     cred_data.get("password", ""),
-        "timeout":      30,
-        "conn_timeout": 15,
-        "fast_cli":     False,
+        "device_type":         device_type,
+        "host":                host,
+        "port":                port,
+        "username":            cred_data.get("username", ""),
+        "password":            cred_data.get("password", ""),
+        "timeout":             60 if is_procurve else 30,
+        "conn_timeout":        30 if is_procurve else 15,
+        "auth_timeout":        30 if is_procurve else 20,
+        "banner_timeout":      30 if is_procurve else 20,
+        "fast_cli":            False,
+        "global_delay_factor": 4 if is_procurve else 1,
     }
     if cred_data.get("enable_secret"):
         conn_params["secret"] = cred_data["enable_secret"]

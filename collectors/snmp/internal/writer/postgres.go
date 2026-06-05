@@ -153,6 +153,7 @@ func (w *PostgresWriter) upsertDevice(ctx context.Context, info *model.DeviceInf
 			platform        = CASE WHEN $9 <> '' THEN $9 ELSE platform END,
 			sys_location    = CASE WHEN $10 <> '' THEN $10 ELSE sys_location END,
 			sys_contact     = CASE WHEN $11 <> '' THEN $11 ELSE sys_contact END,
+			snmp_engine_id  = CASE WHEN $12 <> '' THEN $12 ELSE snmp_engine_id END,
 			status          = 'up'::device_status,
 			last_polled     = $5,
 			last_seen       = $5
@@ -161,6 +162,7 @@ func (w *PostgresWriter) upsertDevice(ctx context.Context, info *model.DeviceInf
 		info.PollTime, info.DeviceID,
 		info.DBDeviceType, info.OSVersion, info.Platform,
 		info.SysLocationStr, info.SysContactStr,
+		info.SnmpEngineID,
 	)
 	return err
 }

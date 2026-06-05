@@ -566,28 +566,25 @@ ok "syslog-collector service running"
 # ── 12. Hub SNMP trap receiver ────────────────────────────────────────────────
 
 hdr "Hub SNMP trap receiver"
-TRAP_BIN="/usr/local/bin/anthrimon-trap-receiver"
+
+# The hub uses snmptrapd (net-snmp) on :162 — same as remote collectors.
+# snmptrapd handles v1/v2c/v3 (including Cisco authPriv) and calls
+# anthrimon-traphandler which POSTs decoded traps to the hub API.
 TRAP_ENV="/etc/anthrimon/trap-receiver.env"
 REMOTE_COL_DIR="${REPO_DIR}/collectors/remote"
 
-info "Building anthrimon-trap-receiver..."
-sudo -u "${REAL_USER}" bash -c \
-  "cd '${REMOTE_COL_DIR}' && /usr/local/go/bin/go build -o /tmp/anthrimon-trap-receiver-build ./cmd/trap-receiver/"
-install -m 755 /tmp/anthrimon-trap-receiver-build "${TRAP_BIN}"
-rm -f /tmp/anthrimon-trap-receiver-build
-ok "anthrimon-trap-receiver installed to ${TRAP_BIN}"
-
 mkdir -p /etc/anthrimon
 
+# Provision a hub-local API key for the trap handler to authenticate with.
 if [[ -f "${TRAP_ENV}" ]] && grep -q "ANTHRIMON_TRAP_API_KEY=" "${TRAP_ENV}"; then
-    ok "Hub trap receiver API key already provisioned — skipping"
+    ok "Hub trap API key already provisioned — skipping"
 else
     TRAP_API_KEY=$(openssl rand -hex 32)
     TRAP_KEY_HASH=$(printf '%s' "${TRAP_API_KEY}" | sha256sum | awk '{print $1}')
     TENANT_ID=$(pg_su -d "${DB_NAME}" -tAc "SELECT id FROM tenants LIMIT 1" 2>/dev/null | tr -d '[:space:]')
 
     if [[ -z "${TENANT_ID}" ]]; then
-        warn "No tenant found — cannot provision trap receiver API key (run after first login)"
+        warn "No tenant found — cannot provision trap API key (run after first login)"
     else
         pg_su -d "${DB_NAME}" -c "
             INSERT INTO remote_collectors
@@ -606,43 +603,28 @@ else
         " 2>/dev/null
         cat > "${TRAP_ENV}" <<EOF
 ANTHRIMON_TRAP_API_KEY=${TRAP_API_KEY}
+ANTHRIMON_TRAP_HUB_URL=http://127.0.0.1:${API_PORT}
 EOF
         chmod 600 "${TRAP_ENV}"
-        ok "Hub trap receiver API key provisioned"
+        ok "Hub trap API key provisioned"
     fi
 fi
 
-cat > /etc/systemd/system/anthrimon-trap-receiver.service <<EOF
-[Unit]
-Description=Anthrimon Hub SNMP Trap Receiver
-After=network-online.target anthrimon-api.service
-Wants=network-online.target
+# Stop anthrimon-trap-receiver if it is running (replaced by snmptrapd).
+systemctl stop anthrimon-trap-receiver 2>/dev/null || true
+systemctl disable anthrimon-trap-receiver 2>/dev/null || true
 
+# Give snmptrapd the hub API key so anthrimon-traphandler can POST traps.
+mkdir -p /etc/systemd/system/snmptrapd.service.d
+cat > /etc/systemd/system/snmptrapd.service.d/anthrimon.conf <<EOF
 [Service]
-User=root
-EnvironmentFile=${TRAP_ENV}
-Environment="ANTHRIMON_TRAP_HUB_URL=http://127.0.0.1:${API_PORT}"
-Environment="ANTHRIMON_TRAP_ADDR=:162"
-ExecStart=${TRAP_BIN}
-Restart=on-failure
-RestartSec=10
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
+EnvironmentFile=-${TRAP_ENV}
 EOF
 
 systemctl daemon-reload
-if [[ -f "${TRAP_ENV}" ]] && grep -q "ANTHRIMON_TRAP_API_KEY=" "${TRAP_ENV}"; then
-    systemctl enable anthrimon-trap-receiver
-    systemctl restart anthrimon-trap-receiver
-    ok "anthrimon-trap-receiver service running on :162"
-else
-    warn "anthrimon-trap-receiver NOT started — no API key yet (re-run install or set ${TRAP_ENV} manually)"
-fi
+systemctl enable snmptrapd
+systemctl restart snmptrapd
+ok "snmptrapd enabled on :162 (trap handler inherits API key from ${TRAP_ENV})"
 
 # ── 13. Remote collector (build only) ────────────────────────────────────────
 # Builds linux/amd64 and linux/arm64 binaries.  The hub-local binary (amd64)

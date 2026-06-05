@@ -122,6 +122,7 @@ class DeviceRead(BaseModel):
     tags: list[Any] = []
     notes: Optional[str] = None
     alert_exclusions: dict = {}
+    snmp_engine_id: Optional[str] = None
     site_id: Optional[uuid.UUID] = None
     collector_id: Optional[uuid.UUID] = None
     created_at: datetime

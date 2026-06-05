@@ -200,6 +200,12 @@ func (c *Client) PostSTPPorts(ctx context.Context, ports []map[string]any) error
 	return c.postJSON(ctx, "/api/v1/collectors/stp-ports", ports, nil)
 }
 
+// PostEngineIDs sends SNMP engine IDs discovered via v3 USM handshake to the hub.
+// Each record: device_id (string), engine_id (lowercase hex string, no 0x prefix).
+func (c *Client) PostEngineIDs(ctx context.Context, records []map[string]any) error {
+	return c.postJSON(ctx, "/api/v1/collectors/engine-ids", records, nil)
+}
+
 // PostTraps sends a batch of decoded SNMP trap events to the hub.
 func (c *Client) PostTraps(ctx context.Context, collectorID string, events []map[string]any) error {
 	return c.postJSON(ctx, "/api/v1/collectors/traps", map[string]any{

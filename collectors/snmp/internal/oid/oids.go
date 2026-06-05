@@ -14,6 +14,14 @@ const (
 	SysLocation = "1.3.6.1.2.1.1.6.0"
 )
 
+// ── SNMP Framework MIB (RFC 3411) ─────────────────────────────────────────────
+
+const (
+	// SnmpEngineID is the authoritative engine ID of the device.
+	// Readable via v2c and v3; required for snmptrapd createUser -e localization.
+	SnmpEngineID = "1.3.6.1.6.3.10.2.1.1.0"
+)
+
 // ── IF-MIB: ifTable (RFC 2863) ───────────────────────────────────────────────
 // Subtree root for BulkWalk.
 

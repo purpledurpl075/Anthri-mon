@@ -8,7 +8,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceLatency, fetchDeviceInterfaces, fetchDeviceBaselines, overrideBaseline, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbors, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, fetchDeviceTraps, type AddressEntry, type VlanEntry, type StpPort, type BaselineRow, type TrapEvent } from '../api/devices'
+import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceLatency, fetchDeviceInterfaces, fetchDeviceBaselines, overrideBaseline, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbors, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, fetchDeviceTraps, discoverSnmpEngineId, type AddressEntry, type VlanEntry, type StpPort, type BaselineRow, type TrapEvent } from '../api/devices'
 import TimeSeriesChart from '../components/TimeSeriesChart'
 import { fetchCredentials } from '../api/credentials'
 import { fetchConfigStatus, fetchBackups, fetchDiffs, fetchBackup, fetchDiff, triggerCollect, fetchComplianceResults, deployConfig, type ConfigBackupMeta, type ConfigDiffMeta } from '../api/config'
@@ -979,6 +979,55 @@ function CredentialSection({ deviceId }: { deviceId: string }) {
   )
 }
 
+// ── SNMP engine ID badge + discover ────────────────────────────────────────────
+
+function EngineIdBadge({ deviceId, engineId: initialEngineId, remoteCollector }: {
+  deviceId: string
+  engineId: string | null
+  remoteCollector: boolean
+}) {
+  const queryClient = useQueryClient()
+  const [engineId, setEngineId] = useState(initialEngineId)
+
+  const mutation = useMutation({
+    mutationFn: () => discoverSnmpEngineId(deviceId),
+    onSuccess: (data) => {
+      setEngineId(data.engine_id)
+      queryClient.invalidateQueries({ queryKey: ['device', deviceId] })
+    },
+  })
+
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="text-slate-500 font-medium">Engine ID</span>
+      {engineId ? (
+        <span className="font-mono text-slate-400">{engineId}</span>
+      ) : (
+        <span className="text-amber-500">not set</span>
+      )}
+      {remoteCollector && !engineId && (
+        <span className="text-slate-400 text-[10px]">auto-discovers on next poll</span>
+      )}
+      {!remoteCollector && (
+        <>
+          <button
+            onClick={() => mutation.mutate()}
+            disabled={mutation.isPending}
+            className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 hover:bg-slate-200 text-slate-600 disabled:opacity-50 transition-colors"
+          >
+            {mutation.isPending ? 'Discovering…' : engineId ? 'Re-discover' : 'Discover'}
+          </button>
+          {mutation.isError && (
+            <span className="text-amber-400 text-[10px]" title={(mutation.error as any)?.response?.data?.detail ?? 'Discovery failed'}>
+              failed — check SSH creds
+            </span>
+          )}
+        </>
+      )}
+    </span>
+  )
+}
+
 // ── SNMP diagnostic ────────────────────────────────────────────────────────────
 
 function SnmpDiagSection({ deviceId }: { deviceId: string }) {
@@ -1855,6 +1904,9 @@ export default function DeviceDetail() {
                 <span><span className="text-slate-500 font-medium">OS</span> {device.os_version}</span>
               )}
               <span><span className="text-slate-500 font-medium">SNMP</span> {device.snmp_version?.toUpperCase() ?? '—'} :{device.snmp_port}</span>
+              {(device.snmp_version === 'v3' || device.snmp_engine_id) && (
+                <EngineIdBadge deviceId={device.id} engineId={device.snmp_engine_id ?? null} remoteCollector={!!device.collector_id} />
+              )}
               {(device.tags ?? []).length > 0 && (
                 <div className="flex items-center gap-1.5">
                   {(device.tags ?? []).map((tag: string) => (

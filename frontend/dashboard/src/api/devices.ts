@@ -260,3 +260,6 @@ export const overrideBaseline = (
     { force_alert, force_suppress },
   )
 }
+
+export const discoverSnmpEngineId = (deviceId: string) =>
+  api.post<{ engine_id: string }>(`/devices/${deviceId}/snmp-engine-id`).then((r) => r.data)

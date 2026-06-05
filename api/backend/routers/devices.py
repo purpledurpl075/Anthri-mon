@@ -438,6 +438,74 @@ async def update_device(
     return DeviceRead.model_validate(device)
 
 
+@router.post("/{device_id}/snmp-engine-id",
+             summary="SSH to device and discover its SNMP engine ID")
+async def discover_snmp_engine_id(
+    device_id:    uuid.UUID,
+    current_user: User         = Depends(require_role("admin", "superadmin", "operator")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    """SSH to the device using its stored SSH credential, run the vendor-appropriate
+    'show snmp engineID' command, and persist the result on the device record.
+    Also writes the engine ID back to any linked snmp_v3 credential so that
+    snmptrapd.conf is regenerated with the correct -e flag.
+    """
+    from ..models.credential import Credential, DeviceCredential
+    from ..routers.collectors import _discover_engine_id, _push_trap_config
+    from ..configmgmt.collector import _vendor_key
+
+    device = (await db.execute(
+        select(Device).where(Device.id == device_id,
+                             Device.tenant_id == current_user.tenant_id)
+    )).scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    ssh_cred = (await db.execute(
+        select(Credential).join(
+            DeviceCredential, DeviceCredential.credential_id == Credential.id
+        ).where(
+            DeviceCredential.device_id == device.id,
+            Credential.type == "ssh",
+        )
+    )).scalar_one_or_none()
+    if not ssh_cred:
+        raise HTTPException(status_code=422, detail="Device has no SSH credential")
+
+    vendor_key = _vendor_key(device)
+    engine_id = await _discover_engine_id(str(device.mgmt_ip), vendor_key, ssh_cred.data)
+    if not engine_id:
+        raise HTTPException(status_code=422,
+                            detail="Could not discover engine ID — check SSH credentials and vendor support")
+
+    # Persist on device record
+    device.snmp_engine_id = engine_id
+    await db.commit()
+
+    # Also update any linked snmp_v3 credentials so snmptrapd.conf stays in sync
+    v3_creds = (await db.execute(
+        select(Credential).join(
+            DeviceCredential, DeviceCredential.credential_id == Credential.id
+        ).where(
+            DeviceCredential.device_id == device.id,
+            Credential.type == "snmp_v3",
+        )
+    )).scalars().all()
+    for cred in v3_creds:
+        updated = dict(cred.data)
+        updated["engine_id"] = engine_id
+        cred.data = updated
+    if v3_creds:
+        await db.commit()
+        asyncio.create_task(_push_trap_config(
+            str(device.collector_id) if device.collector_id else None,
+            str(current_user.tenant_id),
+        ))
+
+    logger.info("snmp_engine_id_discovered", device_id=str(device_id), engine_id=engine_id)
+    return {"engine_id": engine_id}
+
+
 async def _nudge_collector(wg_ip: str, api_key_hash: str) -> None:
     """Fire-and-forget: ask the remote collector to refresh its device config."""
     url = f"http://{wg_ip}:9090/refresh"

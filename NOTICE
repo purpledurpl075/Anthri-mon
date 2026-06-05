@@ -1,0 +1,82 @@
+Anthrimon
+Copyright 2026 Anthrimon contributors
+
+This product includes software developed by the Anthrimon community.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this product except in compliance with the License. You may obtain a copy
+of the License at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+================================================================================
+THIRD-PARTY SOFTWARE
+================================================================================
+
+This product bundles or depends on the following third-party software.
+Each component is licensed under its own terms; the full license texts are
+available from the upstream projects.
+
+────────────────────────────────────────────────────────────────────────────────
+Backend (Python)
+────────────────────────────────────────────────────────────────────────────────
+  FastAPI                       MIT             https://github.com/fastapi/fastapi
+  Uvicorn                       BSD-3-Clause    https://github.com/encode/uvicorn
+  SQLAlchemy                    MIT             https://www.sqlalchemy.org
+  asyncpg                       Apache-2.0      https://github.com/MagicStack/asyncpg
+  Pydantic                      MIT             https://github.com/pydantic/pydantic
+  bcrypt                        Apache-2.0      https://github.com/pyca/bcrypt
+  PyJWT                         MIT             https://github.com/jpadilla/pyjwt
+  structlog                     Apache-2.0/MIT  https://www.structlog.org
+  python-multipart              Apache-2.0      https://github.com/Kludex/python-multipart
+  pysnmp                        BSD-2-Clause    https://github.com/lextudio/pysnmp
+  croniter                      MIT             https://github.com/kiorky/croniter
+  httpx                         BSD-3-Clause    https://www.python-httpx.org
+  cryptography                  Apache-2.0/BSD  https://github.com/pyca/cryptography
+  Netmiko                       MIT             https://github.com/ktbyers/netmiko
+  Paramiko                      LGPL-2.1        https://www.paramiko.org
+  CairoSVG                      LGPL-3.0        https://github.com/Kozea/CairoSVG
+
+────────────────────────────────────────────────────────────────────────────────
+Collectors (Go)
+────────────────────────────────────────────────────────────────────────────────
+  google/uuid                   BSD-3-Clause    https://github.com/google/uuid
+  gosnmp/gosnmp                 BSD-2-Clause    https://github.com/gosnmp/gosnmp
+  jackc/pgx                     MIT             https://github.com/jackc/pgx
+  rs/zerolog                    MIT             https://github.com/rs/zerolog
+  golang.org/x/net              BSD-3-Clause    https://pkg.go.dev/golang.org/x/net
+  golang.org/x/crypto           BSD-3-Clause    https://pkg.go.dev/golang.org/x/crypto
+  gopkg.in/yaml.v3              MIT / Apache-2.0 https://github.com/go-yaml/yaml
+
+────────────────────────────────────────────────────────────────────────────────
+Frontend (TypeScript / React)
+────────────────────────────────────────────────────────────────────────────────
+  React                         MIT             https://react.dev
+  React Router                  MIT             https://reactrouter.com
+  TanStack Query                MIT             https://tanstack.com/query
+  @xyflow/react                 MIT             https://reactflow.dev
+  @dnd-kit                      MIT             https://dndkit.com
+  react-grid-layout             MIT             https://github.com/react-grid-layout/react-grid-layout
+  marked                        MIT             https://marked.js.org
+  Vite                          MIT             https://vitejs.dev
+  TypeScript                    Apache-2.0      https://www.typescriptlang.org
+  Tailwind CSS                  MIT             https://tailwindcss.com
+  ESLint                        MIT             https://eslint.org
+
+────────────────────────────────────────────────────────────────────────────────
+Runtime / Storage Dependencies (not bundled)
+────────────────────────────────────────────────────────────────────────────────
+  PostgreSQL                    PostgreSQL      https://www.postgresql.org
+  ClickHouse                    Apache-2.0      https://clickhouse.com
+  VictoriaMetrics               Apache-2.0      https://victoriametrics.com
+  net-snmp / snmptrapd          BSD-style       http://www.net-snmp.org
+  WireGuard                     GPL-2.0         https://www.wireguard.com
+  nginx                         BSD-2-Clause    https://nginx.org
+
+================================================================================
+
+The license texts for the third-party software listed above are not reproduced
+in full here.  Refer to each upstream project for its complete license terms.
+
+Trademarks:  "Anthrimon" and the Anthrimon logo are trademarks of the Anthrimon
+project.  This NOTICE file does not grant rights to use those trademarks.

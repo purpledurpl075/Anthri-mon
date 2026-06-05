@@ -4,6 +4,7 @@ package collector
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"math"
 	"strings"
@@ -26,6 +27,7 @@ const (
 	oidSysDescr     = "1.3.6.1.2.1.1.1.0"
 	oidSysObjectID  = "1.3.6.1.2.1.1.2.0"
 	oidSysName      = "1.3.6.1.2.1.1.5.0"
+	oidSnmpEngineID = "1.3.6.1.6.3.10.2.1.1.0" // SNMP-FRAMEWORK-MIB
 
 	// IF-MIB — ifTable (32-bit counters, admin/oper status, speed, descr)
 	oidIfTable      = "1.3.6.1.2.1.2.2.1"
@@ -252,7 +254,8 @@ func (c *SNMPCollector) pollDevice(dev hub.Device) ([]string, error) {
 
 	var lines []string
 
-	// sysUpTime
+	// sysUpTime — first SNMP exchange; for v3 this triggers engine discovery,
+	// populating AuthoritativeEngineID in the security parameters.
 	uptime, err := getSysUpTime(g)
 	if err == nil {
 		// Match the hub's metric name and label set exactly.
@@ -261,9 +264,11 @@ func (c *SNMPCollector) pollDevice(dev hub.Device) ([]string, error) {
 				dev.ID, uptime/100, ts))
 	}
 
-	// sysName + sysDescr + sysObjectID — emitted once per cycle so the hub
-	// can backfill hostname, vendor, and device_type for newly-added devices.
-	sysInfoResult, sysErr := g.Get([]string{oidSysName, oidSysDescr, oidSysObjectID})
+	// sysName + sysDescr + sysObjectID + snmpEngineID — emitted once per cycle.
+	// snmpEngineID is included here so v2c devices get it via OID; for v3 devices
+	// the USM handshake (triggered by getSysUpTime above) has already populated
+	// AuthoritativeEngineID in the security parameters.
+	sysInfoResult, sysErr := g.Get([]string{oidSysName, oidSysDescr, oidSysObjectID, oidSnmpEngineID})
 	if sysErr == nil && len(sysInfoResult.Variables) >= 2 {
 		sysName  := strings.TrimSpace(pduString(sysInfoResult.Variables[0]))
 		sysDescr := strings.TrimSpace(pduString(sysInfoResult.Variables[1]))
@@ -276,6 +281,29 @@ func (c *SNMPCollector) pollDevice(dev hub.Device) ([]string, error) {
 				fmt.Sprintf(`anthrimon_device_info{device_id=%q,sysname=%q,sysdescr=%q,sysobjectid=%q} 1 %d`,
 					dev.ID, sysName, sysDescr, sysOID, ts))
 		}
+	}
+
+	// Extract SNMP engine ID now that at least one SNMP exchange has completed.
+	// For v3: AuthoritativeEngineID is populated after the first Get above.
+	// For v2c: the snmpEngineID OID was included in the sysInfo Get.
+	var engineHex string
+	if g.Version == gosnmp.Version3 {
+		if params, ok := g.SecurityParameters.(*gosnmp.UsmSecurityParameters); ok {
+			if eid := params.AuthoritativeEngineID; len(eid) > 0 {
+				engineHex = hex.EncodeToString([]byte(eid))
+			}
+		}
+	} else if sysErr == nil && len(sysInfoResult.Variables) >= 4 {
+		if b, ok := sysInfoResult.Variables[3].Value.([]byte); ok && len(b) > 0 {
+			engineHex = hex.EncodeToString(b)
+		}
+	}
+	if engineHex != "" {
+		go func() {
+			_ = c.hub.PostEngineIDs(context.Background(), []map[string]any{
+				{"device_id": dev.ID, "engine_id": engineHex},
+			})
+		}()
 	}
 
 	// Interface counters, speed, oper-status — HC 64-bit preferred over 32-bit.

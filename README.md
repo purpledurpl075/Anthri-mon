@@ -14,7 +14,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://postgresql.org)
 [![ClickHouse](https://img.shields.io/badge/ClickHouse-26.x-FFCC01?style=flat-square&logo=clickhouse&logoColor=black)](https://clickhouse.com)
 [![WireGuard](https://img.shields.io/badge/WireGuard-VPN-88171A?style=flat-square&logo=wireguard&logoColor=white)](https://wireguard.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-5cb85c?style=flat-square)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-5cb85c?style=flat-square)](LICENSE)
 
 </div>
 
@@ -330,5 +330,5 @@ infra/
   <img src="https://raw.githubusercontent.com/purpledurpl075/Anthri-mon/main/logos/04-icon-favicon.svg"
        alt="Anthrimon" width="56">
   <br><br>
-  <sub>MIT License</sub>
+  <sub>Apache License 2.0</sub>
 </div>

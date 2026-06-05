@@ -26,7 +26,10 @@ type DeviceInfo struct {
 	Platform       string // parsed from sysDescr, "" if unknown
 	SysLocationStr string // sysLocation value
 	SysContactStr  string // sysContact value
-	PollTime       time.Time
+	// SnmpEngineID is the hex-encoded engine ID from snmpEngineID.0 (RFC 3411).
+	// Empty string means the OID was not returned (device doesn't support it).
+	SnmpEngineID string
+	PollTime     time.Time
 }
 
 // InterfaceResult is a complete snapshot of one interface at a point in time.

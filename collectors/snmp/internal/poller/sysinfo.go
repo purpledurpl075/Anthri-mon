@@ -2,6 +2,7 @@
 package poller
 
 import (
+	"encoding/hex"
 	"regexp"
 	"strings"
 	"time"
@@ -25,6 +26,7 @@ func PollSysInfo(s *client.Session, deviceID uuid.UUID) (*model.DeviceInfo, erro
 		oid.SysContact,
 		oid.SysName,
 		oid.SysLocation,
+		oid.SnmpEngineID,
 	}
 
 	pdus, err := s.Get(scalarOIDs)
@@ -51,6 +53,10 @@ func PollSysInfo(s *client.Session, deviceID uuid.UUID) (*model.DeviceInfo, erro
 			info.SysName = client.PDUString(pdu)
 		case endsWith(pdu.Name, oid.SysLocation):
 			info.SysLocation = client.PDUString(pdu)
+		case endsWith(pdu.Name, oid.SnmpEngineID):
+			if b, ok := pdu.Value.([]byte); ok && len(b) > 0 {
+				info.SnmpEngineID = hex.EncodeToString(b)
+			}
 		}
 	}
 
@@ -67,6 +73,12 @@ func PollSysInfo(s *client.Session, deviceID uuid.UUID) (*model.DeviceInfo, erro
 	info.OSVersion, info.Platform = parseSysDescr(info.DBVendorType, info.SysDescr)
 	info.SysLocationStr = info.SysLocation
 	info.SysContactStr  = info.SysContact
+
+	// For v3 sessions the engine ID is already known from the USM handshake;
+	// prefer it over the OID value which may be missing on some devices.
+	if eid := s.EngineID(); eid != "" {
+		info.SnmpEngineID = eid
+	}
 
 	return info, nil
 }

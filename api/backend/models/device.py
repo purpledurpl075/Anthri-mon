@@ -78,6 +78,7 @@ class Device(Base):
         server_default='{"metrics":[],"interface_ids":[]}')
     notes: Mapped[Optional[str]] = mapped_column(Text)
     rest_collection_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    snmp_engine_id: Mapped[Optional[str]] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())

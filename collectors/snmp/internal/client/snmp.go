@@ -117,6 +117,20 @@ func (s *Session) Close() {
 	}
 }
 
+// EngineID returns the device's SNMP engine ID as a lowercase hex string.
+// For v3 sessions this is populated after Connect() from the USM handshake.
+// Returns "" for v2c sessions or if not yet connected.
+func (s *Session) EngineID() string {
+	if s.g.Version != gosnmp.Version3 {
+		return ""
+	}
+	params, ok := s.g.SecurityParameters.(*gosnmp.UsmSecurityParameters)
+	if !ok || len(params.AuthoritativeEngineID) == 0 {
+		return ""
+	}
+	return hex.EncodeToString([]byte(params.AuthoritativeEngineID))
+}
+
 // Get performs a synchronous SNMP GET for the given OIDs. Returns one PDU per OID.
 // Handles NO_SUCH_OBJECT and NO_SUCH_INSTANCE silently (zero-value PDU returned).
 func (s *Session) Get(oids []string) ([]gosnmp.SnmpPDU, error) {

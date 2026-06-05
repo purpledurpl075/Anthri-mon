@@ -40,6 +40,8 @@ export interface Device {
   is_active: boolean
   tags: string[]
   notes: string | null
+  snmp_engine_id: string | null
+  collector_id: string | null
 }
 
 export interface Interface {

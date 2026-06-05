@@ -31,7 +31,7 @@ import (
 	"time"
 )
 
-const version = "0.1.4"
+const version = "0.1.6"
 
 const defaultCACertPath = "/etc/anthrimon/ca.crt"
 
@@ -65,16 +65,67 @@ var _standardTraps = map[string]trapMeta{
 }
 
 var _enterpriseTraps = []enterpriseTrap{
-	{Prefix: "1.3.6.1.4.1.30065.3.9",      Name: "arista.bgpPeerStateChange",   Severity: "warning"},
-	{Prefix: "1.3.6.1.4.1.30065.3.10",     Name: "arista.linkStateChange",      Severity: "warning"},
-	{Prefix: "1.3.6.1.4.1.30065.",         Name: "arista.trap",                 Severity: "info"},
+	// ── BGP (RFC 4273, 1.3.6.1.2.1.15) ──────────────────────────────────────
+	{Prefix: "1.3.6.1.2.1.15.7.2", Name: "bgp.backwardTransition", Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.15.7.1", Name: "bgp.established",        Severity: "info"},
+
+	// ── OSPF (RFC 4750, 1.3.6.1.2.1.14) ─────────────────────────────────────
+	{Prefix: "1.3.6.1.2.1.14.16.2.7",  Name: "ospf.authFailure",             Severity: "critical"},
+	{Prefix: "1.3.6.1.2.1.14.16.2.8",  Name: "ospf.virtAuthFailure",         Severity: "critical"},
+	{Prefix: "1.3.6.1.2.1.14.16.2.15", Name: "ospf.lsdbOverflow",            Severity: "critical"},
+	{Prefix: "1.3.6.1.2.1.14.16.2.16", Name: "ospf.lsdbApproachingOverflow", Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.14.16.2.3",  Name: "ospf.nbrStateChange",          Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.14.16.2.4",  Name: "ospf.virtNbrStateChange",      Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.14.16.2.1",  Name: "ospf.ifStateChange",           Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.14.16.2.2",  Name: "ospf.virtIfStateChange",       Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.14.",        Name: "ospf.trap",                     Severity: "warning"},
+
+	// ── IS-IS (RFC 4444, 1.3.6.1.2.1.138) ───────────────────────────────────
+	{Prefix: "1.3.6.1.2.1.138.0.5", Name: "isis.databaseOverload", Severity: "critical"},
+	{Prefix: "1.3.6.1.2.1.138.0.7", Name: "isis.corruptedLSP",     Severity: "critical"},
+	{Prefix: "1.3.6.1.2.1.138.0.1", Name: "isis.adjacencyChange",  Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.138.",    Name: "isis.trap",              Severity: "warning"},
+
+	// ── MPLS LSR (RFC 3813, 1.3.6.1.2.1.131) ────────────────────────────────
+	{Prefix: "1.3.6.1.2.1.131.0.2", Name: "mpls.xcDown", Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.131.0.1", Name: "mpls.xcUp",   Severity: "info"},
+	{Prefix: "1.3.6.1.2.1.131.",    Name: "mpls.trap",    Severity: "info"},
+
+	// ── STP / BRIDGE-MIB (RFC 1493, 1.3.6.1.2.1.17) ────────────────────────
+	{Prefix: "1.3.6.1.2.1.17.0.2", Name: "stp.topologyChange", Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.17.0.1", Name: "stp.newRoot",        Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.17.",    Name: "stp.trap",            Severity: "info"},
+
+	// ── LLDP (IEEE 802.1AB, 1.0.8802.1.1.2) ────────────────────────────────
+	{Prefix: "1.0.8802.1.1.2.0.0.1", Name: "lldp.remTablesChange", Severity: "info"},
+	{Prefix: "1.0.8802.1.1.2.",      Name: "lldp.trap",             Severity: "info"},
+
+	// ── VRRP (RFC 2787, 1.3.6.1.2.1.68) ────────────────────────────────────
+	{Prefix: "1.3.6.1.2.1.68.0.2", Name: "vrrp.authFailure", Severity: "warning"},
+	{Prefix: "1.3.6.1.2.1.68.0.1", Name: "vrrp.newMaster",   Severity: "info"},
+	{Prefix: "1.3.6.1.2.1.68.",    Name: "vrrp.trap",         Severity: "info"},
+
+	// ── Arista ───────────────────────────────────────────────────────────────
+	{Prefix: "1.3.6.1.4.1.30065.3.9",  Name: "arista.bgpPeerStateChange", Severity: "warning"},
+	{Prefix: "1.3.6.1.4.1.30065.3.10", Name: "arista.linkStateChange",    Severity: "warning"},
+	{Prefix: "1.3.6.1.4.1.30065.",     Name: "arista.trap",                Severity: "info"},
+
+	// ── Aruba CX ─────────────────────────────────────────────────────────────
 	{Prefix: "1.3.6.1.4.1.47196.4.1.1.3.20", Name: "aruba_cx.linkStateChange", Severity: "warning"},
-	{Prefix: "1.3.6.1.4.1.47196.",         Name: "aruba_cx.trap",               Severity: "info"},
-	{Prefix: "1.3.6.1.4.1.11.2.14.12.1",  Name: "hp.linkChange",               Severity: "warning"},
-	{Prefix: "1.3.6.1.4.1.11.2.",         Name: "hp.trap",                      Severity: "info"},
-	{Prefix: "1.3.6.1.4.1.9.9.187.",      Name: "cisco.bgpBackwardTransition",  Severity: "critical"},
-	{Prefix: "1.3.6.1.4.1.9.",            Name: "cisco.trap",                   Severity: "info"},
-	{Prefix: "1.3.6.1.4.1.2636.",         Name: "juniper.trap",                 Severity: "info"},
+	{Prefix: "1.3.6.1.4.1.47196.",           Name: "aruba_cx.trap",             Severity: "info"},
+
+	// ── HP / ProCurve ────────────────────────────────────────────────────────
+	{Prefix: "1.3.6.1.4.1.11.2.14.12.1", Name: "hp.linkChange", Severity: "warning"},
+	{Prefix: "1.3.6.1.4.1.11.2.",        Name: "hp.trap",        Severity: "info"},
+
+	// ── Cisco ────────────────────────────────────────────────────────────────
+	{Prefix: "1.3.6.1.4.1.9.9.187.", Name: "cisco.bgpBackwardTransition", Severity: "critical"},
+	{Prefix: "1.3.6.1.4.1.9.9.43.",  Name: "cisco.configChange",          Severity: "warning"},
+	{Prefix: "1.3.6.1.4.1.9.9.13.",  Name: "cisco.envMonAlert",           Severity: "critical"},
+	{Prefix: "1.3.6.1.4.1.9.",       Name: "cisco.trap",                   Severity: "info"},
+
+	// ── Juniper ──────────────────────────────────────────────────────────────
+	{Prefix: "1.3.6.1.4.1.2636.", Name: "juniper.trap", Severity: "info"},
 }
 
 type trapMeta struct {

@@ -523,6 +523,234 @@ def _serve_binary(name: str, arch: str) -> Response:
     )
 
 
+@router.get("/trap-users", summary="Return SNMPv3 USM credentials for the hub trap receiver")
+async def get_hub_trap_users(
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    """Called by anthrimon-trap-receiver on startup and periodically to load
+    all SNMPv3 credentials so it can decode authPriv traps from any device.
+    Authenticated via collector API key (same as trap ingest).
+    """
+    collector = await _require_collector(request, db)
+    users = await _collect_v3_users_for_collector(None, str(collector.tenant_id), db)
+    return {"users": users}
+
+
+class TrapV3UserIn(BaseModel):
+    username:   str
+    auth_proto: str = "SHA-256"
+    auth_key:   str
+    priv_proto: str = "AES"
+    priv_key:   str
+    device_id:  uuid.UUID | None = None  # if set, SSH to device to discover engine_id
+    engine_id:  str        | None = None  # manual override; skips SSH discovery
+
+
+@router.get("/trap-v3-users", summary="List tenant-wide SNMPv3 trap users")
+async def list_trap_v3_users(
+    current_user: User         = Depends(require_tenant_user("tenant_admin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    from ..models.credential import Credential
+    rows = (await db.execute(
+        select(Credential).where(
+            Credential.tenant_id == current_user.tenant_id,
+            Credential.type == "snmp_v3",
+            Credential.data["trap_only"].as_boolean() == True,  # noqa: E712
+        )
+    )).scalars().all()
+    return {"users": [
+        {
+            "username":   r.data.get("username", ""),
+            "auth_proto": r.data.get("auth_protocol", ""),
+            "priv_proto": r.data.get("priv_protocol", ""),
+        }
+        for r in rows
+    ]}
+
+
+@router.post("/trap-v3-users", summary="Add a tenant-wide SNMPv3 trap user")
+async def add_trap_v3_user(
+    body:         TrapV3UserIn,
+    current_user: User         = Depends(require_tenant_user("tenant_admin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    """Store a v3 USM credential for trap decryption only.  Not tied to any
+    polled device — use this for devices that send v3 traps but are polled
+    via v2c (or not polled at all).
+
+    Pass device_id to auto-discover the engine ID via SSH, or engine_id to
+    set it manually.  Both are optional; omitting both stores without an engine ID.
+    """
+    from ..models.credential import Credential
+    from ..models.device import Device
+
+    # ── Resolve engine ID ──────────────────────────────────────────────────
+    engine_id: str | None = body.engine_id
+
+    if engine_id is None and body.device_id is not None:
+        device = (await db.execute(
+            select(Device).where(
+                Device.id == body.device_id,
+                Device.tenant_id == current_user.tenant_id,
+            )
+        )).scalar_one_or_none()
+
+        if device is not None:
+            from ..models.credential import Credential as _Cred
+            from ..models.device_credential import DeviceCredential
+            ssh_row = (await db.execute(
+                select(_Cred).join(
+                    DeviceCredential, DeviceCredential.credential_id == _Cred.id
+                ).where(
+                    DeviceCredential.device_id == device.id,
+                    _Cred.type == "ssh",
+                )
+            )).scalar_one_or_none()
+
+            if ssh_row is not None:
+                from ..configmgmt.collector import _vendor_key
+                vendor_key = _vendor_key(device)
+                engine_id = await _discover_engine_id(
+                    str(device.ip_address), vendor_key, ssh_row.data
+                )
+                if engine_id:
+                    logger.info("engine_id_discovered", device=str(device.id),
+                                username=body.username, engine_id=engine_id)
+                else:
+                    logger.warning("engine_id_not_discovered", device=str(device.id),
+                                   username=body.username)
+
+    # ── Upsert credential ──────────────────────────────────────────────────
+    existing = (await db.execute(
+        select(Credential).where(
+            Credential.tenant_id == current_user.tenant_id,
+            Credential.type == "snmp_v3",
+            Credential.data["trap_only"].as_boolean() == True,  # noqa: E712
+            Credential.data["username"].as_string() == body.username,
+        )
+    )).scalar_one_or_none()
+
+    data: dict = {
+        "trap_only":      True,
+        "username":       body.username,
+        "auth_protocol":  body.auth_proto,
+        "auth_key":       body.auth_key,
+        "priv_protocol":  body.priv_proto,
+        "priv_key":       body.priv_key,
+    }
+    if engine_id:
+        data["engine_id"] = engine_id
+
+    if existing:
+        existing.data = data
+        await db.commit()
+    else:
+        cred = Credential(
+            tenant_id=current_user.tenant_id,
+            type="snmp_v3",
+            name=f"trap-only:{body.username}",
+            data=data,
+        )
+        db.add(cred)
+        await db.commit()
+
+    asyncio.create_task(_push_trap_config(None, str(current_user.tenant_id)))
+    return {"username": body.username, "engine_id": engine_id, "status": "ok"}
+
+
+class _DiscoverEngineIdIn(BaseModel):
+    device_id: uuid.UUID
+
+
+@router.post("/trap-v3-users/{username}/discover-engine-id",
+             summary="SSH to a device and update the stored SNMP engine ID for a trap user")
+async def discover_trap_v3_engine_id(
+    username:     str,
+    body:         _DiscoverEngineIdIn,
+    current_user: User         = Depends(require_tenant_user("tenant_admin")),
+    db:           AsyncSession = Depends(get_db),
+) -> dict:
+    """Re-run SSH engine ID discovery for an existing trap-only v3 user.
+
+    Useful when a device is replaced (engine ID changes) or when SSH credentials
+    weren't available when the trap user was first created.
+    """
+    from ..models.credential import Credential
+    from ..models.device import Device
+    from ..models.device_credential import DeviceCredential
+
+    cred = (await db.execute(
+        select(Credential).where(
+            Credential.tenant_id == current_user.tenant_id,
+            Credential.type == "snmp_v3",
+            Credential.data["trap_only"].as_boolean() == True,  # noqa: E712
+            Credential.data["username"].as_string() == username,
+        )
+    )).scalar_one_or_none()
+    if not cred:
+        raise HTTPException(status_code=404, detail=f"Trap user '{username}' not found")
+
+    device = (await db.execute(
+        select(Device).where(
+            Device.id == body.device_id,
+            Device.tenant_id == current_user.tenant_id,
+        )
+    )).scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    ssh_row = (await db.execute(
+        select(Credential).join(
+            DeviceCredential, DeviceCredential.credential_id == Credential.id
+        ).where(
+            DeviceCredential.device_id == device.id,
+            Credential.type == "ssh",
+        )
+    )).scalar_one_or_none()
+    if not ssh_row:
+        raise HTTPException(status_code=422, detail="Device has no SSH credential")
+
+    from ..configmgmt.collector import _vendor_key
+    vendor_key = _vendor_key(device)
+    engine_id = await _discover_engine_id(str(device.ip_address), vendor_key, ssh_row.data)
+    if not engine_id:
+        raise HTTPException(status_code=422,
+                            detail="Could not discover engine ID — check SSH credentials and vendor support")
+
+    updated = dict(cred.data)
+    updated["engine_id"] = engine_id
+    cred.data = updated
+    await db.commit()
+
+    asyncio.create_task(_push_trap_config(None, str(current_user.tenant_id)))
+    logger.info("engine_id_updated", username=username, device=str(device.id),
+                engine_id=engine_id)
+    return {"username": username, "engine_id": engine_id, "status": "ok"}
+
+
+@router.delete("/trap-v3-users/{username}", status_code=204, response_model=None,
+               summary="Remove a tenant-wide SNMPv3 trap user")
+async def delete_trap_v3_user(
+    username:     str,
+    current_user: User         = Depends(require_tenant_user("tenant_admin")),
+    db:           AsyncSession = Depends(get_db),
+) -> None:
+    from ..models.credential import Credential
+    row = (await db.execute(
+        select(Credential).where(
+            Credential.tenant_id == current_user.tenant_id,
+            Credential.type == "snmp_v3",
+            Credential.data["trap_only"].as_boolean() == True,  # noqa: E712
+            Credential.data["username"].as_string() == username,
+        )
+    )).scalar_one_or_none()
+    if row:
+        await db.delete(row)
+        await db.commit()
+
+
 @router.get("/binary", summary="Download the collector binary (collector API-key auth)")
 async def download_binary_self_update(
     arch:    str     = "amd64",
@@ -2388,6 +2616,53 @@ async def ingest_stp_ports(
     return {"written": written}
 
 
+@router.post("/engine-ids",
+             summary="Store SNMP engine IDs discovered by a remote collector")
+async def ingest_engine_ids(
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    """Accept a list of {device_id, engine_id} records from a remote collector.
+    Updates devices.snmp_engine_id and regenerates snmptrapd.conf for the
+    collector if any v3 credentials are affected.
+    """
+    collector = await _require_collector(request, db)
+    records   = await request.json()
+    if not records:
+        return {"updated": 0}
+
+    allowed = {
+        str(did) for (did,) in (await db.execute(
+            select(Device.id).where(
+                Device.collector_id == collector.id,
+                Device.is_active == True,  # noqa: E712
+            )
+        )).all()
+    }
+
+    updated = 0
+    for r in records:
+        did       = str(r.get("device_id", ""))
+        engine_id = str(r.get("engine_id", "")).strip().lower()
+        if not did or not engine_id or did not in allowed:
+            continue
+        device = (await db.execute(
+            select(Device).where(Device.id == did)
+        )).scalar_one_or_none()
+        if device and device.snmp_engine_id != engine_id:
+            device.snmp_engine_id = engine_id
+            updated += 1
+
+    if updated:
+        await db.commit()
+        asyncio.create_task(
+            _push_trap_config(str(collector.id), str(collector.tenant_id))
+        )
+        logger.info("engine_ids_updated", collector_id=str(collector.id), count=updated)
+
+    return {"updated": updated}
+
+
 # ── SNMP trap ingest ──────────────────────────────────────────────────────────
 
 @router.post("/traps", status_code=204, response_model=None,
@@ -2507,6 +2782,57 @@ _PRIV_PROTO_MAP = {
 _SNMPTRAPD_CONF_PATH    = os.environ.get("ANTHRIMON_SNMPTRAPD_CONF",    "/etc/snmp/snmptrapd.conf")
 _SNMPTRAPD_PERSIST_PATH = os.environ.get("ANTHRIMON_SNMPTRAPD_PERSIST", "/var/lib/snmp/snmptrapd.conf")
 
+# ── SNMP engine ID discovery ──────────────────────────────────────────────────
+
+_ENGINE_ID_CMDS: dict[str, str | None] = {
+    "cisco_ios":   "show snmp engineID",
+    "cisco_iosxe": "show snmp engineID",
+    "cisco_iosxr": "show snmp engineID",
+    "cisco_nxos":  "show snmp engineID",
+    "arista":      "show snmp engineid",
+    "aruba_cx":    "show snmp engine-id",
+    "juniper":     "show snmp information",
+    "hp_procurve": "show management",
+    "procurve":    "show management",
+    "fortios":     None,
+    "ubiquiti":    None,
+}
+
+_ENGINE_ID_RE = re.compile(
+    r"engine.?id\s*[:\s=is]+\s*((?:0x)?[0-9a-f][0-9a-f:]{6,})",
+    re.IGNORECASE,
+)
+
+
+def _parse_engine_id(output: str) -> str | None:
+    m = _ENGINE_ID_RE.search(output)
+    if not m:
+        return None
+    raw = m.group(1)
+    if raw.lower().startswith("0x"):
+        raw = raw[2:]
+    cleaned = raw.lower().replace(":", "").replace(" ", "")
+    if len(cleaned) >= 8 and all(c in "0123456789abcdef" for c in cleaned):
+        return cleaned
+    return None
+
+
+async def _discover_engine_id(host: str, vendor_key: str, cred_data: dict) -> str | None:
+    """SSH to a device and extract its SNMP engine ID. Returns hex string without 0x prefix."""
+    from ..configmgmt.collector import _ssh_exec, _vendor_key as _vk  # noqa: F401
+
+    command = _ENGINE_ID_CMDS.get(vendor_key, "show snmp engineID")
+    if not command:
+        return None
+    try:
+        output = await asyncio.get_event_loop().run_in_executor(
+            None, _ssh_exec, host, 22, vendor_key, cred_data, command
+        )
+        return _parse_engine_id(output)
+    except Exception as exc:
+        logger.warning("engine_id_discovery_failed", host=host, vendor=vendor_key, error=str(exc))
+        return None
+
 
 def _build_snmptrapd_conf(users: list[dict]) -> str:
     lines = [
@@ -2534,55 +2860,78 @@ def _build_snmptrapd_conf(users: list[dict]) -> str:
             auth_k    = u.get("auth_key", "")
             priv_p    = u.get("priv_proto", "")
             priv_k    = u.get("priv_key", "")
+            engine_id = u.get("engine_id", "")
+            e_flag    = f"-e 0x{engine_id} " if engine_id else ""
             if auth_p and auth_k and priv_p and priv_k:
-                lines.append(f'createUser {username} {auth_p} "{auth_k}" {priv_p} "{priv_k}"')
+                lines.append(f'createUser {e_flag}{username} {auth_p} "{auth_k}" {priv_p} "{priv_k}"')
             elif auth_p and auth_k:
-                lines.append(f'createUser {username} {auth_p} "{auth_k}"')
+                lines.append(f'createUser {e_flag}{username} {auth_p} "{auth_k}"')
             else:
-                lines.append(f"createUser {username}")
+                lines.append(f"createUser {e_flag}{username}")
     lines.append("")
     return "\n".join(lines)
 
 
 async def _collect_v3_users_for_collector(collector_id: str | None, tenant_id: str, db) -> list[dict]:
-    """Return a deduplicated list of SNMPv3 user dicts for all devices on a collector.
+    """Return a deduplicated list of SNMPv3 user dicts.
 
-    For the hub (collector_id=None) we include users from ALL tenant devices, not
-    just hub-local ones — traps arrive directly at the hub regardless of which
-    collector is assigned for polling.
+    For the hub (collector_id=None): return ALL v3 credentials in the tenant,
+    regardless of device linkage.  Traps arrive at the hub from any device and
+    the credential only needs to exist somewhere in the tenant — it does not
+    have to be the polling credential for that device.
+
+    For remote collectors: restrict to credentials linked to devices assigned
+    to that specific collector.
     """
     from ..models.credential import Credential, DeviceCredential
     from ..models.device import Device
+    from sqlalchemy.orm import outerjoin
 
-    q = (
-        select(Credential)
-        .join(DeviceCredential, DeviceCredential.credential_id == Credential.id)
-        .join(Device, Device.id == DeviceCredential.device_id)
-        .where(
-            Device.tenant_id == tenant_id,
-            Device.is_active == True,  # noqa: E712
-            Credential.type == "snmp_v3",
+    if collector_id is None:
+        # Hub: all tenant v3 credentials. Left-join to devices via device_credentials
+        # to pick up device.snmp_engine_id where the credential is device-linked.
+        q = (
+            select(Credential, Device.snmp_engine_id)
+            .outerjoin(DeviceCredential, DeviceCredential.credential_id == Credential.id)
+            .outerjoin(Device, Device.id == DeviceCredential.device_id)
+            .where(
+                Credential.tenant_id == tenant_id,
+                Credential.type == "snmp_v3",
+            )
         )
-    )
-    if collector_id is not None:
-        q = q.where(Device.collector_id == collector_id)
+    else:
+        q = (
+            select(Credential, Device.snmp_engine_id)
+            .join(DeviceCredential, DeviceCredential.credential_id == Credential.id)
+            .join(Device, Device.id == DeviceCredential.device_id)
+            .where(
+                Device.tenant_id == tenant_id,
+                Device.is_active == True,  # noqa: E712
+                Device.collector_id == collector_id,
+                Credential.type == "snmp_v3",
+            )
+        )
 
-    rows = (await db.execute(q)).scalars().all()
+    rows = (await db.execute(q)).all()
 
     seen: set[str] = set()
     users: list[dict] = []
-    for cred in rows:
+    for cred, device_engine_id in rows:
         cd = cred.data if isinstance(cred.data, dict) else {}
         username = cd.get("username", "")
         if not username or username in seen:
             continue
         seen.add(username)
+        # Device record takes precedence; fall back to credential JSON for
+        # trap-only credentials that have no device link.
+        engine_id = device_engine_id or cd.get("engine_id", "")
         users.append({
-            "username":  username,
+            "username":   username,
             "auth_proto": _AUTH_PROTO_MAP.get(cd.get("auth_protocol", "sha256").lower(), "SHA-256"),
             "auth_key":   cd.get("auth_key", ""),
             "priv_proto": _PRIV_PROTO_MAP.get(cd.get("priv_protocol", "aes").lower(), "AES"),
             "priv_key":   cd.get("priv_key", ""),
+            "engine_id":  engine_id,
         })
     return users
 
@@ -2590,8 +2939,9 @@ async def _collect_v3_users_for_collector(collector_id: str | None, tenant_id: s
 async def _push_trap_config(collector_id: str | None, tenant_id: str) -> None:
     """Regenerate snmptrapd config for one collector.
 
-    collector_id=None means hub-local (no WireGuard — write the file directly).
-    For remote collectors, POST to /trap-config on the collector control server.
+    collector_id=None means the hub — write the config directly and restart
+    snmptrapd.  For remote collectors, POST to /trap-config on the collector's
+    WireGuard control server.
     Errors are logged and swallowed so a credential save is never blocked.
     """
     import subprocess as _sp
@@ -2601,7 +2951,6 @@ async def _push_trap_config(collector_id: str | None, tenant_id: str) -> None:
         users = await _collect_v3_users_for_collector(collector_id, tenant_id, db)
 
         if collector_id is None:
-            # Hub-local: write the file and restart snmptrapd directly.
             conf = _build_snmptrapd_conf(users)
             try:
                 with open(_SNMPTRAPD_CONF_PATH, "w") as fh:
