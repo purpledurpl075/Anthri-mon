@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import { useCurrentUser } from '../hooks/useCurrentUser'
@@ -15,8 +15,21 @@ interface Tenant {
 }
 
 interface PlatformSettings {
-  wg_public_endpoint: string
-  session_timeout_hours: number
+  base_url:                       string
+  platform_name:                  string
+  timezone:                       string
+  device_down_stale_min_s:        number
+  max_alerts_per_device_per_hour: number
+  auto_close_stale_days:          number
+  alert_retention_days:           number
+  notifications_paused:           boolean
+  notifications_paused_until:     string | null
+  business_hours_enabled:         boolean
+  business_hours_start:           number
+  business_hours_end:             number
+  business_days:                  number[]
+  abuseipdb_api_key:              string
+  wg_public_endpoint:             string
 }
 
 
@@ -141,79 +154,202 @@ function TenantsTab() {
 
 // ── Platform settings tab ──────────────────────────────────────────────────────
 
+const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+
+function SettingRow({ label, description, children, badge }: {
+  label: string; description: string; children: React.ReactNode; badge?: React.ReactNode
+}) {
+  return (
+    <div className="flex items-start justify-between gap-8 py-4 border-b border-slate-100 last:border-0">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-medium text-slate-800">{label}</p>
+          {badge}
+        </div>
+        <p className="text-xs text-slate-400 mt-0.5">{description}</p>
+      </div>
+      <div className="shrink-0 w-64">{children}</div>
+    </div>
+  )
+}
+
 function SettingsTab() {
   const qc = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ['platform-global-settings'], queryFn: fetchPlatformSettings })
+  const [f, setF] = useState<PlatformSettings | null>(null)
+  const [saved, setSaved] = useState(false)
 
-  const [wgEndpoint, setWgEndpoint]   = useState('')
-  const [sessionTtl, setSessionTtl]   = useState('24')
-  const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
-  const [errMsg, setErrMsg] = useState('')
-
-  useEffect(() => {
-    if (!data) return
-    setWgEndpoint(data.wg_public_endpoint ?? '')
-    setSessionTtl(String(data.session_timeout_hours ?? 24))
-  }, [data])
+  useEffect(() => { if (data) setF(data) }, [data])
 
   const save = useMutation({
-    mutationFn: () => api.put('/platform/settings', {
-      wg_public_endpoint:    wgEndpoint.trim(),
-      session_timeout_hours: Number(sessionTtl),
-    }),
-    onMutate: () => { setStatus('saving'); setErrMsg('') },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ['platform-global-settings'] }); setStatus('saved') },
-    onError: (e: any) => { setStatus('error'); setErrMsg(e?.response?.data?.detail ?? 'Save failed') },
+    mutationFn: () => api.put<PlatformSettings>('/platform/settings', f),
+    onSuccess: (res) => {
+      qc.setQueryData(['platform-global-settings'], res.data)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    },
   })
 
-  if (isLoading) return <div className="text-sm text-slate-500 p-4">Loading…</div>
+  const set = <K extends keyof PlatformSettings>(k: K, v: PlatformSettings[K]) =>
+    setF(p => p ? { ...p, [k]: v } : p)
+
+  if (isLoading || !f) return <div className="text-sm text-slate-500 p-4">Loading…</div>
+
+  const txt = (k: keyof PlatformSettings, ph = '', type = 'text') => (
+    <input type={type} value={String(f[k])} placeholder={ph}
+      onChange={e => set(k as any, e.target.value)}
+      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+  )
+  const num = (k: keyof PlatformSettings, ph = '') => (
+    <input type="number" value={String(f[k])} placeholder={ph}
+      onChange={e => set(k as any, Number(e.target.value))}
+      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+  )
 
   return (
-    <div className="space-y-6 max-w-xl">
-      <div>
-        <h3 className="text-sm font-semibold text-slate-700 mb-4">Platform-level settings</h3>
-        <p className="text-xs text-slate-500 mb-5">
-          These settings apply globally across all tenants and can only be changed by platform administrators.
-        </p>
+    <div className="max-w-3xl">
+      <p className="text-xs text-slate-500 mb-5">
+        These settings apply platform-wide and can only be changed by platform administrators.
+        The alerting and notification defaults below may be overridden per-tenant from
+        Administration → Alerting.
+      </p>
+
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">General</h3>
+        <SettingRow label="Application URL"
+          description="Base URL for deep links in alert emails. Include protocol, no trailing slash.">
+          {txt('base_url', 'https://anthrimon.lab.local', 'url')}
+        </SettingRow>
+        <SettingRow label="Platform name" description="Display name used in email notifications and templates.">
+          {txt('platform_name', 'Anthrimon')}
+        </SettingRow>
+        <SettingRow label="Timezone"
+          description="IANA timezone for timestamps in alert emails (e.g. Europe/London, America/New_York).">
+          {txt('timezone', 'UTC')}
+        </SettingRow>
       </div>
 
-      <div className="space-y-4">
-        <div>
-          <label className="block text-xs font-medium text-slate-600 mb-1">
-            WireGuard public endpoint
-          </label>
-          <input value={wgEndpoint} onChange={e => setWgEndpoint(e.target.value)}
-            placeholder="vpn.example.com:51820"
-            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          <p className="text-xs text-slate-400 mt-1">
-            Public IP/hostname and port that remote collectors use to reach the hub.
-          </p>
-        </div>
-
-        <div>
-          <label className="block text-xs font-medium text-slate-600 mb-1">
-            Session timeout (hours)
-          </label>
-          <input type="number" min={1} max={8760} value={sessionTtl} onChange={e => setSessionTtl(e.target.value)}
-            className="w-32 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          <p className="text-xs text-slate-400 mt-1">
-            JWT expiry. Changes take effect on next login.
-          </p>
-        </div>
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Alerting Defaults</h3>
+        <SettingRow label="Storm protection" description="Maximum new alerts per device per hour. Set to 0 to disable.">
+          <div className="flex items-center gap-2">
+            {num('max_alerts_per_device_per_hour', '0 = unlimited')}
+            <span className="text-xs text-slate-400 shrink-0">/hr</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Device-down stale floor"
+          description="Minimum seconds without a successful poll before a device is considered unreachable. Actual threshold is max(this, 2.5× poll interval).">
+          <div className="flex items-center gap-2">
+            {num('device_down_stale_min_s')}
+            <span className="text-xs text-slate-400 shrink-0">seconds</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Stale alert auto-close"
+          description="Auto-close open/acknowledged alerts with no activity after this many days. Set to 0 to disable.">
+          <div className="flex items-center gap-2">
+            {num('auto_close_stale_days', '0 = disabled')}
+            <span className="text-xs text-slate-400 shrink-0">days</span>
+          </div>
+        </SettingRow>
+        <SettingRow label="Alert retention" description="How long resolved/expired/suppressed alerts are kept before being purged.">
+          <div className="flex items-center gap-2">
+            {num('alert_retention_days')}
+            <span className="text-xs text-slate-400 shrink-0">days</span>
+          </div>
+        </SettingRow>
       </div>
 
-      {errMsg && <p className="text-xs text-red-600">{errMsg}</p>}
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Notification Schedule</h3>
+        <SettingRow label="Pause all notifications"
+          badge={f.notifications_paused ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Active</span> : undefined}
+          description="Temporarily silence all outgoing alert notifications platform-wide.">
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={f.notifications_paused}
+                onChange={e => set('notifications_paused', e.target.checked)}
+                className="rounded border-slate-300 text-blue-600" />
+              <span className="text-sm text-slate-600">Paused</span>
+            </label>
+            {f.notifications_paused && (
+              <div>
+                <p className="text-[10px] text-slate-400 mb-1">Auto-resume at (leave blank = indefinite)</p>
+                <input type="datetime-local"
+                  value={f.notifications_paused_until ?? ''}
+                  onChange={e => set('notifications_paused_until', e.target.value || null)}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
+              </div>
+            )}
+          </div>
+        </SettingRow>
+        <SettingRow label="Business hours only" description="Send notifications only during configured hours. Resolved alerts always send.">
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={f.business_hours_enabled}
+                onChange={e => set('business_hours_enabled', e.target.checked)}
+                className="rounded border-slate-300 text-blue-600" />
+              <span className="text-sm text-slate-600">Enabled</span>
+            </label>
+            {f.business_hours_enabled && (
+              <>
+                <div className="flex items-center gap-2">
+                  <input type="number" min={0} max={23} value={f.business_hours_start}
+                    onChange={e => set('business_hours_start', Number(e.target.value))}
+                    className="w-16 border border-slate-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <span className="text-xs text-slate-400">to</span>
+                  <input type="number" min={0} max={23} value={f.business_hours_end}
+                    onChange={e => set('business_hours_end', Number(e.target.value))}
+                    className="w-16 border border-slate-200 rounded-lg px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                  <span className="text-xs text-slate-400">h (24h)</span>
+                </div>
+                <div className="flex gap-1 flex-wrap">
+                  {DAY_LABELS.map((day, i) => (
+                    <button key={i} type="button"
+                      onClick={() => {
+                        const days = f.business_days.includes(i)
+                          ? f.business_days.filter(x => x !== i)
+                          : [...f.business_days, i].sort()
+                        set('business_days', days)
+                      }}
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
+                        f.business_days.includes(i) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                      }`}>
+                      {day}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </SettingRow>
+      </div>
 
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => save.mutate()}
-          disabled={save.isPending}
-          className="text-sm bg-blue-600 text-white px-5 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-        >
-          {save.isPending ? 'Saving…' : 'Save'}
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Threat Intelligence</h3>
+        <SettingRow label="AbuseIPDB API key"
+          description="Used to score IPs in flow data. Free key at abuseipdb.com — 1 000 checks/day. Leave blank to disable.">
+          {txt('abuseipdb_api_key', 'Paste API key here', 'password')}
+        </SettingRow>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-6">
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Remote Collectors</h3>
+        <SettingRow label="WireGuard public endpoint"
+          description="Override the endpoint given to remote collectors during bootstrap. Required when this hub is behind NAT — external collectors cannot reach a private LAN address. Use your public IP or hostname, e.g. 203.0.113.5:51820. Leave blank to auto-detect.">
+          {txt('wg_public_endpoint', 'e.g. 203.0.113.5 or 203.0.113.5:51820')}
+        </SettingRow>
+      </div>
+
+      <div className="flex items-center justify-end gap-3 mb-6">
+        <button onClick={() => save.mutate()} disabled={save.isPending}
+          className={`px-4 py-2 text-xs font-medium rounded-xl transition-colors disabled:opacity-50 ${
+            saved ? 'bg-green-600 text-white' : 'bg-slate-800 text-white hover:bg-slate-700'
+          }`}>
+          {saved ? 'Saved!' : save.isPending ? 'Saving…' : 'Save changes'}
         </button>
-        {status === 'saved' && <span className="text-xs text-green-600">Saved</span>}
-        {status === 'error' && <span className="text-xs text-red-600">Error</span>}
+        {save.isError && (
+          <p className="text-xs text-red-500">{(save.error as any)?.response?.data?.detail ?? 'Failed to save'}</p>
+        )}
       </div>
     </div>
   )

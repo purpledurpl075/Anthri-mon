@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -82,6 +82,7 @@ async def list_credentials(
              summary="Create a credential")
 async def create_credential(
     body: CredentialCreate,
+    request: Request,
     current_user: User = Depends(require_role("admin", "superadmin", "operator")),
     db: AsyncSession = Depends(get_db),
 ) -> CredentialRead:
@@ -94,6 +95,11 @@ async def create_credential(
         data=_encrypt_data(body.data),
     )
     db.add(cred)
+    await db.flush()
+    from ..audit import audit as _audit
+    await _audit(db, action="create", resource_type="credential",
+                 resource_id=cred.id, new_value={"name": cred.name, "type": cred.type},
+                 user=current_user, request=request)
     await db.commit()
     await db.refresh(cred)
     logger.info("credential_created", id=str(cred.id), name=cred.name, type=cred.type)
@@ -114,10 +120,12 @@ async def get_credential(
 async def update_credential(
     cred_id: uuid.UUID,
     body: CredentialUpdate,
+    request: Request,
     current_user: User = Depends(require_role("admin", "superadmin", "operator")),
     db: AsyncSession = Depends(get_db),
 ) -> CredentialRead:
     cred = await _get(cred_id, current_user.tenant_id, db)
+    before = {"name": cred.name, "type": cred.type}
     if body.name is not None:
         cred.name = body.name
     if body.data is not None:
@@ -132,6 +140,13 @@ async def update_credential(
                 else:
                     del new_data[field]
         cred.data = _encrypt_data(new_data)
+    from ..audit import audit as _audit
+    await _audit(db, action="update", resource_type="credential",
+                 resource_id=cred.id, old_value=before,
+                 new_value={"name": cred.name, "type": cred.type,
+                            "fields_changed": [k for k in ("name", "data")
+                                               if getattr(body, k, None) is not None]},
+                 user=current_user, request=request)
     await db.commit()
     await db.refresh(cred)
     logger.info("credential_updated", id=str(cred_id))
@@ -161,10 +176,16 @@ async def update_credential(
                summary="Delete a credential")
 async def delete_credential(
     cred_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(require_role("admin", "superadmin")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     cred = await _get(cred_id, current_user.tenant_id, db)
+    from ..audit import audit as _audit
+    await _audit(db, action="delete", resource_type="credential",
+                 resource_id=cred.id,
+                 old_value={"name": cred.name, "type": cred.type},
+                 user=current_user, request=request)
     await db.delete(cred)
     await db.commit()
     logger.info("credential_deleted", id=str(cred_id))

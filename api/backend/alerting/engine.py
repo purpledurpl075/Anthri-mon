@@ -13,9 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import AsyncSessionLocal
 from ..models.alert import Alert, AlertRule, MaintenanceWindow
-from ..models.settings import SystemSetting
 from . import notify
 from .maintenance import device_in_maintenance, load_active_windows
+from .settings import get_effective_alerting_settings, load_platform_defaults
+from .suppression import SuppressionMap, compute_suppression_map
+from ..platform_health import (
+    alert_engine_alerts_fired,
+    alert_engine_alerts_suppressed,
+    alert_engine_cycle_duration,
+    alert_engine_wake_events,
+    registry as _ph_registry,
+)
 from .evaluators import (
     Breach,
     eval_cpu, eval_mem, eval_device_down,
@@ -157,24 +165,42 @@ class AlertEngine:
         # Housekeeping prunes any fp that hasn't been seen within _STATE_TTL,
         # which reclaims memory for deleted devices and retired rules.
         self._fp_last_seen: dict[str, datetime] = {}
+        # External callers (e.g. the collectors metrics ingest endpoint) set
+        # this when they detect a device recovery, asking the engine to wake
+        # up and run an immediate pass instead of waiting for the next tick.
+        self._wake_event: asyncio.Event = asyncio.Event()
+
+    def request_immediate_pass(self, reason: str = "external") -> None:
+        """Wake the engine for an immediate evaluation cycle.  Idempotent —
+        multiple calls within a single sleep window collapse into one pass."""
+        if not self._wake_event.is_set():
+            logger.info("alert_engine_woken", reason=reason)
+            alert_engine_wake_events().inc(reason=reason)
+        self._wake_event.set()
 
     async def run(self) -> None:
         logger.info("alert_engine_starting", interval_s=EVAL_INTERVAL)
         _housekeeping_counter = 0
         while True:
             try:
-                await asyncio.sleep(EVAL_INTERVAL)
+                # Sleep until either the interval elapses or someone calls
+                # request_immediate_pass().  Both paths fall through to evaluate.
+                try:
+                    await asyncio.wait_for(self._wake_event.wait(), timeout=EVAL_INTERVAL)
+                except asyncio.TimeoutError:
+                    pass
+                self._wake_event.clear()
                 pending: list[_PendingNotif] = []
                 async with AsyncSessionLocal() as db:
-                    # Load platform settings once per cycle
-                    prow = (await db.execute(
-                        select(SystemSetting).where(SystemSetting.key == "platform")
-                    )).scalar_one_or_none()
-                    platform = prow.value if prow else {}
+                    # Load platform-wide setting defaults once per cycle
+                    platform = await load_platform_defaults(db)
 
                     try:
+                        import time as _time
+                        _t0 = _time.monotonic()
                         pending = await self._evaluate_all(db, platform)
                         await db.commit()
+                        alert_engine_cycle_duration().observe(_time.monotonic() - _t0)
                     except Exception as exc:
                         await db.rollback()
                         logger.error("alert_engine_eval_error", error=str(exc), exc_info=True)
@@ -196,44 +222,133 @@ class AlertEngine:
 
     async def _housekeeping(self, platform: dict) -> None:
         """Periodic cleanup: auto-close stale alerts + purge old alerts + prune state dicts."""
+        platform = platform or {}
+
+        # Effective alerting settings (auto_close_stale_days,
+        # max_alerts_per_device_per_hour, alert_retention_days are
+        # tenant-overridable) — resolved per-tenant for every tenant that
+        # currently has alerts.
+        tenant_settings: dict[str, dict] = {}
+        try:
+            async with AsyncSessionLocal() as db:
+                tenant_ids = (await db.execute(
+                    text("SELECT DISTINCT tenant_id FROM alerts")
+                )).scalars().all()
+                for tid in tenant_ids:
+                    try:
+                        tenant_settings[str(tid)] = await get_effective_alerting_settings(
+                            db, tid, platform_defaults=platform,
+                        )
+                    except Exception as exc:
+                        logger.error("housekeeping_settings_error", tenant_id=str(tid), error=str(exc))
+                        tenant_settings[str(tid)] = platform
+        except Exception as exc:
+            logger.error("housekeeping_tenant_list_error", error=str(exc))
+
         # ── Auto-close stale open alerts ─────────────────────────────────────
-        auto_close_days = int(platform.get("auto_close_stale_days", 0))
-        if auto_close_days > 0:
+        for tid, settings in tenant_settings.items():
+            auto_close_days = int(settings.get("auto_close_stale_days", 0))
+            if auto_close_days <= 0:
+                continue
             try:
                 async with AsyncSessionLocal() as db:
                     cutoff = f"now() - interval '{auto_close_days} days'"
                     result = await db.execute(text(f"""
                         UPDATE alerts
                         SET status = 'resolved', resolved_at = now()
-                        WHERE status IN ('open','acknowledged')
+                        WHERE tenant_id = :tid
+                          AND status IN ('open','acknowledged')
                           AND triggered_at < {cutoff}
                         RETURNING id
-                    """))
+                    """), {"tid": tid})
                     closed = result.rowcount
                     if closed:
-                        logger.info("auto_closed_stale_alerts", count=closed, days=auto_close_days)
+                        logger.info("auto_closed_stale_alerts", count=closed, days=auto_close_days, tenant_id=tid)
                     await db.commit()
             except Exception as exc:
-                logger.error("housekeeping_error", error=str(exc))
+                logger.error("housekeeping_error", error=str(exc), tenant_id=tid)
+
+        # ── Auto-resolve storm-protection alerts whose rolling-hour count has
+        #    dropped below the limit ─────────────────────────────────────────
+        for tid, settings in tenant_settings.items():
+            storm_limit = int(settings.get("max_alerts_per_device_per_hour", 0))
+            if storm_limit <= 0:
+                continue
+            try:
+                async with AsyncSessionLocal() as db:
+                    result = await db.execute(text("""
+                        UPDATE alerts a
+                           SET status = 'resolved', resolved_at = now()
+                          FROM (
+                              SELECT id FROM alerts
+                               WHERE tenant_id = :tid
+                                 AND fingerprint LIKE 'storm-protection:%'
+                                 AND status IN ('open','acknowledged')
+                                 AND (
+                                     SELECT count(*) FROM alerts b
+                                      WHERE b.device_id = alerts.device_id
+                                        AND b.triggered_at > now() - interval '1 hour'
+                                        AND b.fingerprint NOT LIKE 'storm-protection:%'
+                                 ) < :lim
+                          ) AS to_close
+                         WHERE a.id = to_close.id
+                    """), {"lim": storm_limit, "tid": tid})
+                    if result.rowcount:
+                        logger.info("storm_protection_auto_resolved", count=result.rowcount, tenant_id=tid)
+                    await db.commit()
+            except Exception as exc:
+                logger.error("housekeeping_storm_resolve_error", error=str(exc), tenant_id=tid)
+
+        # ── Recover orphaned suppression links ────────────────────────────────
+        # An alert is "orphaned" when its suppressed_by_alert_id points at a
+        # parent that has since transitioned to resolved/expired/deleted.
+        # Normally cascade-unsuppress fixes this in the same cycle the parent
+        # resolves — but if the API restarted mid-resolve, or the parent was
+        # manually deleted, or the cascade-unsuppress code path was missed,
+        # children can be stranded suppressed forever.  This pass catches them
+        # every housekeeping tick.
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(text("""
+                    UPDATE alerts SET
+                        status = 'open',
+                        suppressed_by_alert_id = NULL,
+                        last_notified_at = NULL
+                     WHERE status = 'suppressed'
+                       AND suppressed_by_alert_id IS NOT NULL
+                       AND NOT EXISTS (
+                           SELECT 1 FROM alerts p
+                            WHERE p.id = alerts.suppressed_by_alert_id
+                              AND p.status IN ('open','acknowledged')
+                       )
+                """))
+                if result.rowcount:
+                    logger.info("orphan_suppression_recovered", count=result.rowcount)
+                await db.commit()
+        except Exception as exc:
+            logger.error("housekeeping_orphan_suppression_error", error=str(exc))
 
         # ── Purge old resolved/expired alerts ────────────────────────────────
         # Only purges non-open alerts; open/acknowledged alerts are never deleted
         # by retention — they must be resolved or auto-closed first.
-        retention_days = int(platform.get("alert_retention_days", 0))
-        if retention_days > 0:
+        for tid, settings in tenant_settings.items():
+            retention_days = int(settings.get("alert_retention_days", 0))
+            if retention_days <= 0:
+                continue
             try:
                 async with AsyncSessionLocal() as db:
                     result = await db.execute(text(f"""
                         DELETE FROM alerts
-                        WHERE status IN ('resolved','expired','suppressed')
+                        WHERE tenant_id = :tid
+                          AND status IN ('resolved','expired','suppressed')
                           AND triggered_at < now() - interval '{retention_days} days'
-                    """))
+                    """), {"tid": tid})
                     deleted = result.rowcount
                     if deleted:
-                        logger.info("alert_retention_purged", count=deleted, days=retention_days)
+                        logger.info("alert_retention_purged", count=deleted, days=retention_days, tenant_id=tid)
                     await db.commit()
             except Exception as exc:
-                logger.error("housekeeping_retention_error", error=str(exc))
+                logger.error("housekeeping_retention_error", error=str(exc), tenant_id=tid)
 
         # ── Prune in-memory state for deleted devices / retired rules ─────────
         # Any fingerprint not touched within _STATE_TTL is for a condition that
@@ -272,6 +387,28 @@ class AlertEngine:
         for tid in tenant_ids:
             active_windows.extend(await load_active_windows(db, tid))
 
+        # Build parent-child suppression map once per tenant per cycle.
+        suppression_by_tenant: dict[str, SuppressionMap] = {}
+        for tid in tenant_ids:
+            try:
+                suppression_by_tenant[tid] = await compute_suppression_map(db, tid)
+            except Exception as exc:
+                logger.error("suppression_compute_error", tenant_id=tid, error=str(exc))
+                suppression_by_tenant[tid] = SuppressionMap()
+
+        # Effective alerting settings (platform defaults + per-tenant overrides),
+        # built once per tenant per cycle.
+        platform = platform or {}
+        settings_by_tenant: dict[str, dict] = {}
+        for tid in tenant_ids:
+            try:
+                settings_by_tenant[tid] = await get_effective_alerting_settings(
+                    db, uuid.UUID(tid), platform_defaults=platform,
+                )
+            except Exception as exc:
+                logger.error("effective_settings_error", tenant_id=tid, error=str(exc))
+                settings_by_tenant[tid] = platform
+
         pending: list[_PendingNotif] = []
         for rule in rules:
             rule_id_str = str(rule.id)  # capture before any potential failure
@@ -280,7 +417,9 @@ class AlertEngine:
             sp = await db.begin_nested()
             try:
                 rule_pending = await self._evaluate_rule(
-                    db, rule, rules_by_metric.get(rule.metric, []), active_windows, platform or {}
+                    db, rule, rules_by_metric.get(rule.metric, []), active_windows,
+                    settings_by_tenant.get(str(rule.tenant_id), platform),
+                    suppression=suppression_by_tenant.get(str(rule.tenant_id), SuppressionMap()),
                 )
                 await sp.commit()
                 pending.extend(rule_pending)
@@ -307,9 +446,11 @@ class AlertEngine:
     async def _evaluate_rule(self, db: AsyncSession, rule: AlertRule,
                               peer_rules: Optional[list[AlertRule]] = None,
                               active_windows: Optional[list] = None,
-                              platform: dict | None = None) -> list[_PendingNotif]:
+                              platform: dict | None = None,
+                              suppression: Optional[SuppressionMap] = None) -> list[_PendingNotif]:
         peer_rules = peer_rules or []
         active_windows = active_windows or []
+        suppression = suppression or SuppressionMap()
         tenant_id = str(rule.tenant_id)
         devices = await resolve_devices(db, tenant_id, rule.device_selector)
         if not devices:
@@ -536,9 +677,48 @@ class AlertEngine:
                     if _storm_counts[breach.device_id] >= storm_limit:
                         logger.warning("storm_protection_triggered",
                                        device=breach.device_id, limit=storm_limit)
+                        # Surface one storm-protection alert per device so the
+                        # operator sees the silence is intentional.  Idempotent
+                        # via fingerprint; auto-resolves when the rolling hour
+                        # count drops below the limit.
+                        storm_fp = f"storm-protection:{breach.device_id}"
+                        existing_storm = (await db.execute(
+                            select(Alert).where(
+                                Alert.fingerprint == storm_fp,
+                                Alert.status.in_(["open", "acknowledged"]),
+                            )
+                        )).scalar_one_or_none()
+                        if existing_storm is None:
+                            storm_alert = Alert(
+                                id=uuid.uuid4(),
+                                tenant_id=rule.tenant_id,
+                                rule_id=rule.id,
+                                device_id=uuid.UUID(breach.device_id),
+                                severity="warning",
+                                status="open",
+                                title=f"Storm protection engaged — {breach.device_name or breach.device_id}",
+                                message=f"Suppressing further alerts from this device — "
+                                        f"limit of {storm_limit}/hour exceeded.",
+                                context=_safe_context({
+                                    "metric":          "storm_protection",
+                                    "device_name":     breach.device_name,
+                                    "limit":           storm_limit,
+                                    "current_count":   _storm_counts[breach.device_id],
+                                    "triggering_rule": rule.name,
+                                }),
+                                triggered_at=now,
+                                fingerprint=storm_fp,
+                                last_notified_at=now,
+                            )
+                            db.add(storm_alert)
+                            pending.append((storm_alert, rule, False))
                         continue
 
-                suppressed = breach.device_id in suppressed_device_ids
+                # Existing OSPF-neighbor opt-in suppression (parent_device_id on rule)
+                ospf_suppressed = breach.device_id in suppressed_device_ids
+                # New automatic parent-child suppression (device_down / interface_down cascade)
+                parent_aid = suppression.parent_for(breach.device_id, rule.metric)
+                suppressed  = ospf_suppressed or parent_aid is not None
                 alert = Alert(
                     id=uuid.uuid4(),
                     tenant_id=rule.tenant_id,
@@ -563,15 +743,42 @@ class AlertEngine:
                     triggered_at=now,
                     fingerprint=fp,
                     last_notified_at=now if not suppressed else None,
+                    suppressed_by_alert_id=parent_aid,
                 )
                 db.add(alert)
                 if not suppressed:
                     logger.info("alert_fired", rule=rule.name, device=breach.device_name,
                                 iface=breach.interface_name, severity=rule.severity)
+                    alert_engine_alerts_fired().inc(metric=rule.metric, severity=rule.severity)
                     pending.append((alert, rule, False))
-            elif existing.status == "suppressed" and breach.device_id not in suppressed_device_ids:
-                # Parent recovered — unsuppress
-                existing.status = "open"
+                else:
+                    alert_engine_alerts_suppressed().inc(metric=rule.metric,
+                                                         reason="created_suppressed")
+            elif existing.status == "suppressed":
+                # Re-evaluate suppression: if neither the OSPF-neighbor rule nor
+                # the parent-child map flags this device any more, the parent
+                # recovered → unsuppress and notify.
+                still_ospf = breach.device_id in suppressed_device_ids
+                still_auto = suppression.parent_for(breach.device_id, rule.metric) is not None
+                if not still_ospf and not still_auto:
+                    existing.status = "open"
+                    existing.suppressed_by_alert_id = None
+                    existing.last_notified_at = now
+                    pending.append((existing, rule, False))
+            elif existing.status == "open":
+                # Parent fired AFTER this child was opened — retroactively suppress.
+                # (Common when the upstream switch went down a moment after a port
+                # alert on the downstream device fired.)
+                parent_aid = suppression.parent_for(breach.device_id, rule.metric)
+                if parent_aid is not None:
+                    existing.status = "suppressed"
+                    existing.suppressed_by_alert_id = parent_aid
+                    logger.info("alert_retro_suppressed",
+                                alert_id=str(existing.id),
+                                parent_id=str(parent_aid),
+                                rule=rule.name)
+                    alert_engine_alerts_suppressed().inc(metric=rule.metric,
+                                                         reason="retro_suppressed")
 
         # ── Escalation: promote severity on long-open unacknowledged alerts ────
         if rule.escalation_severity and rule.escalation_seconds:
@@ -642,6 +849,29 @@ class AlertEngine:
                     text("UPDATE devices SET status = 'unknown'::device_status WHERE id = :did AND status = 'unreachable'::device_status"),
                     {"did": str(alert.device_id)},
                 )
+
+            # Cascade-unsuppress: any alert that pointed at this one as its
+            # parent loses its suppressor.  Flip them to 'open' so the next cycle
+            # re-evaluates them naturally (still breaching → renotify; cleared
+            # → auto-resolve).
+            cascade = (await db.execute(
+                select(Alert).where(
+                    Alert.suppressed_by_alert_id == alert.id,
+                    Alert.status == "suppressed",
+                )
+            )).scalars().all()
+            for child in cascade:
+                child.status = "open"
+                child.suppressed_by_alert_id = None
+                child.last_notified_at = None  # let next cycle decide notify timing
+                logger.info("alert_unsuppressed",
+                            alert_id=str(child.id), parent_id=str(alert.id))
+            # Stash the count so notify can mention it in the resolve message.
+            if cascade:
+                ctx = dict(alert.context or {})
+                ctx["revived_child_count"] = len(cascade)
+                alert.context = ctx
+
             logger.info("alert_auto_resolved", alert_id=str(alert.id), rule=rule.name)
             if rule.notify_on_resolve:
                 pending.append((alert, rule, True))

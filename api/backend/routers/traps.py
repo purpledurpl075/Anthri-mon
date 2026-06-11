@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 import structlog
@@ -7,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, get_current_principal, Principal
+from ..dependencies import get_db, get_current_principal, Principal, assert_device_access, _tenant_device_ids
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/traps", tags=["traps"])
@@ -25,8 +26,13 @@ async def list_traps(
     principal: Principal        = Depends(get_current_principal),
     db:        AsyncSession     = Depends(get_db),
 ) -> dict:
-    conditions = ["t.received_at > now() - make_interval(days => :days)"]
-    params: dict = {"days": days, "limit": limit, "offset": offset}
+    device_ids = await _tenant_device_ids(principal, db)
+
+    conditions = [
+        "t.received_at > now() - make_interval(days => :days)",
+        "t.device_id = ANY(:device_ids)",
+    ]
+    params: dict = {"days": days, "limit": limit, "offset": offset, "device_ids": device_ids}
 
     if device_id:
         conditions.append("t.device_id = CAST(:device_id AS uuid)")
@@ -89,6 +95,8 @@ async def device_traps(
     principal: Principal    = Depends(get_current_principal),
     db:        AsyncSession = Depends(get_db),
 ) -> dict:
+    await assert_device_access(principal, uuid.UUID(device_id), "readonly", db)
+
     rows = (await db.execute(text("""
         SELECT
             id::text,

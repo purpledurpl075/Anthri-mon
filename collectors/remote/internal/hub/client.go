@@ -200,6 +200,14 @@ func (c *Client) PostSTPPorts(ctx context.Context, ports []map[string]any) error
 	return c.postJSON(ctx, "/api/v1/collectors/stp-ports", ports, nil)
 }
 
+// PostRoutes sends a batch of route table entries to the hub.
+// Each record must contain: device_id, destination, protocol, and optionally
+// next_hop, metric, interface_name. The hub upserts into route_entries and
+// removes any existing rows for that device not present in this batch.
+func (c *Client) PostRoutes(ctx context.Context, routes []map[string]any) error {
+	return c.postJSON(ctx, "/api/v1/collectors/routes", routes, nil)
+}
+
 // PostEngineIDs sends SNMP engine IDs discovered via v3 USM handshake to the hub.
 // Each record: device_id (string), engine_id (lowercase hex string, no 0x prefix).
 func (c *Client) PostEngineIDs(ctx context.Context, records []map[string]any) error {

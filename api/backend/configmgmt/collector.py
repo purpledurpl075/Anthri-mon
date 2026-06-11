@@ -12,6 +12,7 @@ import difflib
 import hashlib
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -496,6 +497,14 @@ async def store_config_backup(
     # never prevents the backup from being stored.
     await _run_compliance(device_id, dev.hostname, db)
 
+    # Score against any matching golden configs.
+    await _run_golden_config_drift(device_id, dev.hostname, db)
+
+    # Commit the new config to the tenant's git archive repo.
+    await _archive_to_git(
+        db, dev, config_text, lines_added, lines_removed, str(backup.id), method, prev is None,
+    )
+
     return True
 
 
@@ -518,6 +527,143 @@ async def _run_compliance(device_id: str, hostname: str, db: AsyncSession) -> No
             )
     except Exception as exc:
         logger.warning("compliance_auto_run_failed", device=hostname, error=str(exc))
+
+
+async def _run_golden_config_drift(device_id: str, hostname: str, db: AsyncSession) -> None:
+    """Score the device's latest backup against any matching golden configs.
+
+    Called automatically after every new backup write.  Never raises — a bad
+    golden template must not prevent the backup from being stored.
+    """
+    try:
+        from .golden_config import run_golden_configs_for_device
+        results = await run_golden_configs_for_device(device_id, db)
+        if results:
+            worst = min(float(r.score) for r in results)
+            logger.info(
+                "golden_config_auto_run",
+                device=hostname,
+                count=len(results),
+                worst_score=worst,
+            )
+    except Exception as exc:
+        logger.warning("golden_config_auto_run_failed", device=hostname, error=str(exc))
+
+
+async def _archive_to_git(
+    db: AsyncSession,
+    dev: Device,
+    config_text: str,
+    lines_added: int,
+    lines_removed: int,
+    backup_id: str,
+    method: str,
+    is_first: bool,
+) -> None:
+    """Commit the new config to the tenant's git archive repo.
+
+    Called automatically after every new backup write.  Never raises — git
+    failures are logged but must not interrupt the backup storage path.
+    """
+    try:
+        from .git_archive import commit_config
+        commit_hash = await commit_config(
+            db, dev, config_text, lines_added, lines_removed, backup_id, method, is_first,
+        )
+        if commit_hash:
+            logger.info("git_archive_committed", device=dev.hostname, commit=commit_hash[:12])
+    except Exception as exc:
+        logger.warning("git_archive_failed", device=dev.hostname, error=str(exc))
+
+
+# Per-vendor command to disable terminal paging before `show running-config`,
+# so the delegated SSH capture isn't broken up by "--More--" prompts.
+_NO_PAGE: dict[str, str] = {
+    "arista":       "terminal length 0",
+    "cisco_ios":    "terminal length 0",
+    "cisco_iosxe":  "terminal length 0",
+    "cisco_iosxr":  "terminal length 0",
+    "cisco_nxos":   "terminal length 0",
+    "aruba_cx":     "no page",
+    "hp_procurve":  "no page",
+    "juniper":      "set cli screen-length 0",
+}
+
+
+# A trailing line that is just a device prompt, optionally followed by the
+# exit/quit we send to close the session — e.g. "switch# exit" or "rtr>".
+_PROMPT_TAIL = re.compile(r"^\S*[#>$]\s*(exit|quit|logout)?\s*$", re.IGNORECASE)
+# A line that begins with a device prompt and then echoes text — e.g.
+# "ArubaCX9# show running-config" or "ArubaCX9# Invalid input: enable".  Real
+# config lines start with a keyword or indentation, never "hostname#  text".
+_PROMPT_LINE = re.compile(r"^\S+[#>]\s+\S")
+# Shell/login banner noise that some OSes interleave with command output.
+_BANNER_NOISE = re.compile(
+    r"(^Last login:|has logged in .* in the past|Invalid input:"
+    r"|^Building configuration|^Current configuration)",
+    re.IGNORECASE,
+)
+
+
+def _extract_show_output(raw: str, command: str) -> str:
+    """Pull the config body out of a raw interactive-shell capture: everything
+    after the echoed `command` line, minus prompt echoes and login/banner noise.
+    Heuristic, but stable for the same device over time (diffs still work) — and
+    clean enough that the text can be re-fed to the device as a rollback target."""
+    lines = raw.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.rstrip().endswith(command):
+            start = i + 1          # last echo of the command wins
+    body = lines[start:] if start is not None else lines
+    while body and (
+        body[-1].strip() == ""
+        or body[-1].strip() in ("exit", "quit", "logout")
+        or _PROMPT_TAIL.match(body[-1])
+    ):
+        body.pop()
+    body = [ln for ln in body
+            if not (_PROMPT_LINE.match(ln) or _BANNER_NOISE.search(ln))]
+    return "\n".join(body).strip()
+
+
+async def _collect_via_collector(db: AsyncSession, dev: Device, vendor: str,
+                                 cred_data: dict) -> str:
+    """Capture a device's running config through its owning remote collector
+    (the hub can't SSH to a device on a remote LAN).  All vendor specifics —
+    the show command and paging-disable — are decided here; the collector just
+    runs the SSH session."""
+    from ..models.site import RemoteCollector
+    from . import proxy as _proxy
+
+    col = (await db.execute(
+        select(RemoteCollector).where(RemoteCollector.id == dev.collector_id)
+    )).scalar_one_or_none()
+    if col is None or not col.wg_ip or not col.api_key_hash:
+        raise RuntimeError("device's collector is offline or has no WireGuard IP")
+
+    show = _SHOW_RUN.get(vendor, "show running-config")
+    steps = []
+    if vendor in _NO_PAGE:
+        steps.append(_proxy.step(_NO_PAGE[vendor], delay=1.0))
+
+    payload = {
+        "operation":          "backup",
+        "device_ip":          dev.mgmt_ip_str,
+        "ssh_port":           22,
+        "vendor":             vendor,
+        "username":           cred_data.get("username", ""),
+        "password":           cred_data.get("password", ""),
+        "enable_secret":      cred_data.get("enable_secret", "") or "",
+        "enter_enable":       vendor in _proxy.ENABLE_VENDORS,
+        "serve_config":       "",
+        "expected_source_ip": "",
+        "steps":              steps,
+        "final_read_command": show,
+    }
+    data = await _proxy.config_exec(
+        wg_ip=str(col.wg_ip), api_key_hash=col.api_key_hash, payload=payload, timeout=120.0)
+    return _extract_show_output(data.get("output", ""), show)
 
 
 async def collect_device(device_id: str, db: AsyncSession) -> Optional[ConfigBackup]:
@@ -559,13 +705,18 @@ async def collect_device(device_id: str, db: AsyncSession) -> Optional[ConfigBac
     port   = 22
     vendor = _vendor_key(dev)
 
-    loop = asyncio.get_running_loop()
     try:
-        config_text = await loop.run_in_executor(
-            None, _collect_ssh, host, port, vendor, cred_data
-        )
+        if dev.collector_id is not None:
+            # Device is on a remote LAN — delegate the SSH to its collector.
+            config_text = await _collect_via_collector(db, dev, vendor, cred_data)
+        else:
+            loop = asyncio.get_running_loop()
+            config_text = await loop.run_in_executor(
+                None, _collect_ssh, host, port, vendor, cred_data
+            )
     except Exception as exc:
-        logger.warning("config_collect_failed", device=dev.hostname, error=str(exc))
+        logger.warning("config_collect_failed", device=dev.hostname,
+                       via="collector" if dev.collector_id else "hub", error=str(exc))
         return None
 
     changed = await store_config_backup(device_id, config_text, "ssh_show_run", db)
@@ -672,7 +823,9 @@ class ConfigCollector:
                 select(Device.id, Device.hostname)
                 .where(
                     Device.is_active == True,        # noqa: E712
-                    Device.collector_id == None,     # noqa: E711 — hub-managed only
+                    # Both hub-managed (collector_id NULL) and collector-managed
+                    # devices are collected; collect_device() routes each one to
+                    # the hub or to its owning collector as appropriate.
                 )
             )).all()
 

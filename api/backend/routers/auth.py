@@ -173,6 +173,13 @@ async def login(
 
     if user is None or not password_ok:
         logger.warning("login_failed", username=body.username, ip=request.client.host if request.client else "unknown")
+        # Record failed login attempt for audit.  No user FK because the
+        # username may not match any account.
+        from ..audit import audit as _audit
+        await _audit(db, action="login_failed", resource_type="user",
+                     new_value={"username": body.username, "name": body.username},
+                     request=request)
+        await db.commit()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     token, expire = _create_jwt(user)
@@ -180,6 +187,11 @@ async def login(
     await db.execute(
         update(User).where(User.id == user.id).values(last_login=datetime.now(timezone.utc))
     )
+
+    from ..audit import audit as _audit
+    await _audit(db, action="login", resource_type="user", resource_id=user.id,
+                 new_value={"username": user.username, "name": user.username},
+                 user=user, request=request)
     await db.commit()
 
     logger.info("login_success", user_id=str(user.id), username=user.username)

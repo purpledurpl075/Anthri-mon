@@ -8,12 +8,14 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import cast, or_, select, String, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_current_user, get_db
+from ..dependencies import (
+    get_current_principal, get_db, Principal,
+    accessible_device_ids_subquery, _tenant_device_ids,
+)
 from ..models.alert import Alert
 from ..models.bgp import BGPSession
 from ..models.device import Device
 from ..models.interface import ARPEntry, Interface, MACEntry
-from ..models.tenant import User
 
 router = APIRouter(tags=["search"])
 
@@ -49,12 +51,12 @@ def _looks_like_mac(q: str) -> bool:
     return bool(re.fullmatch(r'[0-9a-fA-F]{4,12}', stripped))
 
 
-async def _search_devices(q: str, tenant_id, db: AsyncSession) -> list[dict]:
+async def _search_devices(q: str, principal: Principal, db: AsyncSession) -> list[dict]:
     pat = f"%{q}%"
     rows = (await db.execute(
         select(Device)
         .where(
-            Device.tenant_id == tenant_id,
+            Device.id.in_(accessible_device_ids_subquery(principal)),
             Device.is_active == True,  # noqa: E712
             or_(
                 Device.hostname.ilike(pat),
@@ -76,13 +78,13 @@ async def _search_devices(q: str, tenant_id, db: AsyncSession) -> list[dict]:
     ]
 
 
-async def _search_interfaces(q: str, tenant_id, db: AsyncSession) -> list[dict]:
+async def _search_interfaces(q: str, principal: Principal, db: AsyncSession) -> list[dict]:
     pat = f"%{q}%"
     rows = (await db.execute(
         select(Interface, Device.hostname)
         .join(Device, Interface.device_id == Device.id)
         .where(
-            Device.tenant_id == tenant_id,
+            Device.id.in_(accessible_device_ids_subquery(principal)),
             or_(
                 Interface.name.ilike(pat),
                 Interface.description.ilike(pat),
@@ -100,12 +102,13 @@ async def _search_interfaces(q: str, tenant_id, db: AsyncSession) -> list[dict]:
     ]
 
 
-async def _search_alerts(q: str, tenant_id, db: AsyncSession) -> list[dict]:
+async def _search_alerts(q: str, principal: Principal, db: AsyncSession) -> list[dict]:
     pat = f"%{q}%"
     rows = (await db.execute(
         select(Alert)
         .where(
-            Alert.tenant_id == tenant_id,
+            Alert.tenant_id == principal.active_tenant_id,
+            or_(Alert.device_id.is_(None), Alert.device_id.in_(accessible_device_ids_subquery(principal))),
             Alert.status.in_(["open", "acknowledged"]),
             Alert.title.ilike(pat),
         )
@@ -122,13 +125,13 @@ async def _search_alerts(q: str, tenant_id, db: AsyncSession) -> list[dict]:
     ]
 
 
-async def _search_bgp(q: str, tenant_id, db: AsyncSession) -> list[dict]:
+async def _search_bgp(q: str, principal: Principal, db: AsyncSession) -> list[dict]:
     pat = f"%{q}%"
     rows = (await db.execute(
         select(BGPSession, Device.hostname)
         .join(Device, BGPSession.device_id == Device.id)
         .where(
-            Device.tenant_id == tenant_id,
+            Device.id.in_(accessible_device_ids_subquery(principal)),
             or_(
                 cast(BGPSession.peer_ip, String).ilike(pat),
                 BGPSession.peer_description.ilike(pat),
@@ -147,7 +150,7 @@ async def _search_bgp(q: str, tenant_id, db: AsyncSession) -> list[dict]:
     ]
 
 
-async def _search_addresses(q: str, tenant_id, db: AsyncSession) -> list[dict]:
+async def _search_addresses(q: str, principal: Principal, db: AsyncSession) -> list[dict]:
     """Search ARP table (IP + MAC) and MAC address table."""
     ip_pat  = f"%{q}%"
     mac_pat = f"%{_mac_pat(q)}%"
@@ -163,7 +166,7 @@ async def _search_addresses(q: str, tenant_id, db: AsyncSession) -> list[dict]:
     arp_rows = (await db.execute(
         select(ARPEntry, Device.hostname)
         .join(Device, ARPEntry.device_id == Device.id)
-        .where(Device.tenant_id == tenant_id, arp_clause)
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)), arp_clause)
         .order_by(ARPEntry.updated_at.desc())
         .limit(_PER_TYPE)
     )).all()
@@ -187,7 +190,7 @@ async def _search_addresses(q: str, tenant_id, db: AsyncSession) -> list[dict]:
         select(MACEntry, Device.hostname)
         .join(Device, MACEntry.device_id == Device.id)
         .where(
-            Device.tenant_id == tenant_id,
+            Device.id.in_(accessible_device_ids_subquery(principal)),
             cast(MACEntry.mac_address, String).ilike(mac_pat),
         )
         .order_by(MACEntry.updated_at.desc())
@@ -212,7 +215,7 @@ async def _search_addresses(q: str, tenant_id, db: AsyncSession) -> list[dict]:
     return results[:_PER_TYPE]
 
 
-async def _search_config(q: str, tenant_id, db: AsyncSession) -> list[dict]:
+async def _search_config(q: str, device_ids: list[str], db: AsyncSession) -> list[dict]:
     """Search only the *current* (latest) config backup per device.
 
     We get the latest backup per device first, then filter by the search term.
@@ -231,13 +234,13 @@ async def _search_config(q: str, tenant_id, db: AsyncSession) -> list[dict]:
                        cb.config_text
                 FROM   config_backups cb
                 JOIN   devices d ON d.id = cb.device_id
-                WHERE  d.tenant_id = :tid
+                WHERE  cb.device_id = ANY(:device_ids)
                 ORDER  BY cb.device_id, cb.collected_at DESC
             ) latest
             WHERE  config_text ILIKE :pat
             LIMIT  :lim
         """),
-        {"tid": str(tenant_id), "pat": pat, "lim": _PER_TYPE},
+        {"device_ids": device_ids, "pat": pat, "lim": _PER_TYPE},
     )).all()
     return [
         _result("config", str(r.device_id),
@@ -252,21 +255,21 @@ async def _search_config(q: str, tenant_id, db: AsyncSession) -> list[dict]:
 @router.get("/search")
 async def search(
     q: str = Query(..., min_length=1, max_length=100),
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     q = q.strip()
     if not q:
         return {"results": []}
 
-    tid = current_user.tenant_id
+    device_ids = await _tenant_device_ids(principal, db)
     devices, interfaces, alerts, bgp, addresses, config = await asyncio.gather(
-        _search_devices(q, tid, db),
-        _search_interfaces(q, tid, db),
-        _search_alerts(q, tid, db),
-        _search_bgp(q, tid, db),
-        _search_addresses(q, tid, db),
-        _search_config(q, tid, db),
+        _search_devices(q, principal, db),
+        _search_interfaces(q, principal, db),
+        _search_alerts(q, principal, db),
+        _search_bgp(q, principal, db),
+        _search_addresses(q, principal, db),
+        _search_config(q, device_ids, db),
         return_exceptions=True,
     )
 

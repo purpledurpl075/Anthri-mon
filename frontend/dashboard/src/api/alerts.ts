@@ -1,7 +1,7 @@
 import api from './client'
 import type { Alert, AlertRule, PaginatedResponse } from './types'
 
-export const fetchAlerts = (params?: { status?: string; severity?: string; limit?: number }) =>
+export const fetchAlerts = (params?: { status?: string; severity?: string; device_id?: string; limit?: number }) =>
   api.get<PaginatedResponse<Alert>>('/alerts', { params }).then(r => r.data)
 
 export const acknowledgeAlert = (id: string) =>

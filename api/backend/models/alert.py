@@ -148,6 +148,11 @@ class Alert(Base):
     correlation_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
     fingerprint: Mapped[Optional[str]] = mapped_column(Text)
     last_notified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # When set, this alert is suppressed because the referenced parent alert is
+    # the root cause (e.g. device_down on the same or upstream device).
+    suppressed_by_alert_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("alerts.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(nullable=False, server_default=func.now())
 

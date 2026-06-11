@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query'
 import { fetchSmtpSettings, saveSmtpSettings, testSmtpSettings } from '../api/admin'
 import { fetchChannels, createChannel, updateChannel, deleteChannel, testChannel, fetchChannelSendLog, type NotificationChannel, type ChannelSendLogEntry } from '../api/channels'
 import api from '../api/client'
-import { useRole, hasRole } from '../hooks/useCurrentUser'
+import { useRole, hasRole, useCurrentUser } from '../hooks/useCurrentUser'
 
 function apiError(e: any): string {
   const detail = e?.response?.data?.detail
@@ -773,27 +773,29 @@ function SitesTab() {
   )
 }
 
-// ── Platform settings tab ──────────────────────────────────────────────────────
+// ── Tenant alerting settings tab ────────────────────────────────────────────────
+//
+// Platform admins set org-wide defaults for these 10 settings via
+// PlatformPage's Global Settings tab (/platform/settings). Any tenant_admin
+// may override the subset that applies to their own tenant here, via
+// /admin/settings/alerting. Overrides are stored sparsely — fields left at
+// the platform default automatically track future platform-wide changes.
 
-interface PlatformSettings {
-  base_url:                       string
-  platform_name:                  string
-  timezone:                       string
-  session_timeout_hours:          number
-  alert_eval_interval_s:          number
-  default_renotify_s:             number
+interface TenantAlertingSettings {
+  device_down_stale_min_s:        number
   max_alerts_per_device_per_hour: number
   auto_close_stale_days:          number
-  device_down_stale_min_s:        number
+  alert_retention_days:           number
   notifications_paused:           boolean
   notifications_paused_until:     string | null
   business_hours_enabled:         boolean
   business_hours_start:           number
   business_hours_end:             number
   business_days:                  number[]
-  alert_retention_days:           number
-  abuseipdb_api_key:              string
-  wg_public_endpoint:             string
+}
+
+interface TenantAlertingSettingsRead extends TenantAlertingSettings {
+  platform_defaults: TenantAlertingSettings
 }
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
@@ -815,30 +817,7 @@ function SettingRow({ label, description, children, badge }: {
   )
 }
 
-// Shared hook for platform settings mutations — avoids repeating boilerplate in each sub-tab.
-function usePlatformSettings() {
-  const qc = useQueryClient()
-  const [f, setF] = useState<PlatformSettings | null>(null)
-  const [saved, setSaved] = useState(false)
-  const { data, isLoading } = useQuery<PlatformSettings>({
-    queryKey: ['platform-settings'],
-    queryFn:  () => api.get<PlatformSettings>('/admin/settings/platform').then(r => r.data),
-  })
-  useEffect(() => { if (data) setF(data) }, [data])
-  const saveMut = useMutation({
-    mutationFn: () => api.put('/admin/settings/platform', f),
-    onSuccess:  () => {
-      qc.invalidateQueries({ queryKey: ['platform-settings'] })
-      setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
-    },
-  })
-  const set = <K extends keyof PlatformSettings>(k: K, v: PlatformSettings[K]) =>
-    setF(p => p ? { ...p, [k]: v } : p)
-  return { f, set, isLoading, saveMut, saved }
-}
-
-function SaveBar({ saveMut, saved }: { saveMut: ReturnType<typeof usePlatformSettings>['saveMut']; saved: boolean }) {
+function SaveBar({ saveMut, saved }: { saveMut: UseMutationResult<any, any, void, unknown>; saved: boolean }) {
   return (
     <div className="flex items-center justify-end gap-3 mb-6">
       <button onClick={() => saveMut.mutate()} disabled={saveMut.isPending}
@@ -854,105 +833,95 @@ function SaveBar({ saveMut, saved }: { saveMut: ReturnType<typeof usePlatformSet
   )
 }
 
-// ── General tab (app identity + session) ──────────────────────────────────────
+// Shared hook for the tenant alerting-overrides mutation.
+function useAlertingSettings() {
+  const qc = useQueryClient()
+  const [f, setF] = useState<TenantAlertingSettingsRead | null>(null)
+  const [saved, setSaved] = useState(false)
+  const { data, isLoading } = useQuery<TenantAlertingSettingsRead>({
+    queryKey: ['tenant-alerting-settings'],
+    queryFn:  () => api.get<TenantAlertingSettingsRead>('/admin/settings/alerting').then(r => r.data),
+  })
+  useEffect(() => { if (data) setF(data) }, [data])
+  const saveMut = useMutation({
+    mutationFn: () => {
+      const { platform_defaults, ...body } = f as TenantAlertingSettingsRead
+      return api.put('/admin/settings/alerting', body)
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tenant-alerting-settings'] })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    },
+  })
+  const set = <K extends keyof TenantAlertingSettings>(k: K, v: TenantAlertingSettings[K]) =>
+    setF(p => p ? { ...p, [k]: v } : p)
+  return { f, set, isLoading, saveMut, saved }
+}
 
-function GeneralTab() {
-  const { f, set, isLoading, saveMut, saved } = usePlatformSettings()
-  if (isLoading || !f) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
-  const txt = (k: keyof PlatformSettings, ph = '', type = 'text') => (
-    <input type={type} value={String(f[k])} placeholder={ph}
-      onChange={e => set(k as any, e.target.value)}
-      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-  )
+// Shows the platform-wide default for a field, plus a "Reset" link when this
+// tenant's effective value differs from it.
+function DefaultHint({ overridden, deflt, onReset }: {
+  overridden: boolean; deflt?: string; onReset: () => void
+}) {
+  if (!overridden) {
+    return deflt !== undefined
+      ? <p className="text-[10px] text-slate-400 mt-1">Platform default: {deflt}</p>
+      : null
+  }
   return (
-    <div className="p-6 max-w-3xl">
-      <div className="mb-6">
-        <h2 className="text-sm font-semibold text-slate-800">General</h2>
-        <p className="text-xs text-slate-400 mt-0.5">Application identity and session settings</p>
-      </div>
-      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Application</h3>
-        <SettingRow label="Application URL" description="Base URL for deep links in alert emails. Include protocol, no trailing slash.">
-          {txt('base_url', 'https://anthrimon.lab.local', 'url')}
-        </SettingRow>
-        <SettingRow label="Platform name" description="Display name used in email notifications and templates.">
-          {txt('platform_name', 'Anthrimon')}
-        </SettingRow>
-        <SettingRow label="Timezone" description="IANA timezone for timestamps in alert emails (e.g. Europe/London, America/New_York).">
-          {txt('timezone', 'UTC')}
-        </SettingRow>
-      </div>
-      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-6">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Session &amp; Security</h3>
-        <SettingRow label="Session timeout" description="How long a login session stays valid. Takes effect on next login.">
-          <div className="flex items-center gap-2">
-            <input type="number" value={String(f.session_timeout_hours)}
-              onChange={e => set('session_timeout_hours', Number(e.target.value))}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            <span className="text-xs text-slate-400 shrink-0">hours</span>
-          </div>
-        </SettingRow>
-      </div>
-      <SaveBar saveMut={saveMut} saved={saved} />
-    </div>
+    <p className="text-[10px] text-amber-600 mt-1">
+      {deflt !== undefined ? `Overridden — platform default: ${deflt}` : 'Overridden for this tenant'} ·{' '}
+      <button type="button" onClick={onReset} className="underline hover:text-amber-700">Reset</button>
+    </p>
   )
 }
 
-// ── Alerting Engine tab (firing behaviour + notification schedule) ─────────────
-
-function AlertingEngineTab() {
-  const { f, set, isLoading, saveMut, saved } = usePlatformSettings()
+function AlertingSettingsTab() {
+  const { f, set, isLoading, saveMut, saved } = useAlertingSettings()
   if (isLoading || !f) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
-  const num = (k: keyof PlatformSettings, ph = '') => (
-    <input type="number" value={String(f[k])} placeholder={ph}
-      onChange={e => set(k as any, Number(e.target.value))}
-      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+  const d = f.platform_defaults
+  const num = (k: keyof TenantAlertingSettings, unit = '') => (
+    <div>
+      <input type="number" value={String(f[k])}
+        onChange={e => set(k, Number(e.target.value) as any)}
+        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      <DefaultHint overridden={f[k] !== d[k]} deflt={`${d[k]}${unit}`} onReset={() => set(k, d[k] as any)} />
+    </div>
   )
+  const pauseOverridden = f.notifications_paused !== d.notifications_paused
+    || f.notifications_paused_until !== d.notifications_paused_until
+  const bizOverridden = f.business_hours_enabled !== d.business_hours_enabled
+    || f.business_hours_start !== d.business_hours_start
+    || f.business_hours_end !== d.business_hours_end
+    || JSON.stringify(f.business_days) !== JSON.stringify(d.business_days)
   return (
     <div className="p-6 max-w-3xl overflow-y-auto">
       <div className="mb-6">
-        <h2 className="text-sm font-semibold text-slate-800">Alerting Engine</h2>
-        <p className="text-xs text-slate-400 mt-0.5">Controls how alerts fire, re-notify, and when notifications are sent</p>
+        <h2 className="text-sm font-semibold text-slate-800">Alerting</h2>
+        <p className="text-xs text-slate-400 mt-0.5">
+          Override the platform-wide alerting defaults for your tenant. Fields left at the
+          platform default automatically track future platform-wide changes.
+        </p>
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Firing Behaviour</h3>
-        <SettingRow label="Evaluation interval"
-          description="How often the alert engine checks all rules. Requires API restart to take effect.">
-          <div className="flex items-center gap-2">
-            {num('alert_eval_interval_s')}
-            <span className="text-xs text-slate-400 shrink-0">seconds</span>
-          </div>
-        </SettingRow>
-        <SettingRow label="Default re-notify interval"
-          description="Default interval for re-alerting on active alerts when creating new rules.">
-          <div className="flex items-center gap-2">
-            <input type="number" value={Math.round(f.default_renotify_s / 60)}
-              onChange={e => set('default_renotify_s', Number(e.target.value) * 60)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            <span className="text-xs text-slate-400 shrink-0">minutes</span>
-          </div>
-        </SettingRow>
         <SettingRow label="Storm protection"
           description="Maximum new alerts per device per hour. Set to 0 to disable.">
-          <div className="flex items-center gap-2">
-            {num('max_alerts_per_device_per_hour', '0 = unlimited')}
-            <span className="text-xs text-slate-400 shrink-0">/hr</span>
-          </div>
+          {num('max_alerts_per_device_per_hour', '/hr')}
         </SettingRow>
         <SettingRow label="Device-down stale floor"
           description="Minimum seconds without a successful poll before a device is considered unreachable. Actual threshold is max(this, 2.5× poll interval).">
-          <div className="flex items-center gap-2">
-            {num('device_down_stale_min_s')}
-            <span className="text-xs text-slate-400 shrink-0">seconds</span>
-          </div>
+          {num('device_down_stale_min_s', 's')}
         </SettingRow>
         <SettingRow label="Stale alert auto-close"
           description="Auto-close open/acknowledged alerts with no activity after this many days. Set to 0 to disable.">
-          <div className="flex items-center gap-2">
-            {num('auto_close_stale_days', '0 = disabled')}
-            <span className="text-xs text-slate-400 shrink-0">days</span>
-          </div>
+          {num('auto_close_stale_days', 'd')}
+        </SettingRow>
+        <SettingRow label="Alert retention"
+          description="How long resolved/expired/suppressed alerts are kept before being purged.">
+          {num('alert_retention_days', 'd')}
         </SettingRow>
       </div>
 
@@ -960,7 +929,7 @@ function AlertingEngineTab() {
         <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Notification Schedule</h3>
         <SettingRow label="Pause all notifications"
           badge={f.notifications_paused ? <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">Active</span> : undefined}
-          description="Temporarily silence all outgoing alert notifications globally.">
+          description="Temporarily silence all outgoing alert notifications for your tenant.">
           <div className="space-y-2">
             <label className="flex items-center gap-2 cursor-pointer">
               <input type="checkbox" checked={f.notifications_paused}
@@ -977,6 +946,8 @@ function AlertingEngineTab() {
                   className="w-full border border-slate-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
             )}
+            <DefaultHint overridden={pauseOverridden}
+              onReset={() => { set('notifications_paused', d.notifications_paused); set('notifications_paused_until', d.notifications_paused_until) }} />
           </div>
         </SettingRow>
         <SettingRow label="Business hours only"
@@ -1001,7 +972,7 @@ function AlertingEngineTab() {
                   <span className="text-xs text-slate-400">h (24h)</span>
                 </div>
                 <div className="flex gap-1 flex-wrap">
-                  {DAY_LABELS.map((d, i) => (
+                  {DAY_LABELS.map((day, i) => (
                     <button key={i} type="button"
                       onClick={() => {
                         const days = f.business_days.includes(i)
@@ -1012,48 +983,20 @@ function AlertingEngineTab() {
                       className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors ${
                         f.business_days.includes(i) ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
                       }`}>
-                      {d}
+                      {day}
                     </button>
                   ))}
                 </div>
               </>
             )}
+            <DefaultHint overridden={bizOverridden}
+              onReset={() => {
+                set('business_hours_enabled', d.business_hours_enabled)
+                set('business_hours_start', d.business_hours_start)
+                set('business_hours_end', d.business_hours_end)
+                set('business_days', d.business_days)
+              }} />
           </div>
-        </SettingRow>
-      </div>
-      <SaveBar saveMut={saveMut} saved={saved} />
-    </div>
-  )
-}
-
-// ── Integrations tab (threat intel + remote collectors) ───────────────────────
-
-function IntegrationsTab() {
-  const { f, set, isLoading, saveMut, saved } = usePlatformSettings()
-  if (isLoading || !f) return <div className="p-6 text-slate-400 text-sm">Loading…</div>
-  const txt = (k: keyof PlatformSettings, ph = '', type = 'text') => (
-    <input type={type} value={String(f[k])} placeholder={ph}
-      onChange={e => set(k as any, e.target.value)}
-      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
-  )
-  return (
-    <div className="p-6 max-w-3xl">
-      <div className="mb-6">
-        <h2 className="text-sm font-semibold text-slate-800">Integrations</h2>
-        <p className="text-xs text-slate-400 mt-0.5">External services and infrastructure connectivity</p>
-      </div>
-      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-4">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Threat Intelligence</h3>
-        <SettingRow label="AbuseIPDB API key"
-          description="Used to score IPs in flow data. Free key at abuseipdb.com — 1 000 checks/day. Leave blank to disable.">
-          {txt('abuseipdb_api_key', 'Paste API key here', 'password')}
-        </SettingRow>
-      </div>
-      <div className="bg-white rounded-2xl border border-slate-200 px-6 mb-6">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-4 pb-2">Remote Collectors</h3>
-        <SettingRow label="WireGuard public endpoint"
-          description="Override the endpoint given to remote collectors during bootstrap. Required when this hub is behind NAT — external collectors cannot reach a private LAN address. Use your public IP or hostname, e.g. 203.0.113.5:51820. Leave blank to auto-detect.">
-          {txt('wg_public_endpoint', 'e.g. 203.0.113.5 or 203.0.113.5:51820')}
         </SettingRow>
       </div>
       <SaveBar saveMut={saveMut} saved={saved} />
@@ -1674,10 +1617,10 @@ function ApiMethodsTab() {
 
 type Tab =
   | 'tenant' | 'sites'
-  | 'general' | 'alerting-engine'
+  | 'alerting'
   | 'smtp' | 'channels' | 'template'
   | 'api-methods'
-  | 'storage' | 'integrations'
+  | 'storage'
 
 const ADMIN_NAV: { section: string; items: { id: Tab; label: string; icon: React.ReactNode }[] }[] = [
   {
@@ -1691,17 +1634,8 @@ const ADMIN_NAV: { section: string; items: { id: Tab; label: string; icon: React
         id: 'sites', label: 'Sites',
         icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>,
       },
-    ],
-  },
-  {
-    section: 'Platform',
-    items: [
       {
-        id: 'general', label: 'General',
-        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
-      },
-      {
-        id: 'alerting-engine', label: 'Alerting Engine',
+        id: 'alerting', label: 'Alerting',
         icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>,
       },
     ],
@@ -1739,16 +1673,17 @@ const ADMIN_NAV: { section: string; items: { id: Tab; label: string; icon: React
         id: 'storage', label: 'Storage',
         icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>,
       },
-      {
-        id: 'integrations', label: 'Integrations',
-        icon: <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.59 13.51 6.83 3.98M15.41 6.51l-6.82 3.98"/></svg>,
-      },
     ],
   },
 ]
 
+// Tabs that read platform-wide data (storage stats span every tenant), so
+// only platform_admin may view/edit them.
+const PLATFORM_ONLY_TABS: Set<Tab> = new Set(['storage'])
+
 export default function AdminPage() {
   const role = useRole()
+  const { data: me } = useCurrentUser()
   const [searchParams] = useSearchParams()
   const initialTab = (searchParams.get('tab') as Tab | null) ?? 'tenant'
   const [tab, setTab] = useState<Tab>(initialTab)
@@ -1768,6 +1703,12 @@ export default function AdminPage() {
     )
   }
 
+  const isPlatformAdmin = me?.is_platform_admin ?? false
+  const nav = ADMIN_NAV
+    .map(group => ({ ...group, items: group.items.filter(i => !PLATFORM_ONLY_TABS.has(i.id) || isPlatformAdmin) }))
+    .filter(group => group.items.length > 0)
+  const activeTab: Tab = (PLATFORM_ONLY_TABS.has(tab) && !isPlatformAdmin) ? 'tenant' : tab
+
   return (
     <div className="flex h-full overflow-hidden">
       {/* Left settings nav */}
@@ -1776,7 +1717,7 @@ export default function AdminPage() {
           <h1 className="text-sm font-semibold text-slate-800">Administration</h1>
         </div>
         <nav className="flex-1 py-2">
-          {ADMIN_NAV.map(({ section, items }) => (
+          {nav.map(({ section, items }) => (
             <div key={section} className="mb-2">
               <p className="px-5 pt-3 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-widest">
                 {section}
@@ -1786,12 +1727,12 @@ export default function AdminPage() {
                   key={item.id}
                   onClick={() => setTab(item.id)}
                   className={`w-full flex items-center gap-2.5 px-5 py-2 text-sm text-left transition-colors relative ${
-                    tab === item.id
+                    activeTab === item.id
                       ? 'bg-white text-slate-800 font-medium border-r-2 border-blue-500'
                       : 'text-slate-500 hover:bg-white/70 hover:text-slate-700'
                   }`}
                 >
-                  <span className={tab === item.id ? 'text-blue-500' : 'text-slate-400'}>{item.icon}</span>
+                  <span className={activeTab === item.id ? 'text-blue-500' : 'text-slate-400'}>{item.icon}</span>
                   {item.label}
                 </button>
               ))}
@@ -1801,17 +1742,15 @@ export default function AdminPage() {
       </div>
 
       {/* Content area */}
-      <div className={`flex-1 min-w-0 bg-white ${tab === 'template' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}>
-        {tab === 'tenant'           && <TenantTab />}
-        {tab === 'sites'            && <SitesTab />}
-        {tab === 'general'          && <GeneralTab />}
-        {tab === 'alerting-engine'  && <AlertingEngineTab />}
-        {tab === 'smtp'             && <SmtpTab />}
-        {tab === 'channels'         && <ChannelsTab />}
-        {tab === 'template'         && <EmailTemplateTab />}
-        {tab === 'api-methods'      && <ApiMethodsTab />}
-        {tab === 'storage'          && <DataTab />}
-        {tab === 'integrations'     && <IntegrationsTab />}
+      <div className={`flex-1 min-w-0 bg-white ${activeTab === 'template' ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'}`}>
+        {activeTab === 'tenant'           && <TenantTab />}
+        {activeTab === 'sites'            && <SitesTab />}
+        {activeTab === 'alerting'         && <AlertingSettingsTab />}
+        {activeTab === 'smtp'             && <SmtpTab />}
+        {activeTab === 'channels'         && <ChannelsTab />}
+        {activeTab === 'template'         && <EmailTemplateTab />}
+        {activeTab === 'api-methods'      && <ApiMethodsTab />}
+        {activeTab === 'storage'          && <DataTab />}
       </div>
     </div>
   )

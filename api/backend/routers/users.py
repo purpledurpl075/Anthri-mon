@@ -6,7 +6,7 @@ from typing import Optional
 
 import bcrypt as _bcrypt
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,6 +126,7 @@ async def list_users(
 @router.post("", response_model=UserRead, status_code=201, summary="Create a user")
 async def create_user(
     body: UserCreate,
+    request: Request,
     current_user: User = Depends(require_tenant_user("tenant_admin")),
     db: AsyncSession = Depends(get_db),
 ) -> UserRead:
@@ -148,6 +149,12 @@ async def create_user(
         is_active=True,
     )
     db.add(user)
+    await db.flush()
+    from ..audit import audit as _audit
+    await _audit(db, action="create", resource_type="user",
+                 resource_id=user.id,
+                 new_value={"username": user.username, "email": user.email, "role": user.role},
+                 user=current_user, request=request)
     await db.commit()
     await db.refresh(user)
     logger.info("user_created", username=body.username, role=body.role, by=str(current_user.id))
@@ -167,10 +174,13 @@ async def get_user(
 async def update_user(
     user_id: uuid.UUID,
     body: UserUpdate,
+    request: Request,
     current_user: User = Depends(require_tenant_user("tenant_admin")),
     db: AsyncSession = Depends(get_db),
 ) -> UserRead:
     user = await _get_user(user_id, current_user.tenant_id, db)
+    before = {"role": user.role, "is_active": user.is_active, "email": user.email,
+              "full_name": user.full_name}
 
     if body.role is not None:
         if user.id == current_user.id:
@@ -194,6 +204,12 @@ async def update_user(
     if body.full_name is not None:
         user.full_name = body.full_name
 
+    after = {"role": user.role, "is_active": user.is_active, "email": user.email,
+             "full_name": user.full_name}
+    from ..audit import audit as _audit
+    await _audit(db, action="update", resource_type="user",
+                 resource_id=user.id, old_value=before, new_value=after,
+                 user=current_user, request=request)
     await db.commit()
     await db.refresh(user)
     logger.info("user_updated", target_user=str(user_id), by=str(current_user.id))
@@ -203,6 +219,7 @@ async def update_user(
 @router.delete("/{user_id}", status_code=204, response_model=None, summary="Delete a user")
 async def delete_user(
     user_id: uuid.UUID,
+    request: Request,
     current_user: User = Depends(require_tenant_user("tenant_admin")),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -211,6 +228,11 @@ async def delete_user(
     user = await _get_user(user_id, current_user.tenant_id, db)
     if user.role in ("admin", "superadmin"):
         await _last_admin_check(current_user.tenant_id, user_id, db)
+    from ..audit import audit as _audit
+    await _audit(db, action="delete", resource_type="user",
+                 resource_id=user.id,
+                 old_value={"username": user.username, "role": user.role},
+                 user=current_user, request=request)
     await db.delete(user)
     await db.commit()
     logger.info("user_deleted", target_user=str(user_id), by=str(current_user.id))
@@ -221,6 +243,7 @@ async def delete_user(
 async def reset_password(
     user_id: uuid.UUID,
     body: PasswordReset,
+    request: Request,
     current_user: User = Depends(require_tenant_user("tenant_admin")),
     db: AsyncSession = Depends(get_db),
 ) -> Response:
@@ -228,6 +251,10 @@ async def reset_password(
     if len(body.new_password) < 8:
         raise HTTPException(status_code=422, detail="Password must be at least 8 characters")
     user.password_hash = _hash(body.new_password)
+    from ..audit import audit as _audit
+    await _audit(db, action="update", resource_type="user",
+                 resource_id=user.id, new_value={"action": "password_reset", "username": user.username},
+                 user=current_user, request=request)
     await db.commit()
     logger.info("password_reset", target_user=str(user_id), by=str(current_user.id))
     return Response(status_code=204)

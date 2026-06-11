@@ -25,8 +25,21 @@ class AlertRead(BaseModel):
     acknowledged_by: Optional[uuid.UUID] = None
     resolved_at: Optional[datetime] = None
     resolved_by: Optional[uuid.UUID] = None
+    suppressed_by_alert_id: Optional[uuid.UUID] = None
+    suppressed_child_count: int = 0
+    suppressed_children: list["SuppressedChildSummary"] = []
     created_at: datetime
     updated_at: datetime
+
+
+class SuppressedChildSummary(BaseModel):
+    """Lightweight view of a child suppressed under a parent alert."""
+    id: uuid.UUID
+    title: str
+    severity: str
+    metric: Optional[str] = None
+    device_name: Optional[str] = None
+    triggered_at: datetime
 
 
 class AlertRuleCreate(BaseModel):

@@ -20,6 +20,7 @@ from .. import crypto
 from ..database import AsyncSessionLocal
 from ..models.alert import NotificationChannel, NotificationSendLog
 from ..models.settings import SystemSetting
+from .settings import get_effective_alerting_settings, load_platform_defaults
 
 if TYPE_CHECKING:
     from ..models.alert import Alert, AlertRule
@@ -145,6 +146,7 @@ def _build_ctx(alert: Alert, rule: AlertRule, resolved: bool, platform: Optional
         "alert_id":       str(alert.id),
         "platform_name":  platform.get("platform_name", "Anthrimon"),
         "base_url":       base_url,
+        "revived_child_count": int(alert_ctx.get("revived_child_count", 0)) if resolved else 0,
     }
 
 
@@ -185,14 +187,14 @@ async def dispatch(alert: Alert, rule: AlertRule, *, resolved: bool = False) -> 
                 tmpl_subject = trow.value.get("subject") if trow else None
                 tmpl_html    = trow.value.get("html")    if trow else None
 
-        prow = (await db.execute(
-            select(SystemSetting).where(SystemSetting.key == "platform")
-        )).scalar_one_or_none()
-        platform = prow.value if prow else {}
+        platform = await load_platform_defaults(db)
+        tenant_settings = await get_effective_alerting_settings(
+            db, alert.tenant_id, platform_defaults=platform,
+        )
 
-    # ── Global notification pause ──────────────────────────────────────────────
-    if platform.get("notifications_paused"):
-        paused_until = platform.get("notifications_paused_until")
+    # ── Notification pause (tenant-overridable) ─────────────────────────────────
+    if tenant_settings.get("notifications_paused"):
+        paused_until = tenant_settings.get("notifications_paused_until")
         if paused_until is None:
             logger.info("notify_skipped_paused", alert_id=str(alert.id))
             return
@@ -206,16 +208,16 @@ async def dispatch(alert: Alert, rule: AlertRule, *, resolved: bool = False) -> 
         except (ValueError, TypeError):
             pass
 
-    # ── Business hours check ───────────────────────────────────────────────────
-    if platform.get("business_hours_enabled") and not resolved:
+    # ── Business hours check (tenant-overridable) ────────────────────────────────
+    if tenant_settings.get("business_hours_enabled") and not resolved:
         try:
             import zoneinfo
             tz_name  = platform.get("timezone", "UTC")
             tz       = zoneinfo.ZoneInfo(tz_name)
             now_local = datetime.now(tz)
-            bh_start  = int(platform.get("business_hours_start", 8))
-            bh_end    = int(platform.get("business_hours_end",   18))
-            biz_days  = platform.get("business_days", [0, 1, 2, 3, 4])
+            bh_start  = int(tenant_settings.get("business_hours_start", 8))
+            bh_end    = int(tenant_settings.get("business_hours_end",   18))
+            biz_days  = tenant_settings.get("business_days", [0, 1, 2, 3, 4])
             in_hours  = now_local.weekday() in biz_days and bh_start <= now_local.hour < bh_end
             if not in_hours:
                 logger.info("notify_skipped_outside_business_hours", alert_id=str(alert.id))
@@ -318,6 +320,10 @@ async def _send_slack(webhook_url: str, ctx: dict) -> None:
         blocks.append({"type": "section", "fields": fields[:10]})
     if ctx.get("description"):
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": ctx["description"]}})
+    if ctx.get("revived_child_count"):
+        n = ctx["revived_child_count"]
+        blocks.append({"type": "section", "text": {"type": "mrkdwn",
+            "text": f":arrow_up: Re-evaluating *{n}* previously-suppressed child alert{'s' if n != 1 else ''}."}})
     if ctx.get("alert_url"):
         blocks.append({
             "type": "actions",
@@ -367,6 +373,8 @@ async def _send_webhook(url: str, secret: Optional[str], ctx: dict) -> None:
         payload["interface_name"] = ctx["interface_name"]
     if ctx["tag"] == "RESOLVED":
         payload["resolved_at"] = ctx["resolved_at"]
+        if ctx.get("revived_child_count"):
+            payload["revived_child_count"] = ctx["revived_child_count"]
     if ctx.get("alert_url"):
         payload["alert_url"] = ctx["alert_url"]
 
@@ -618,6 +626,9 @@ def _build_email(
     if resolved:
         dur_txt = f" ({duration})" if duration else ""
         plain_lines.append(f"Resolved:  {ctx['resolved_at']}{dur_txt}")
+        if ctx.get("revived_child_count"):
+            n = ctx["revived_child_count"]
+            plain_lines.append(f"Children:  re-evaluating {n} previously-suppressed child alert{'s' if n != 1 else ''}")
     plain_lines = [l for l in plain_lines if l is not None]
     if ctx["alert_url"]:
         plain_lines += ["", f"View alert: {ctx['alert_url']}"]

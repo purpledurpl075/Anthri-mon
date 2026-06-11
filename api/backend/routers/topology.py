@@ -12,10 +12,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_current_user, get_db
+from ..dependencies import (
+    get_current_principal, get_db, Principal,
+    accessible_device_ids_subquery, _tenant_device_ids, _is_tenant_wide,
+)
 from ..models.device import Device
 from ..models.interface import Interface, LLDPNeighbor, CDPNeighbor
-from ..models.tenant import User
 from ..database import AsyncSessionLocal
 
 logger = structlog.get_logger(__name__)
@@ -290,19 +292,34 @@ async def start_topology_refresh_loop(interval_seconds: int = 300) -> asyncio.Ta
     return asyncio.create_task(_loop(), name="topology-refresh-loop")
 
 
+# ── Per-principal post-filter ─────────────────────────────────────────────────
+
+def _filter_topology_for_principal(result: dict, principal: Principal, accessible_ids: set[str]) -> dict:
+    """Restrict a (tenant-wide, possibly cached) topology result to the caller's accessible devices."""
+    if _is_tenant_wide(principal):
+        return result
+    nodes = [n for n in result["nodes"] if n["id"] in accessible_ids]
+    edges = [e for e in result["edges"] if e["source"] in accessible_ids and e["target"] in accessible_ids]
+    return {"nodes": nodes, "edges": edges}
+
+
 # ── HTTP endpoints ─────────────────────────────────────────────────────────────
 
 @router.get("", summary="Network topology graph derived from LLDP/CDP neighbor data")
 async def get_topology(
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tenant_id = str(current_user.tenant_id)
+    tenant_id = str(principal.active_tenant_id)
+
+    accessible_ids: set[str] = set()
+    if not _is_tenant_wide(principal):
+        accessible_ids = set(await _tenant_device_ids(principal, db))
 
     # Fast path: return cached result immediately
     cached = _cache_get(tenant_id)
     if cached is not None:
-        return cached
+        return _filter_topology_for_principal(cached, principal, accessible_ids)
 
     # Stale or first load: check topology_links for a warm-start
     link_rows = (await db.execute(text("""
@@ -342,7 +359,7 @@ async def get_topology(
             for row in link_rows
         ]
         devices = (await db.execute(
-            select(Device).where(Device.tenant_id == current_user.tenant_id,
+            select(Device).where(Device.tenant_id == principal.active_tenant_id,
                                  Device.is_active == True)  # noqa: E712
         )).scalars().all()
         connected_ids = {e["source"] for e in edges} | {e["target"] for e in edges}
@@ -364,17 +381,18 @@ async def get_topology(
         _cache_set(tenant_id, result)
         # Kick off background refresh — next request will get fresher data
         asyncio.create_task(_refresh_topology(tenant_id))
-        return result
+        return _filter_topology_for_principal(result, principal, accessible_ids)
 
     # Truly first run — compute synchronously so the page isn't blank
     await _refresh_topology(tenant_id)
-    return _cache.get(tenant_id, (0, {"nodes": [], "edges": []}))[1]
+    result = _cache.get(tenant_id, (0, {"nodes": [], "edges": []}))[1]
+    return _filter_topology_for_principal(result, principal, accessible_ids)
 
 
 @router.get("/link-utilisation", summary="Current utilisation snapshot for a set of interfaces")
 async def get_link_utilisation_batch(
     iface_ids: str = Query(..., description="Comma-separated interface UUIDs"),
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     raw_ids = [i.strip() for i in iface_ids.split(",") if i.strip()]
@@ -393,7 +411,11 @@ async def get_link_utilisation_batch(
     rows = (await db.execute(
         select(Interface.id, Interface.device_id, Interface.if_index, Interface.speed_bps)
         .join(Device, Interface.device_id == Device.id)
-        .where(Interface.id.in_(valid_uuids), Device.tenant_id == current_user.tenant_id)
+        .where(
+            Interface.id.in_(valid_uuids),
+            Device.tenant_id == principal.active_tenant_id,
+            Device.id.in_(accessible_device_ids_subquery(principal)),
+        )
     )).all()
     if not rows:
         return {}

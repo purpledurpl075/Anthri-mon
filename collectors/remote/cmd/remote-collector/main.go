@@ -36,7 +36,20 @@ import (
 	"github.com/purpledurpl075/anthri-mon/collectors/remote/internal/tunnel"
 )
 
-const version = "0.3.6"
+const version = "0.3.18"
+
+// capabilities lists every feature this binary supports.  Sent on bootstrap
+// and on every heartbeat so the hub always reflects the running binary.
+var capabilities = []string{
+	"snmp",
+	"flow",
+	"syslog",
+	"config_backup",
+	"arista_eapi",
+	"aruba_rest",
+	"config_exec",
+	"api_probe",
+}
 
 func main() {
 	cfgPath := flag.String("config", "", "path to config file (default: /etc/anthrimon/remote-collector.yaml)")
@@ -429,7 +442,7 @@ func loadOrBootstrap(ctx context.Context, cfg *config.Config, hostname string, l
 		return nil, fmt.Errorf("ANTHRIMON_TOKEN is required for first-time bootstrap")
 	}
 
-	st, err = bootstrap.Bootstrap(cfg, hostname, version)
+	st, err = bootstrap.Bootstrap(cfg, hostname, version, capabilities)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap request: %w", err)
 	}
@@ -454,8 +467,9 @@ func heartbeatLoop(ctx context.Context, hubClient *hub.Client, ver string, start
 
 	send := func() {
 		stats := map[string]any{
-			"uptime_s": int(time.Since(startTime).Seconds()),
-			"arch":     runtime.GOARCH,
+			"uptime_s":     int(time.Since(startTime).Seconds()),
+			"arch":         runtime.GOARCH,
+			"capabilities": capabilities,
 		}
 		if err := hubClient.Heartbeat(ctx, ver, stats); err != nil {
 			logger.Warn().Err(err).Msg("heartbeat failed")

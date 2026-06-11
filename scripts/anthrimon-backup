@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""Anthrimon backup — single-file dump of Postgres + ClickHouse + configs + secrets.
+
+Usage:
+    anthrimon-backup [--out PATH] [--passphrase-env VAR] [--no-clickhouse]
+
+Defaults to `anthrimon-backup-YYYYMMDD-HHMMSS.tar.zst` in the current directory.
+If --passphrase-env points to an env var with a passphrase, the archive is
+encrypted with openssl AES-256-CBC (PBKDF2-derived key).
+
+Components covered:
+    - PostgreSQL anthrimon DB           (pg_dump, custom format)
+    - ClickHouse anthrimon DB           (native BACKUP, optional via flag)
+    - /etc/anthrimon/                   (env files, TLS, WG keys, etc.)
+    - /var/lib/anthrimon/               (config backups, snapshots)
+    - /etc/systemd/system/anthrimon-*   (service unit files)
+
+The output is a single self-describing tar.zst (or .tar.zst.enc) that can be
+copied off-box and used by anthrimon-restore on a fresh install.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+
+def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=True, **kwargs)
+
+
+def _info(msg: str) -> None:
+    print(f"[backup] {msg}", flush=True)
+
+
+def _err(msg: str) -> int:
+    print(f"[backup] ERROR: {msg}", file=sys.stderr, flush=True)
+    return 1
+
+
+def _human_size(p: Path) -> str:
+    n = p.stat().st_size
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TiB"
+
+
+def dump_postgres(work: Path, db: str = "anthrimon") -> Path:
+    """Use pg_dump custom format (-Fc) — compressed + supports parallel restore.
+
+    Connection strategy:
+      1. If DB_USER + DB_PASSWORD are in our env (the case when run by the API
+         service), connect directly as that role — no sudo needed.
+      2. Otherwise fall back to `sudo -u postgres pg_dump` (peer auth), which
+         the interactive CLI path uses.
+    """
+    out = work / "postgres.dump"
+    _info(f"Dumping PostgreSQL → {out.name}")
+
+    env_user = os.environ.get("DB_USER")
+    env_pass = os.environ.get("DB_PASSWORD")
+    env_host = os.environ.get("DB_HOST", "127.0.0.1")
+
+    if env_user and env_pass:
+        env = os.environ.copy()
+        env["PGPASSWORD"] = env_pass
+        cmd = ["pg_dump", "-Fc", "-h", env_host, "-U", env_user, "-d", db]
+        _info(f"  using DB_USER={env_user} (no sudo)")
+    else:
+        env = os.environ.copy()
+        cmd = ["sudo", "-n", "-u", "postgres", "pg_dump", "-Fc", "-d", db]
+        _info("  using sudo -u postgres (interactive credentials)")
+
+    with open(out, "wb") as fh:
+        subprocess.run(cmd, stdout=fh, env=env, check=True)
+    _info(f"  postgres.dump = {_human_size(out)}")
+    return out
+
+
+def dump_clickhouse(work: Path, db: str = "default", skip_flow_history: bool = False) -> Path | None:
+    """Dump each ClickHouse table individually using Native format via stdout.
+
+    Why not the BACKUP/RESTORE command?  It writes to a path on the CH server
+    and only allows directories listed in backups.allowed_path — adjusting that
+    requires editing config.xml + restarting CH, which makes the backup tool
+    non-portable.  Per-table Native dumps work on any CH version without server
+    reconfiguration.
+
+    The on-disk layout is:
+        clickhouse/
+            schema.sql                        # CREATE DATABASE
+            tables/<name>.create.sql          # CREATE TABLE per table
+            tables/<name>.native              # binary Native-format data
+            tables.list                       # ordered list for restore
+    """
+    out_dir = work / "clickhouse"
+    out_dir.mkdir(exist_ok=True)
+    tables_dir = out_dir / "tables"
+    tables_dir.mkdir(exist_ok=True)
+    _info(f"Backing up ClickHouse → {out_dir.name}/")
+
+    # Database probe
+    try:
+        _run(["clickhouse-client", "--query", f"EXISTS DATABASE {db}"],
+             capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        _info(f"  ClickHouse unavailable: {exc}.  Skipping. "
+              f"Flow/syslog/trap history will need to be re-collected on restore.")
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return None
+
+    try:
+        # CREATE DATABASE
+        with open(out_dir / "schema.sql", "w") as fh:
+            subprocess.run(["clickhouse-client", "--query",
+                            f"SHOW CREATE DATABASE {db}"],
+                           stdout=fh, check=True)
+        # Table list
+        tables_raw = subprocess.run(
+            ["clickhouse-client", "--query", f"SHOW TABLES FROM {db}"],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        tables = [t for t in tables_raw if t and not t.startswith(".inner")]
+        (out_dir / "tables.list").write_text("\n".join(tables) + "\n")
+
+        # Tables whose data the operator probably doesn't want to ship around:
+        # high-volume history that re-collects from the wire.
+        BULK_DATA_TABLES = {"flow_records", "syslog_messages"}
+        # Materialized views auto-populate from their source tables, so we
+        # only need their DDL, never their data.
+        def is_mv(name: str) -> bool: return name.startswith("mv_") or name.startswith("flow_agg") or name.startswith("syslog_agg")
+
+        total_bytes = 0
+        for t in tables:
+            # CREATE TABLE
+            with open(tables_dir / f"{t}.create.sql", "w") as fh:
+                subprocess.run(["clickhouse-client", "--query",
+                                f"SHOW CREATE TABLE {db}.{t}"],
+                               stdout=fh, check=True)
+
+            # Decide whether to skip the data dump
+            skip_data = is_mv(t)
+            if skip_flow_history and t in BULK_DATA_TABLES:
+                skip_data = True
+
+            # Data in Native format
+            data_path = tables_dir / f"{t}.native"
+            if skip_data:
+                data_path.touch()  # empty marker — schema only
+                _info(f"  {t}: schema only")
+                continue
+            with open(data_path, "wb") as fh:
+                subprocess.run(["clickhouse-client", "--query",
+                                f"SELECT * FROM {db}.{t} FORMAT Native"],
+                               stdout=fh, check=True)
+            total_bytes += data_path.stat().st_size
+            _info(f"  {t}: {data_path.stat().st_size / (1024**2):.1f} MiB")
+    except subprocess.CalledProcessError as exc:
+        _info(f"  ClickHouse dump failed mid-way: {exc}.  Skipping CH data.")
+        shutil.rmtree(out_dir, ignore_errors=True)
+        return None
+
+    _info(f"  clickhouse total = {total_bytes / (1024**2):.1f} MiB")
+    return out_dir
+
+
+def archive_dir(work: Path, src: Path, name: str) -> Path | None:
+    """tar a directory via `sudo tar -cf - … | …` so we can read root-owned
+    files (TLS keys, .env files) without needing the script itself to be root."""
+    if not src.exists():
+        _info(f"  {src} not present — skipping {name}")
+        return None
+    out = work / f"{name}.tar"
+    _info(f"Archiving {src} → {out.name}")
+    with open(out, "wb") as fh:
+        subprocess.run(
+            ["sudo", "-n", "tar", "-cf", "-", "-C", str(src.parent), src.name],
+            stdout=fh, check=True,
+        )
+    _info(f"  {out.name} = {_human_size(out)}")
+    return out
+
+
+def archive_systemd_units(work: Path) -> Path | None:
+    units = list(Path("/etc/systemd/system").glob("anthrimon-*"))
+    units += list(Path("/etc/systemd/system").glob("*.service.d/anthrimon-*.conf"))
+    if not units:
+        _info("  no anthrimon-* systemd units found — skipping")
+        return None
+    out = work / "systemd.tar"
+    _info(f"Archiving {len(units)} systemd unit(s) → {out.name}")
+    # sudo tar so we can read root-owned drop-ins
+    rel_paths = [str(u.relative_to("/")) for u in units]
+    with open(out, "wb") as fh:
+        subprocess.run(
+            ["sudo", "-n", "tar", "-cf", "-", "-C", "/", *rel_paths],
+            stdout=fh, check=True,
+        )
+    _info(f"  systemd.tar = {_human_size(out)}")
+    return out
+
+
+def write_manifest(work: Path, components: dict) -> Path:
+    manifest = {
+        "backup_format_version": 1,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "hostname":   os.uname().nodename,
+        "components": components,
+    }
+    out = work / "MANIFEST.json"
+    out.write_text(json.dumps(manifest, indent=2))
+    return out
+
+
+def bundle(work: Path, out_path: Path, passphrase: str | None, zstd_level: int) -> None:
+    """tar + zstd the staged dir, then optionally pipe through openssl enc."""
+    _info(f"Bundling → {out_path}  (zstd -{zstd_level})")
+    zstd_args = ["zstd", "-T0", f"-{zstd_level}"]
+    if zstd_level >= 19:
+        zstd_args.append("--long")
+    if passphrase:
+        out_path = out_path.with_suffix(out_path.suffix + ".enc")
+        # tar | zstd | openssl enc -aes-256-cbc -pbkdf2 -pass env:VAR
+        tar_proc = subprocess.Popen(
+            ["tar", "-cf", "-", "-C", str(work), "."],
+            stdout=subprocess.PIPE,
+        )
+        zstd_proc = subprocess.Popen(
+            zstd_args,
+            stdin=tar_proc.stdout, stdout=subprocess.PIPE,
+        )
+        assert tar_proc.stdout is not None
+        tar_proc.stdout.close()
+        env = os.environ.copy()
+        env["_ANT_BKP_PASS"] = passphrase
+        with open(out_path, "wb") as fh:
+            ssl_proc = subprocess.Popen(
+                ["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-iter", "200000",
+                 "-pass", "env:_ANT_BKP_PASS"],
+                stdin=zstd_proc.stdout, stdout=fh, env=env,
+            )
+            assert zstd_proc.stdout is not None
+            zstd_proc.stdout.close()
+            ssl_proc.wait()
+            zstd_proc.wait()
+            tar_proc.wait()
+            if any(p.returncode != 0 for p in (tar_proc, zstd_proc, ssl_proc)):
+                raise RuntimeError("bundle pipeline failed")
+    else:
+        tar_proc = subprocess.Popen(
+            ["tar", "-cf", "-", "-C", str(work), "."],
+            stdout=subprocess.PIPE,
+        )
+        with open(out_path, "wb") as fh:
+            zstd_proc = subprocess.Popen(
+                zstd_args,
+                stdin=tar_proc.stdout, stdout=fh,
+            )
+            assert tar_proc.stdout is not None
+            tar_proc.stdout.close()
+            zstd_proc.wait()
+            tar_proc.wait()
+            if any(p.returncode != 0 for p in (tar_proc, zstd_proc)):
+                raise RuntimeError("bundle pipeline failed")
+
+    _info(f"  bundle = {_human_size(out_path)}")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    default_out = f"anthrimon-backup-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}.tar.zst"
+    ap.add_argument("--out", default=default_out, help="output file (default: %(default)s)")
+    ap.add_argument("--passphrase-env", default=None,
+                    help="env var holding a passphrase for AES-256 encryption. "
+                         "If omitted, the bundle is unencrypted.")
+    ap.add_argument("--no-clickhouse", action="store_true",
+                    help="skip ClickHouse backup")
+    ap.add_argument("--clickhouse-db", default="default",
+                    help="ClickHouse database name (default: %(default)s)")
+    ap.add_argument("--no-flow-history", action="store_true",
+                    help="skip flow_records + materialized views — keep just schema "
+                         "(big speed/size win on busy collectors; data re-collects from "
+                         "the wire)")
+    ap.add_argument("--no-systemd", action="store_true",
+                    help="skip systemd unit backup")
+    ap.add_argument("--compression", type=int, default=3, choices=range(1, 20),
+                    metavar="LEVEL", help="zstd compression level 1-19 (default: 3)")
+    args = ap.parse_args()
+
+    passphrase = None
+    if args.passphrase_env:
+        passphrase = os.environ.get(args.passphrase_env)
+        if not passphrase:
+            return _err(f"--passphrase-env={args.passphrase_env} set but the variable is empty")
+
+    out_path = Path(args.out).resolve()
+    if out_path.exists():
+        return _err(f"output file {out_path} already exists — refusing to overwrite")
+
+    with tempfile.TemporaryDirectory(prefix="anthrimon-backup-") as work_str:
+        work = Path(work_str)
+        # Make the work dir world-readable/searchable so other-user processes
+        # (postgres, clickhouse) can read+write their own outputs inside it.
+        work.chmod(0o755)
+        components: dict = {}
+        try:
+            f = dump_postgres(work)
+            components["postgres"] = {"file": f.name, "format": "pg_dump custom"}
+        except subprocess.CalledProcessError as exc:
+            return _err(f"pg_dump failed: {exc}")
+
+        if not args.no_clickhouse:
+            ch = dump_clickhouse(work, db=args.clickhouse_db,
+                                 skip_flow_history=args.no_flow_history)
+            if ch:
+                components["clickhouse"] = {
+                    "dir":      ch.name,
+                    "format":   "per-table Native",
+                    "database": args.clickhouse_db,
+                    "flow_history_excluded": args.no_flow_history,
+                }
+
+        a = archive_dir(work, Path("/etc/anthrimon"),     "etc-anthrimon")
+        if a: components["etc_anthrimon"] = {"file": a.name}
+        a = archive_dir(work, Path("/var/lib/anthrimon"), "var-anthrimon")
+        if a: components["var_anthrimon"] = {"file": a.name}
+        if not args.no_systemd:
+            a = archive_systemd_units(work)
+            if a: components["systemd"] = {"file": a.name}
+
+        write_manifest(work, components)
+
+        try:
+            bundle(work, out_path, passphrase, zstd_level=args.compression)
+        except Exception as exc:
+            return _err(f"bundling failed: {exc}")
+
+    _info(f"DONE → {out_path}")
+    if passphrase:
+        _info(f"  encrypted with AES-256-CBC + PBKDF2 (passphrase from ${args.passphrase_env})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

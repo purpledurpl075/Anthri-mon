@@ -4,7 +4,11 @@ import { Link } from 'react-router-dom'
 import {
   fetchPolicies, createPolicy, updatePolicy, deletePolicy, runPolicy,
   fetchComplianceResults, deployConfigMulti, previewDeployTargets,
+  fetchGoldenConfigs, createGoldenConfig, updateGoldenConfig, deleteGoldenConfig,
+  runGoldenConfig, fetchGoldenConfigResults, fetchBackups, fetchBackup,
+  fetchGitStatus, setGitRemote, removeGitRemote, pushGitArchive,
   type CompliancePolicy, type ComplianceRule, type MultiDeployDeviceResult,
+  type GoldenConfig, type GoldenConfigResult,
 } from '../api/config'
 import { fetchDevices } from '../api/devices'
 import { useRole, hasRole } from '../hooks/useCurrentUser'
@@ -197,6 +201,12 @@ function formatAge(iso: string) {
   return `${Math.floor(secs / 86400)}d ago`
 }
 
+function scoreStyle(score: number) {
+  if (score >= 90) return { badge: 'bg-green-100 text-green-700', bar: '#16a34a' }
+  if (score >= 70) return { badge: 'bg-yellow-100 text-yellow-700', bar: '#ca8a04' }
+  return { badge: 'bg-red-100 text-red-700', bar: '#dc2626' }
+}
+
 // ── Compliance result row ─────────────────────────────────────────────────────
 
 function ResultRow({ result }: { result: ReturnType<typeof useQuery<any>>['data'] extends any[] ? ReturnType<typeof useQuery<any>>['data'][number] : never }) {
@@ -241,6 +251,53 @@ function ResultRow({ result }: { result: ReturnType<typeof useQuery<any>>['data'
               </div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Golden config drift result row ────────────────────────────────────────────
+
+function GoldenResultRow({ result }: { result: GoldenConfigResult }) {
+  const [open, setOpen] = useState(false)
+  const score = Number(result.score)
+  const style = scoreStyle(score)
+
+  return (
+    <div className={`border-b border-slate-50 last:border-0 ${score < 70 ? 'bg-red-50/30' : ''}`}>
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition-colors text-left">
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${style.badge}`}>
+          {score.toFixed(0)}%
+        </span>
+        <Link to={`/devices/${result.device_id}`} onClick={e => e.stopPropagation()}
+          className="text-sm font-medium text-slate-700 hover:text-blue-600 transition-colors w-36 truncate shrink-0">
+          {result.device_name}
+        </Link>
+        <span className="text-xs text-slate-600 flex-1 truncate">{result.golden_config_name}</span>
+        <div className="w-24 h-1.5 rounded-full bg-slate-100 overflow-hidden shrink-0">
+          <div className="h-full rounded-full" style={{ width: `${score}%`, backgroundColor: style.bar }} />
+        </div>
+        <span className="text-xs text-slate-400 shrink-0 w-24 text-right">{result.matched_lines}/{result.total_lines} lines</span>
+        <span className="text-xs text-slate-400 shrink-0">{formatAge(result.checked_at)}</span>
+        <svg className={`w-3.5 h-3.5 text-slate-300 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+          fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+      {open && (
+        <div className="px-5 pb-4">
+          {result.missing_lines.length === 0 ? (
+            <p className="text-xs text-green-600 px-3 py-2">All golden lines present.</p>
+          ) : (
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">Missing lines ({result.missing_lines.length})</p>
+              {result.missing_lines.map((line, i) => (
+                <div key={i} className="font-mono text-[11px] text-red-700 bg-red-50 px-3 py-1.5 rounded-lg whitespace-pre-wrap">
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -480,9 +537,140 @@ function PolicyForm({ initial, onSave, onCancel, saving }: PolicyFormProps) {
   )
 }
 
+// ── Golden config form ────────────────────────────────────────────────────────
+
+interface GoldenConfigFormProps {
+  initial?: Partial<GoldenConfig>
+  onSave: (data: Partial<GoldenConfig>) => void
+  onCancel: () => void
+  saving: boolean
+}
+
+function GoldenConfigForm({ initial, onSave, onCancel, saving }: GoldenConfigFormProps) {
+  const [name,          setName]          = useState(initial?.name ?? '')
+  const [description,   setDescription]   = useState(initial?.description ?? '')
+  const [templateText,  setTemplateText]  = useState(initial?.template_text ?? '')
+  const [targetVendors, setTargetVendors] = useState<string[]>((initial?.device_selector as any)?.vendors ?? [])
+  const [loadDeviceId,  setLoadDeviceId]  = useState('')
+  const [loading,       setLoading]       = useState(false)
+
+  const { data: devicesResp } = useQuery({ queryKey: ['devices-all'], queryFn: () => fetchDevices({ limit: 500 }) })
+  const allDevices: any[] = (devicesResp as any)?.items ?? devicesResp ?? []
+  const fleetVendors = useMemo(() =>
+    [...new Set(allDevices.map((d: any) => d.vendor).filter(Boolean) as string[])].sort()
+  , [allDevices])
+
+  const toggleTargetVendor = (v: string) =>
+    setTargetVendors(vs => vs.includes(v) ? vs.filter(x => x !== v) : [...vs, v])
+
+  const loadFromDevice = async () => {
+    if (!loadDeviceId) return
+    setLoading(true)
+    try {
+      const backups = await fetchBackups(loadDeviceId, 1)
+      if (backups.length === 0) return
+      const full = await fetchBackup(backups[0].id)
+      setTemplateText(full.config_text)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const inputCls = "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+  const lineCount = templateText.split('\n').filter(l => {
+    const t = l.trim()
+    return t && !t.startsWith('!') && !t.startsWith('#')
+  }).length
+
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1">Name *</label>
+          <input value={name} onChange={e => setName(e.target.value)} className={inputCls} placeholder="Arista leaf baseline" />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1">Description</label>
+          <input value={description} onChange={e => setDescription(e.target.value)} className={inputCls} placeholder="Optional description" />
+        </div>
+      </div>
+
+      {/* Applies to */}
+      {fleetVendors.length > 0 && (
+        <div>
+          <label className="block text-xs font-medium text-slate-600 mb-1.5">Applies to</label>
+          <div className="flex flex-wrap gap-1.5">
+            <button type="button" onClick={() => setTargetVendors([])}
+              className={`px-2.5 py-1 rounded-lg text-xs border transition-colors ${
+                targetVendors.length === 0
+                  ? 'bg-slate-800 text-white border-slate-800'
+                  : 'border-slate-200 text-slate-500 hover:border-slate-400 hover:text-slate-700'
+              }`}>
+              All devices
+            </button>
+            {fleetVendors.map(v => (
+              <button key={v} type="button" onClick={() => toggleTargetVendor(v)}
+                className={`px-2.5 py-1 rounded-lg text-xs border capitalize transition-colors ${
+                  targetVendors.includes(v)
+                    ? 'bg-slate-800 text-white border-slate-800'
+                    : 'border-slate-200 text-slate-500 hover:border-slate-400 hover:text-slate-700'
+                }`}>
+                {v}
+              </button>
+            ))}
+          </div>
+          {targetVendors.length > 0 && (
+            <p className="text-[10px] text-slate-400 mt-1">Only evaluated against {targetVendors.join(', ')} devices</p>
+          )}
+        </div>
+      )}
+
+      {/* Load from device */}
+      <div className="flex items-end gap-2">
+        <div className="flex-1">
+          <label className="block text-xs font-medium text-slate-600 mb-1">Load template from a device's latest backup</label>
+          <select value={loadDeviceId} onChange={e => setLoadDeviceId(e.target.value)} className={inputCls}>
+            <option value="">Select a device…</option>
+            {allDevices.map((d: any) => <option key={d.id} value={d.id}>{d.fqdn ?? d.hostname}</option>)}
+          </select>
+        </div>
+        <button type="button" onClick={loadFromDevice} disabled={!loadDeviceId || loading}
+          className="px-3 py-2 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50 shrink-0">
+          {loading ? 'Loading…' : 'Load'}
+        </button>
+      </div>
+
+      {/* Template */}
+      <div>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-xs font-medium text-slate-600">Golden template</label>
+          <span className="text-[10px] text-slate-400">{lineCount} line{lineCount !== 1 ? 's' : ''} · {'{{var}}'} placeholders supported (hostname, mgmt_ip, vendor, device_type, fqdn)</span>
+        </div>
+        <textarea value={templateText} onChange={e => setTemplateText(e.target.value)}
+          spellCheck={false} rows={14}
+          placeholder={'ntp server {{ntp_server}}\nlogging host 10.0.0.5\n!\n# Lines starting with ! or # are ignored'}
+          className="w-full border border-slate-200 rounded-xl px-4 py-3 font-mono text-xs bg-slate-950 text-green-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-y leading-relaxed" />
+      </div>
+
+      <div className="flex justify-end gap-2 pt-1">
+        <button onClick={onCancel} className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-xl transition-colors">Cancel</button>
+        <button
+          onClick={() => {
+            const device_selector = targetVendors.length > 0 ? { vendors: targetVendors } : null
+            onSave({ name, description: description || undefined, template_text: templateText, is_enabled: true, device_selector })
+          }}
+          disabled={saving || !name}
+          className="px-4 py-2 text-sm font-medium bg-slate-800 text-white rounded-xl hover:bg-slate-700 transition-colors disabled:opacity-50">
+          {saving ? 'Saving…' : 'Save golden config'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-type View = 'compliance' | 'policies' | 'deploy'
+type View = 'compliance' | 'policies' | 'deploy' | 'golden' | 'git'
 
 export default function ConfigPage() {
   const qc = useQueryClient()
@@ -494,6 +682,11 @@ export default function ConfigPage() {
   const [confirmDel,  setConfirmDel]  = useState<string | null>(null)
   const [runResult,   setRunResult]   = useState<Record<string, number> | null>(null)
 
+  const [showGoldenForm,   setShowGoldenForm]   = useState(false)
+  const [editGolden,       setEditGolden]       = useState<GoldenConfig | null>(null)
+  const [confirmDelGolden, setConfirmDelGolden] = useState<string | null>(null)
+  const [goldenRunResult,  setGoldenRunResult]  = useState<{ id: string; evaluated: number; skipped: number; avg_score: number | null } | null>(null)
+
   const { data: results = [], isLoading: resultsLoading } = useQuery({
     queryKey: ['compliance-results'],
     queryFn:  () => fetchComplianceResults(),
@@ -503,6 +696,17 @@ export default function ConfigPage() {
   const { data: policies = [], isLoading: policiesLoading } = useQuery({
     queryKey: ['compliance-policies'],
     queryFn:  fetchPolicies,
+  })
+
+  const { data: goldenConfigs = [], isLoading: goldenLoading } = useQuery({
+    queryKey: ['golden-configs'],
+    queryFn:  fetchGoldenConfigs,
+  })
+
+  const { data: goldenResults = [], isLoading: goldenResultsLoading } = useQuery({
+    queryKey: ['golden-config-results'],
+    queryFn:  () => fetchGoldenConfigResults(),
+    refetchInterval: 60_000,
   })
 
   const createMut = useMutation({
@@ -529,8 +733,37 @@ export default function ConfigPage() {
     },
   })
 
+  const createGoldenMut = useMutation({
+    mutationFn: createGoldenConfig,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['golden-configs'] }); setShowGoldenForm(false) },
+  })
+
+  const updateGoldenMut = useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Partial<GoldenConfig> }) => updateGoldenConfig(id, data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['golden-configs'] }); setEditGolden(null) },
+  })
+
+  const deleteGoldenMut = useMutation({
+    mutationFn: deleteGoldenConfig,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['golden-configs'] })
+      qc.invalidateQueries({ queryKey: ['golden-config-results'] })
+      setConfirmDelGolden(null)
+    },
+  })
+
+  const runGoldenMut = useMutation({
+    mutationFn: runGoldenConfig,
+    onSuccess: (data, id) => {
+      qc.invalidateQueries({ queryKey: ['golden-config-results'] })
+      setGoldenRunResult({ id, ...data })
+      setTimeout(() => setGoldenRunResult(null), 5000)
+    },
+  })
+
   const failCount = results.filter(r => r.status === 'fail').length
   const passCount = results.filter(r => r.status === 'pass').length
+  const driftCount = goldenResults.filter(r => Number(r.score) < 100).length
 
   const NAV_ITEMS: { id: View; label: string; desc: string; icon: React.ReactNode }[] = [
     {
@@ -560,6 +793,27 @@ export default function ConfigPage() {
       icon: (
         <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
           <path d="M4 16v1a3 3 0 0 0 3 3h10a3 3 0 0 0 3-3v-1m-4-8-4-4m0 0L8 8m4-4v12"/>
+        </svg>
+      ),
+    },
+    {
+      id: 'golden',
+      label: 'Golden Config',
+      desc: 'Drift score against a baseline template',
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5.586a1 1 0 0 1 .707.293l5.414 5.414a1 1 0 0 1 .293.707V19a2 2 0 0 1-2 2z"/>
+        </svg>
+      ),
+    },
+    {
+      id: 'git',
+      label: 'Git Archive',
+      desc: 'Version-controlled config history',
+      icon: (
+        <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+          <circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="6" r="2.5"/>
+          <path d="M6 8.5v7M8.5 6H14a4 4 0 0 1 4 4v5.5"/>
         </svg>
       ),
     },
@@ -598,6 +852,9 @@ export default function ConfigPage() {
                       {item.id === 'compliance' && failCount > 0 && (
                         <span className="bg-red-500 text-white text-[9px] font-bold rounded-full px-1.5 leading-4">{failCount}</span>
                       )}
+                      {item.id === 'golden' && driftCount > 0 && (
+                        <span className="bg-amber-500 text-white text-[9px] font-bold rounded-full px-1.5 leading-4">{driftCount}</span>
+                      )}
                     </span>
                     <span className="text-[10px] text-slate-400 mt-0.5 leading-tight font-normal">{item.desc}</span>
                   </span>
@@ -626,11 +883,24 @@ export default function ConfigPage() {
                 Ran: {runResult.pass ?? 0} pass · {runResult.fail ?? 0} fail · {runResult.skip ?? 0} skip
               </div>
             )}
+            {goldenRunResult && (
+              <div className="text-xs text-slate-600 bg-slate-100 px-3 py-1 rounded-lg">
+                Ran: {goldenRunResult.evaluated} evaluated · {goldenRunResult.skipped} skipped
+                {goldenRunResult.avg_score !== null && <> · avg {goldenRunResult.avg_score.toFixed(0)}%</>}
+              </div>
+            )}
             {canEdit && view === 'policies' && (
               <button onClick={() => setShowForm(true)}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors">
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
                 New policy
+              </button>
+            )}
+            {canEdit && view === 'golden' && (
+              <button onClick={() => setShowGoldenForm(true)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 text-white text-xs font-medium rounded-xl hover:bg-slate-700 transition-colors">
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+                New golden config
               </button>
             )}
           </div>
@@ -770,6 +1040,127 @@ export default function ConfigPage() {
               </div>
             </>
           )}
+
+          {view === 'golden' && (
+            <>
+              {/* Create form */}
+              {showGoldenForm && (
+                <div className="bg-white rounded-2xl border border-slate-200 p-6 mb-5">
+                  <h3 className="text-sm font-semibold text-slate-800 mb-4">New golden config</h3>
+                  <GoldenConfigForm
+                    onSave={data => createGoldenMut.mutate(data)}
+                    onCancel={() => setShowGoldenForm(false)}
+                    saving={createGoldenMut.isPending}
+                  />
+                </div>
+              )}
+
+              {/* Edit form */}
+              {editGolden && (
+                <div className="bg-white rounded-2xl border border-blue-200 p-6 mb-5">
+                  <h3 className="text-sm font-semibold text-slate-800 mb-4">Edit — {editGolden.name}</h3>
+                  <GoldenConfigForm
+                    initial={editGolden}
+                    onSave={data => updateGoldenMut.mutate({ id: editGolden.id, data })}
+                    onCancel={() => setEditGolden(null)}
+                    saving={updateGoldenMut.isPending}
+                  />
+                </div>
+              )}
+
+              {/* Golden config list */}
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden mb-6">
+                <div className="px-5 py-3.5 border-b border-slate-100">
+                  <h2 className="text-sm font-semibold text-slate-800">Golden configs ({goldenConfigs.length})</h2>
+                </div>
+                {goldenLoading ? (
+                  <div className="px-5 py-8 text-center text-sm text-slate-400">Loading…</div>
+                ) : goldenConfigs.length === 0 ? (
+                  <div className="px-5 py-12 text-center">
+                    <p className="text-sm text-slate-400">No golden configs yet</p>
+                    {canEdit && (
+                      <button onClick={() => setShowGoldenForm(true)} className="mt-2 text-sm text-blue-600 hover:underline">
+                        Create your first golden config
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-50">
+                    {goldenConfigs.map(g => {
+                      const lineCount = g.template_text.split('\n').filter(l => {
+                        const t = l.trim()
+                        return t && !t.startsWith('!') && !t.startsWith('#')
+                      }).length
+                      return (
+                        <div key={g.id} className="flex items-center gap-3 px-5 py-3.5 hover:bg-slate-50 transition-colors">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium text-slate-800">{g.name}</span>
+                              {!g.is_enabled && <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">disabled</span>}
+                            </div>
+                            <p className="text-xs text-slate-400 mt-0.5">
+                              {lineCount} line{lineCount !== 1 ? 's' : ''}
+                              {(g.device_selector as any)?.vendors?.length > 0 && (
+                                <span className="ml-1.5 text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded capitalize">
+                                  {(g.device_selector as any).vendors.join(', ')}
+                                </span>
+                              )}
+                              {g.description ? ` · ${g.description}` : ''}
+                            </p>
+                          </div>
+                          {canEdit && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button onClick={() => runGoldenMut.mutate(g.id)} disabled={runGoldenMut.isPending}
+                                className="px-2.5 py-1 text-xs text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors disabled:opacity-50">
+                                {runGoldenMut.isPending ? 'Running…' : 'Run'}
+                              </button>
+                              <button onClick={() => setEditGolden(g)}
+                                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors">
+                                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                              </button>
+                              {confirmDelGolden === g.id ? (
+                                <>
+                                  <button onClick={() => deleteGoldenMut.mutate(g.id)} className="text-xs text-red-600 hover:underline font-medium">Confirm</button>
+                                  <button onClick={() => setConfirmDelGolden(null)} className="text-xs text-slate-400 hover:underline ml-1">Cancel</button>
+                                </>
+                              ) : (
+                                <button onClick={() => setConfirmDelGolden(g.id)}
+                                  className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
+                                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3M4 7h16"/></svg>
+                                </button>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Drift results table */}
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+                  <h2 className="text-sm font-semibold text-slate-800">Drift results</h2>
+                  <span className="text-xs text-slate-400">{goldenResults.length} checks</span>
+                </div>
+                {goldenResultsLoading ? (
+                  <div className="px-5 py-8 text-center text-sm text-slate-400">Loading…</div>
+                ) : goldenResults.length === 0 ? (
+                  <div className="px-5 py-12 text-center">
+                    <p className="text-sm text-slate-400">No drift results yet</p>
+                    <p className="text-xs text-slate-300 mt-1">Create a golden config and run it, or wait for the next collection cycle</p>
+                  </div>
+                ) : (
+                  <div>
+                    {goldenResults.map(r => <GoldenResultRow key={r.id} result={r} />)}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {view === 'git' && <GitArchiveTab />}
 
           {view === 'deploy' && <MultiDeployTab />}
         </div>
@@ -998,6 +1389,124 @@ function MultiDeployTab() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ── Git archive tab ───────────────────────────────────────────────────────────
+
+function GitArchiveTab() {
+  const qc = useQueryClient()
+  const role    = useRole()
+  const canEdit = hasRole(role, 'admin')
+  const [remoteUrl, setRemoteUrl] = useState('')
+  const [branch, setBranch]       = useState('main')
+  const [pushResult, setPushResult] = useState<{ ok: boolean; error: string | null } | null>(null)
+
+  const { data: gitStatus, isLoading } = useQuery({
+    queryKey: ['git-status'],
+    queryFn:  fetchGitStatus,
+    refetchInterval: 30_000,
+  })
+
+  const setRemoteMut = useMutation({
+    mutationFn: () => setGitRemote(remoteUrl, branch || 'main'),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['git-status'] }); setRemoteUrl('') },
+  })
+
+  const removeRemoteMut = useMutation({
+    mutationFn: removeGitRemote,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['git-status'] }),
+  })
+
+  const pushMut = useMutation({
+    mutationFn: pushGitArchive,
+    onSuccess: (data) => {
+      setPushResult(data)
+      qc.invalidateQueries({ queryKey: ['git-status'] })
+      setTimeout(() => setPushResult(null), 8000)
+    },
+  })
+
+  const inputCls = "w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+
+  if (isLoading) return <div className="text-sm text-slate-400 text-center py-8">Loading…</div>
+
+  return (
+    <div className="max-w-2xl space-y-5">
+      {/* Repo status */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-slate-800">Repository status</h3>
+        {!gitStatus?.exists ? (
+          <p className="text-xs text-slate-400">No commits yet — the archive repo is created automatically when the first config backup is collected.</p>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <p className="text-slate-400">Commits</p>
+              <p className="text-slate-800 font-medium">{gitStatus.commit_count}</p>
+            </div>
+            <div>
+              <p className="text-slate-400">Branch</p>
+              <p className="text-slate-800 font-medium">{gitStatus.branch}</p>
+            </div>
+            {gitStatus.last_commit && (
+              <div className="col-span-2">
+                <p className="text-slate-400">Last commit</p>
+                <p className="text-slate-800 font-mono text-[11px] mt-0.5">{gitStatus.last_commit.hash.slice(0, 10)} · {gitStatus.last_commit.subject}</p>
+                <p className="text-slate-400 text-[10px] mt-0.5">{new Date(gitStatus.last_commit.date).toLocaleString()}</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Remote */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+        <h3 className="text-sm font-semibold text-slate-800">Remote</h3>
+        {gitStatus?.remote_configured ? (
+          <div className="space-y-2">
+            <p className="text-xs text-slate-600 font-mono break-all">{gitStatus.remote_url_masked}</p>
+            {gitStatus.last_push_at && (
+              <p className={`text-xs ${gitStatus.last_push_ok === false ? 'text-red-500' : 'text-green-600'}`}>
+                Last push {formatAge(gitStatus.last_push_at)}{gitStatus.last_push_ok === false ? ' — failed' : ''}
+              </p>
+            )}
+            {gitStatus.last_push_error && (
+              <p className="text-xs text-red-500">{gitStatus.last_push_error}</p>
+            )}
+            {pushResult && (
+              <p className={`text-xs ${pushResult.ok ? 'text-green-600' : 'text-red-500'}`}>
+                {pushResult.ok ? 'Push succeeded' : `Push failed: ${pushResult.error}`}
+              </p>
+            )}
+            {canEdit && (
+              <div className="flex gap-2 pt-1">
+                <button onClick={() => pushMut.mutate()} disabled={pushMut.isPending}
+                  className="px-3 py-1.5 text-xs bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors disabled:opacity-50">
+                  {pushMut.isPending ? 'Pushing…' : 'Push now'}
+                </button>
+                <button onClick={() => removeRemoteMut.mutate()} disabled={removeRemoteMut.isPending}
+                  className="px-3 py-1.5 text-xs text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors disabled:opacity-50">
+                  Remove remote
+                </button>
+              </div>
+            )}
+          </div>
+        ) : canEdit ? (
+          <div className="space-y-2">
+            <p className="text-xs text-slate-400">Mirror the config archive to a remote git repository (e.g. GitHub, GitLab, or a bare repo on another server).</p>
+            <input value={remoteUrl} onChange={e => setRemoteUrl(e.target.value)} className={inputCls}
+              placeholder="https://user:token@github.com/org/configs.git" />
+            <input value={branch} onChange={e => setBranch(e.target.value)} className={inputCls} placeholder="main" />
+            <button onClick={() => setRemoteMut.mutate()} disabled={!remoteUrl.trim() || setRemoteMut.isPending}
+              className="px-3 py-1.5 text-xs bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors disabled:opacity-50">
+              {setRemoteMut.isPending ? 'Saving…' : 'Save remote'}
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400">No remote configured.</p>
+        )}
+      </div>
     </div>
   )
 }

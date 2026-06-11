@@ -186,6 +186,23 @@ export default function AlertsPage() {
                     <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize ${STATUS_STYLE[a.status] ?? ''}`}>
                       {a.status}
                     </span>
+                    {a.suppressed_by_alert_id && (
+                      <span
+                        onClick={e => { e.stopPropagation(); navigate(`/alerts/${a.suppressed_by_alert_id}`) }}
+                        className="text-[10px] font-medium text-slate-500 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-full px-2 py-0.5 transition-colors"
+                        title="Suppressed because a parent alert is the root cause — click to view"
+                      >
+                        ↑ parent
+                      </span>
+                    )}
+                    {a.suppressed_child_count > 0 && (
+                      <span
+                        className="text-[10px] font-medium text-slate-500 bg-slate-100 border border-slate-200 rounded-full px-2 py-0.5"
+                        title={`Suppressing ${a.suppressed_child_count} child alert${a.suppressed_child_count === 1 ? '' : 's'} as root cause`}
+                      >
+                        ↓ {a.suppressed_child_count}
+                      </span>
+                    )}
                     <span className="text-xs text-slate-400 w-16 text-right">{timeAgo(a.triggered_at)}</span>
                   </div>
 

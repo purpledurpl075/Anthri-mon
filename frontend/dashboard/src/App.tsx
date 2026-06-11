@@ -25,6 +25,10 @@ import WikiPage from './pages/WikiPage'
 import ClientPage from './pages/ClientPage'
 import PlatformPage from './pages/PlatformPage'
 import UsersPage from './pages/UsersPage'
+import AuditPage from './pages/AuditPage'
+import PlatformHealthPage from './pages/PlatformHealthPage'
+import ProbesPage from './pages/ProbesPage'
+import PathTracePage from './pages/PathTracePage'
 import Layout from './components/Layout'
 import ProtectedRoute from './components/ProtectedRoute'
 
@@ -67,6 +71,10 @@ export default function App() {
             <Route path="/clients/:mac"   element={<ClientPage />} />
             <Route path="/platform"       element={<PlatformPage />} />
             <Route path="/users"          element={<UsersPage />} />
+            <Route path="/audit"          element={<AuditPage />} />
+            <Route path="/platform-health" element={<PlatformHealthPage />} />
+            <Route path="/probes"      element={<ProbesPage />} />
+            <Route path="/path-trace"  element={<PathTracePage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

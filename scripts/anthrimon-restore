@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Anthrimon restore — counterpart to anthrimon-backup.
+
+Usage:
+    anthrimon-restore BACKUP_FILE [--passphrase-env VAR] [--yes]
+                     [--skip-postgres] [--skip-clickhouse] [--skip-etc]
+                     [--skip-var] [--skip-systemd]
+
+Restores onto a system that already has the base OS packages and Anthrimon
+binaries installed (the installer doesn't have to have populated any data —
+this tool replaces whatever is there).
+
+PROCESS (destructive):
+    1. Stop all anthrimon-*, snmp-collector, flow-collector, syslog-collector
+       systemd services
+    2. Drop + recreate the anthrimon PostgreSQL database
+    3. Drop + recreate the anthrimon ClickHouse database (if present in backup)
+    4. Replace /etc/anthrimon/ and /var/lib/anthrimon/ from the backup
+    5. Replace systemd unit files
+    6. systemctl daemon-reload + start services
+
+The script asks for confirmation before doing anything destructive unless
+--yes is passed.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+
+SERVICES = [
+    "anthrimon-api",
+    "snmp-collector",
+    "flow-collector",
+    "syslog-collector",
+    "anthrimon-collector",
+    "anthrimon-trap-receiver",
+]
+
+
+def _run(cmd: list[str], check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=check, **kwargs)
+
+
+def _info(msg: str) -> None:
+    print(f"[restore] {msg}", flush=True)
+
+
+def _err(msg: str) -> int:
+    print(f"[restore] ERROR: {msg}", file=sys.stderr, flush=True)
+    return 1
+
+
+def decrypt_and_extract(src: Path, work: Path, passphrase: str | None) -> None:
+    """Reverse of anthrimon-backup's bundle()."""
+    _info(f"Extracting {src.name}")
+    if passphrase:
+        env = os.environ.copy()
+        env["_ANT_BKP_PASS"] = passphrase
+        with open(src, "rb") as fh:
+            ssl_proc = subprocess.Popen(
+                ["openssl", "enc", "-d", "-aes-256-cbc", "-pbkdf2", "-iter", "200000",
+                 "-pass", "env:_ANT_BKP_PASS"],
+                stdin=fh, stdout=subprocess.PIPE, env=env,
+            )
+            zstd_proc = subprocess.Popen(
+                ["zstd", "-d"],
+                stdin=ssl_proc.stdout, stdout=subprocess.PIPE,
+            )
+            assert ssl_proc.stdout is not None
+            ssl_proc.stdout.close()
+            tar_proc = subprocess.Popen(
+                ["tar", "-xf", "-", "-C", str(work)],
+                stdin=zstd_proc.stdout,
+            )
+            assert zstd_proc.stdout is not None
+            zstd_proc.stdout.close()
+            tar_proc.wait()
+            zstd_proc.wait()
+            ssl_proc.wait()
+            if any(p.returncode != 0 for p in (ssl_proc, zstd_proc, tar_proc)):
+                raise RuntimeError("decrypt/extract pipeline failed")
+    else:
+        with open(src, "rb") as fh:
+            zstd_proc = subprocess.Popen(
+                ["zstd", "-d"],
+                stdin=fh, stdout=subprocess.PIPE,
+            )
+            tar_proc = subprocess.Popen(
+                ["tar", "-xf", "-", "-C", str(work)],
+                stdin=zstd_proc.stdout,
+            )
+            assert zstd_proc.stdout is not None
+            zstd_proc.stdout.close()
+            tar_proc.wait()
+            zstd_proc.wait()
+            if any(p.returncode != 0 for p in (zstd_proc, tar_proc)):
+                raise RuntimeError("extract pipeline failed")
+
+
+def stop_services() -> None:
+    _info("Stopping services")
+    for svc in SERVICES:
+        _run(["sudo", "systemctl", "stop", svc], check=False,
+             capture_output=True, text=True)
+
+
+def start_services() -> None:
+    _info("Reloading systemd + starting services")
+    _run(["sudo", "systemctl", "daemon-reload"])
+    for svc in SERVICES:
+        # Only start ones that are enabled — restore shouldn't unmask services.
+        r = _run(["sudo", "systemctl", "is-enabled", svc],
+                 check=False, capture_output=True, text=True)
+        if r.returncode == 0:
+            _run(["sudo", "systemctl", "start", svc], check=False)
+
+
+def restore_postgres(work: Path, db: str = "anthrimon", user: str = "postgres") -> None:
+    dump = work / "postgres.dump"
+    if not dump.exists():
+        _info("  postgres.dump not in backup — skipping")
+        return
+    _info(f"Restoring PostgreSQL ← {dump.name}")
+    # Disconnect anything still connected
+    _run(["sudo", "-u", user, "psql", "-d", "postgres", "-c", f"""
+        SELECT pg_terminate_backend(pid)
+          FROM pg_stat_activity
+         WHERE datname = '{db}' AND pid != pg_backend_pid()
+    """], check=False, capture_output=True)
+    _run(["sudo", "-u", user, "dropdb", "--if-exists", db])
+    _run(["sudo", "-u", user, "createdb", "-O", db, db], check=False)
+    # If the owner doesn't exist yet, fall back to creating the DB owned by postgres
+    _run(["sudo", "-u", user, "psql", "-d", "postgres", "-c",
+          f"CREATE DATABASE {db} OWNER {user}"], check=False, capture_output=True)
+    _run(["sudo", "-u", user, "pg_restore",
+          "--clean", "--if-exists", "--no-owner", "--no-privileges",
+          "-d", db, str(dump)])
+
+
+def restore_clickhouse(work: Path, db: str = "default") -> None:
+    """Restore ClickHouse from per-table Native dumps produced by the backup
+    script.  Drops the database, recreates it, then for each table runs the
+    saved CREATE TABLE and streams the Native data back in via stdin."""
+    ch_dir = work / "clickhouse"
+    if not ch_dir.exists():
+        _info("  clickhouse/ not in backup — skipping")
+        return
+    schema_path = ch_dir / "schema.sql"
+    tables_dir  = ch_dir / "tables"
+    tables_list = ch_dir / "tables.list"
+    if not (schema_path.exists() and tables_dir.exists() and tables_list.exists()):
+        _info(f"  expected per-table layout in {ch_dir} not found — skipping")
+        return
+    _info(f"Restoring ClickHouse ← {ch_dir.name}/")
+
+    # 'default' is special — never drop it; just empty its tables.  For any
+    # other DB, drop + recreate.
+    if db != "default":
+        _run(["clickhouse-client", "--query", f"DROP DATABASE IF EXISTS {db}"])
+        _run(["clickhouse-client", "--query", schema_path.read_text()])
+    else:
+        # Drop any tables we're about to restore so DDL changes apply cleanly.
+        for t in tables_list.read_text().split():
+            if t:
+                _run(["clickhouse-client", "--query",
+                      f"DROP TABLE IF EXISTS {db}.{t}"], check=False)
+
+    for t in tables_list.read_text().split():
+        if not t:
+            continue
+        create_sql = (tables_dir / f"{t}.create.sql").read_text()
+        _run(["clickhouse-client", "--query", create_sql])
+        data_path = tables_dir / f"{t}.native"
+        if data_path.stat().st_size > 0:
+            with open(data_path, "rb") as fh:
+                subprocess.run(
+                    ["clickhouse-client", "--query",
+                     f"INSERT INTO {db}.{t} FORMAT Native"],
+                    stdin=fh, check=True,
+                )
+        _info(f"  restored {t}")
+
+
+def restore_tar(work: Path, name: str, target_root: str) -> None:
+    archive = work / f"{name}.tar"
+    if not archive.exists():
+        _info(f"  {name}.tar not in backup — skipping")
+        return
+    _info(f"Restoring {name}.tar → {target_root}")
+    _run(["sudo", "tar", "-xf", str(archive), "-C", target_root])
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("backup", help="path to backup file produced by anthrimon-backup")
+    ap.add_argument("--passphrase-env", default=None,
+                    help="env var holding the passphrase if the backup is encrypted")
+    ap.add_argument("--yes", action="store_true", help="skip the destructive-action confirmation")
+    ap.add_argument("--skip-postgres",   action="store_true")
+    ap.add_argument("--skip-clickhouse", action="store_true")
+    ap.add_argument("--skip-etc",        action="store_true")
+    ap.add_argument("--skip-var",        action="store_true")
+    ap.add_argument("--skip-systemd",    action="store_true")
+    args = ap.parse_args()
+
+    src = Path(args.backup).resolve()
+    if not src.exists():
+        return _err(f"backup file {src} does not exist")
+
+    passphrase = None
+    if args.passphrase_env:
+        passphrase = os.environ.get(args.passphrase_env)
+        if not passphrase:
+            return _err(f"--passphrase-env={args.passphrase_env} set but the variable is empty")
+    elif src.suffix == ".enc":
+        return _err("backup appears encrypted (.enc suffix) — pass --passphrase-env=…")
+
+    with tempfile.TemporaryDirectory(prefix="anthrimon-restore-") as work_str:
+        work = Path(work_str)
+
+        try:
+            decrypt_and_extract(src, work, passphrase)
+        except Exception as exc:
+            return _err(f"extract failed: {exc}")
+
+        manifest_path = work / "MANIFEST.json"
+        if not manifest_path.exists():
+            return _err("MANIFEST.json missing from backup — not a valid anthrimon backup?")
+        manifest = json.loads(manifest_path.read_text())
+        _info(f"Manifest: created_at={manifest.get('created_at')} "
+              f"hostname={manifest.get('hostname')} "
+              f"components={list(manifest.get('components', {}).keys())}")
+
+        if not args.yes:
+            print()
+            print("⚠  About to perform a DESTRUCTIVE restore:")
+            print("    - All Anthrimon services will be stopped")
+            print("    - PostgreSQL anthrimon DB will be dropped + recreated")
+            if not args.skip_clickhouse:
+                print("    - ClickHouse anthrimon DB will be dropped + recreated")
+            if not args.skip_etc:
+                print("    - /etc/anthrimon/ will be replaced")
+            if not args.skip_var:
+                print("    - /var/lib/anthrimon/ will be replaced")
+            if not args.skip_systemd:
+                print("    - Systemd unit files will be replaced")
+            print()
+            ans = input("Type 'yes' to continue: ").strip()
+            if ans != "yes":
+                return _err("aborted")
+
+        stop_services()
+
+        try:
+            if not args.skip_postgres:   restore_postgres(work)
+            if not args.skip_clickhouse:
+                ch_db = (manifest.get("components", {})
+                                 .get("clickhouse", {})
+                                 .get("database", "default"))
+                restore_clickhouse(work, db=ch_db)
+            if not args.skip_etc:        restore_tar(work, "etc-anthrimon", "/")
+            if not args.skip_var:        restore_tar(work, "var-anthrimon", "/")
+            if not args.skip_systemd:    restore_tar(work, "systemd",       "/")
+        except subprocess.CalledProcessError as exc:
+            return _err(f"restore step failed: {exc}")
+
+        start_services()
+
+    _info("DONE")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

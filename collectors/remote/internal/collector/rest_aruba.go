@@ -150,6 +150,21 @@ func (c *ArubaRESTCollector) collectDevice(ctx context.Context, dev hub.Device) 
 		}
 	}
 
+	// ── Routes ────────────────────────────────────────────────────────────────
+	routes, routesErr := ac.collectRoutes(ctx, dev.ID)
+	if routesErr != nil {
+		c.logger.Warn().Err(routesErr).Str("device", dev.Hostname).Msg("routes collection failed")
+	} else if len(routes) > 0 {
+		if err := c.hubClient.PostRoutes(ctx, routes); err != nil {
+			c.logger.Warn().Err(err).Str("device", dev.Hostname).Msg("routes post to hub failed")
+		} else {
+			c.logger.Info().
+				Str("device", dev.Hostname).
+				Int("routes", len(routes)).
+				Msg("routes posted")
+		}
+	}
+
 	return nil
 }
 
@@ -486,6 +501,200 @@ func (a *arubaClient) collectOSPF(ctx context.Context, deviceID string) ([]map[s
 	}
 
 	return neighbors, nil
+}
+
+// ── Routes ────────────────────────────────────────────────────────────────────
+
+// collectRoutes fetches the RIB for the "default" VRF via the AOS-CX Route
+// table (/system/vrfs/default/routes?depth=2) and returns route_entries-shaped
+// records, one per nexthop so ECMP routes are preserved under
+// route_entries' UNIQUE(device_id, destination, next_hop) constraint.
+//
+// Only the default VRF is collected — route_entries has no VRF column, and
+// other VRFs (e.g. "mgmt") are not reachable from the default VRF without an
+// explicit route leak, so mixing them in would let path-trace hop through
+// routes that don't actually carry default-VRF traffic.
+func (a *arubaClient) collectRoutes(ctx context.Context, deviceID string) ([]map[string]any, error) {
+	routesRaw, err := a.get(ctx, "/system/vrfs/default/routes", url.Values{"depth": {"2"}})
+	if err != nil {
+		return nil, fmt.Errorf("get routes: %w", err)
+	}
+	routeMap, ok := routesRaw.(map[string]any)
+	if !ok {
+		return nil, nil
+	}
+
+	var routes []map[string]any
+
+	for _, routeRaw := range routeMap {
+		route, ok := routeRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		prefix, _ := route["prefix"].(string)
+		if prefix == "" {
+			continue
+		}
+		fromRaw, _ := route["from"].(string)
+		proto := normArubaRouteOwner(fromRaw)
+
+		nexthops := a.arubaRouteNexthops(ctx, route["nexthops"])
+		if len(nexthops) == 0 && proto == "static" {
+			// Static routes not yet selected into the FIB carry their
+			// configured nexthop(s) under static_nexthops instead of
+			// nexthops.
+			nexthops = a.arubaRouteNexthops(ctx, route["static_nexthops"])
+		}
+
+		if len(nexthops) == 0 {
+			// Connected routes (no next-hop IP, just an egress port) and
+			// "nullroute"/blackhole statics both land here with an empty
+			// next_hop. This is also the safety net for any nexthops shape
+			// arubaRouteNexthops doesn't recognise, so a route is never
+			// silently dropped from route_entries.
+			routes = append(routes, map[string]any{
+				"device_id":      deviceID,
+				"destination":    prefix,
+				"next_hop":       "",
+				"protocol":       proto,
+				"metric":         0,
+				"interface_name": "",
+			})
+			continue
+		}
+
+		for _, nh := range nexthops {
+			routes = append(routes, map[string]any{
+				"device_id":      deviceID,
+				"destination":    prefix,
+				"next_hop":       nh.ip,
+				"protocol":       proto,
+				"metric":         nh.metric,
+				"interface_name": nh.iface,
+			})
+		}
+	}
+
+	return routes, nil
+}
+
+// arubaNexthopEntry holds the route_entries-relevant fields of a single
+// AOS-CX Route_Nexthop.
+type arubaNexthopEntry struct {
+	ip     string
+	iface  string
+	metric int
+}
+
+// arubaRouteNexthops normalises a Route's "nexthops" (or "static_nexthops")
+// reference set into a flat list of next-hop entries.
+//
+// At depth=2, AOS-CX REST is expected to expand each nexthop reference into
+// its full Route_Nexthop object — but for routes with a non-empty nexthop
+// set (connected interfaces, OSPF/BGP-learned routes, default routes) the
+// reference set has been observed coming back as {key: "<URI>"} or
+// ["<URI>", ...] instead, with the objects left unexpanded. Both shapes are
+// handled here, following any unexpanded URI with one extra GET so the real
+// next-hop IP/interface is still captured instead of the route disappearing.
+func (a *arubaClient) arubaRouteNexthops(ctx context.Context, raw any) []arubaNexthopEntry {
+	var refs []any
+	switch v := raw.(type) {
+	case map[string]any:
+		for _, nh := range v {
+			refs = append(refs, nh)
+		}
+	case []any:
+		refs = v
+	default:
+		return nil
+	}
+
+	var out []arubaNexthopEntry
+	for _, nhRaw := range refs {
+		switch nh := nhRaw.(type) {
+		case map[string]any:
+			out = append(out, parseArubaNexthop(nh))
+		case string:
+			obj, err := a.get(ctx, arubaRefPath(nh), url.Values{"depth": {"2"}})
+			if err != nil {
+				continue
+			}
+			if m, ok := obj.(map[string]any); ok && len(m) > 0 {
+				out = append(out, parseArubaNexthop(m))
+			}
+		}
+	}
+	return out
+}
+
+// parseArubaNexthop extracts route_entries fields from an expanded
+// Route_Nexthop object.
+func parseArubaNexthop(nh map[string]any) arubaNexthopEntry {
+	ip, _ := nh["ip_address"].(string)
+	return arubaNexthopEntry{
+		ip:     ip,
+		iface:  arubaPortName(nh["port"]),
+		metric: jsonInt(nh["distance"]),
+	}
+}
+
+// arubaRefPath strips the "/rest/<version>" prefix from an absolute AOS-CX
+// REST resource URI so it can be re-used with arubaClient.get, which
+// prepends the base URL itself.
+func arubaRefPath(uri string) string {
+	prefix := "/rest/" + arubaAPIVersion
+	if rest, ok := strings.CutPrefix(uri, prefix); ok {
+		return rest
+	}
+	return uri
+}
+
+// arubaPortName extracts the port/interface name from a Route_Nexthop's
+// "port" reference field, which AOS-CX REST returns as either a bare string
+// or a {"<name>": "/rest/.../system/ports/<name>"} reference object.
+func arubaPortName(v any) string {
+	switch p := v.(type) {
+	case string:
+		return p
+	case map[string]any:
+		for _, refRaw := range p {
+			ref, ok := refRaw.(string)
+			if !ok {
+				continue
+			}
+			i := strings.LastIndex(ref, "/")
+			if i < 0 {
+				continue
+			}
+			if name, err := url.PathUnescape(ref[i+1:]); err == nil {
+				return name
+			}
+			return ref[i+1:]
+		}
+	}
+	return ""
+}
+
+// normArubaRouteOwner maps AOS-CX Route.from values to the same protocol
+// vocabulary used by SNMP/eAPI (cidrProtoName/normEOSRouteType).
+func normArubaRouteOwner(raw string) string {
+	lower := strings.ToLower(raw)
+	switch {
+	case lower == "connected":
+		return "connected"
+	case lower == "static":
+		return "static"
+	case strings.Contains(lower, "bgp"):
+		return "bgp"
+	case strings.HasPrefix(lower, "ospf"):
+		return "ospf"
+	case strings.HasPrefix(lower, "isis"):
+		return "isis"
+	case lower == "rip":
+		return "rip"
+	default:
+		return "other"
+	}
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

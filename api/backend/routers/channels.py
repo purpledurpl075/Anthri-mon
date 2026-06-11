@@ -110,10 +110,9 @@ async def test_channel(
     if not channel.is_enabled:
         raise HTTPException(status_code=400, detail="Channel is disabled")
 
-    from sqlalchemy import select as _select
-    from ..models.settings import SystemSetting as _SS
-    prow = (await db.execute(_select(_SS).where(_SS.key == "platform"))).scalar_one_or_none()
-    platform_name: str = (prow.value.get("platform_name", "Anthrimon") if prow else "Anthrimon")
+    from ..alerting.settings import load_platform_defaults
+    platform = await load_platform_defaults(db)
+    platform_name: str = platform.get("platform_name", "Anthrimon")
 
     try:
         if channel.type == "email":

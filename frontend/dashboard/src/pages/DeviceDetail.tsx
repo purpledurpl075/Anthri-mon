@@ -11,7 +11,8 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { fetchDevice, fetchDeviceHealth, fetchDeviceHealthHistory, fetchDeviceLatency, fetchDeviceInterfaces, fetchDeviceBaselines, overrideBaseline, deleteDevice, patchDevice, setAlertExclusions, fetchDeviceCredentials, linkDeviceCredential, unlinkDeviceCredential, runSnmpDiag, fetchDeviceNeighbors, fetchDeviceOSPF, fetchDeviceAddresses, fetchDeviceRoutes, fetchDeviceVlans, fetchDeviceStp, fetchDeviceTraps, discoverSnmpEngineId, type AddressEntry, type VlanEntry, type StpPort, type BaselineRow, type TrapEvent } from '../api/devices'
 import TimeSeriesChart from '../components/TimeSeriesChart'
 import { fetchCredentials } from '../api/credentials'
-import { fetchConfigStatus, fetchBackups, fetchDiffs, fetchBackup, fetchDiff, triggerCollect, fetchComplianceResults, deployConfig, type ConfigBackupMeta, type ConfigDiffMeta } from '../api/config'
+import { fetchConfigStatus, fetchBackups, fetchDiffs, fetchBackup, fetchDiff, triggerCollect, fetchComplianceResults, deployConfig, rollbackConfig, fetchGoldenConfigResults, fetchGitLog, fetchGitShow, type ConfigBackupMeta, type ConfigDiffMeta, type GoldenConfigResult, type GitLogEntry } from '../api/config'
+import { fetchAlerts } from '../api/alerts'
 import { fetchCollectors } from '../api/collectors'
 import { fetchDeviceBGPSessions, fetchBGPSessionEvents, fetchBGPPrefixHistory, type BGPSession, type BGPSessionEvent, type BGPPeerSeries } from '../api/bgp'
 import { fetchMaintenanceWindows, createMaintenanceWindow, deleteMaintenanceWindow, type MaintenanceWindow } from '../api/maintenance'
@@ -1572,6 +1573,498 @@ function HealthTab({ deviceId, currentHealth }: { deviceId: string; currentHealt
         )
       })()}
 
+      {/* FIB Route Counts */}
+      {(() => {
+        const ipv4 = hist?.fib_routes?.['ipv4'] ?? null
+        const ipv6 = hist?.fib_routes?.['ipv6'] ?? null
+        if (ipv4 === null && ipv6 === null) return null
+        const ipv4Trend = (hist?.fib_trend?.['ipv4'] ?? []) as [number, number][]
+        const ipv6Trend = (hist?.fib_trend?.['ipv6'] ?? []) as [number, number][]
+        const fmtRoutes = (n: number) => n >= 1_000_000 ? `${(n/1_000_000).toFixed(2)}M` : n >= 1_000 ? `${(n/1_000).toFixed(1)}k` : String(n)
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">FIB Route Table</p>
+            <div className="grid grid-cols-2 gap-3">
+              {ipv4 !== null && (
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-indigo-400 shrink-0" />
+                    <span className="text-xs font-semibold text-slate-700">IPv4 Routes</span>
+                  </div>
+                  <div className="px-4 py-3">
+                    <p className="text-2xl font-bold text-slate-800">{fmtRoutes(ipv4)}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">total FIB entries</p>
+                    {ipv4Trend.length >= 2 && (
+                      <div className="mt-2">
+                        <TimeSeriesChart height={40} yFmt={v => fmtRoutes(v)}
+                          series={[{ name: 'IPv4', color: '#6366f1', data: ipv4Trend }]} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {ipv6 !== null && (
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-cyan-400 shrink-0" />
+                    <span className="text-xs font-semibold text-slate-700">IPv6 Routes</span>
+                  </div>
+                  <div className="px-4 py-3">
+                    <p className="text-2xl font-bold text-slate-800">{fmtRoutes(ipv6)}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">total FIB entries</p>
+                    {ipv6Trend.length >= 2 && (
+                      <div className="mt-2">
+                        <TimeSeriesChart height={40} yFmt={v => fmtRoutes(v)}
+                          series={[{ name: 'IPv6', color: '#06b6d4', data: ipv6Trend }]} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* TCAM / Hardware Utilisation */}
+      {(() => {
+        const rows = hist?.tcam ?? []
+        if (rows.length === 0) return null
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">TCAM / Hardware Utilisation</p>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden divide-y divide-slate-100">
+              {rows.map((row, i) => (
+                <div key={i} className="px-5 py-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="text-xs font-semibold text-slate-700 truncate">{row.resource}</span>
+                      {row.feature && <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full shrink-0">{row.feature}</span>}
+                      {row.chip && <span className="text-[10px] text-slate-400 shrink-0">· {row.chip}</span>}
+                    </div>
+                    <span className={`text-xs font-bold shrink-0 ml-3 ${row.pct >= 90 ? 'text-red-600' : row.pct >= 75 ? 'text-amber-500' : 'text-slate-700'}`}>
+                      {row.pct.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${Math.min(row.pct, 100)}%`,
+                          backgroundColor: row.pct >= 90 ? '#dc2626' : row.pct >= 75 ? '#f59e0b' : '#6366f1',
+                        }} />
+                    </div>
+                    <span className="text-[10px] text-slate-400 shrink-0 w-28 text-right">
+                      {row.used.toLocaleString()} / {row.max.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Interface Health — flaps, err-disabled, ACL drops */}
+      {(() => {
+        const flaps     = hist?.if_flaps      ?? {}
+        const aclDrops  = hist?.if_acl_drops  ?? {}
+        const errPorts  = hist?.if_err_disabled ?? []
+        const flapList  = Object.entries(flaps).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])
+        const aclList   = Object.entries(aclDrops).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1])
+        if (flapList.length === 0 && errPorts.length === 0 && aclList.length === 0) return null
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Interface Health</p>
+            <div className="space-y-3">
+              {/* Err-disabled */}
+              {errPorts.length > 0 && (
+                <div className="bg-red-50 rounded-xl border border-red-200 overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-red-200 flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5 text-red-600 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/>
+                    </svg>
+                    <span className="text-xs font-semibold text-red-700">Err-Disabled Ports ({errPorts.length})</span>
+                  </div>
+                  <div className="divide-y divide-red-100">
+                    {errPorts.map((p, i) => (
+                      <div key={i} className="px-4 py-2.5 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-red-800">{p.if_name}</span>
+                        <span className="text-[10px] text-red-600 bg-red-100 px-2 py-0.5 rounded-full">{p.reason || 'unknown'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Flapping interfaces */}
+              {flapList.length > 0 && (
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5 text-amber-500 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                    </svg>
+                    <span className="text-xs font-semibold text-slate-700">Interface Flaps (since last restart)</span>
+                  </div>
+                  <div className="divide-y divide-slate-50">
+                    {flapList.slice(0, 10).map(([iface, count], i) => (
+                      <div key={i} className="px-4 py-2.5 flex items-center justify-between">
+                        <span className="text-xs font-medium text-slate-700">{iface}</span>
+                        <span className={`text-xs font-bold ${count >= 10 ? 'text-red-600' : count >= 3 ? 'text-amber-500' : 'text-slate-500'}`}>
+                          {count} flap{count !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                    ))}
+                    {flapList.length > 10 && (
+                      <div className="px-4 py-2 text-[10px] text-slate-400">+{flapList.length - 10} more</div>
+                    )}
+                  </div>
+                </div>
+              )}
+              {/* ACL drops */}
+              {aclList.length > 0 && (
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5 text-slate-500 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    <span className="text-xs font-semibold text-slate-700">ACL Drops</span>
+                  </div>
+                  <div className="divide-y divide-slate-50">
+                    {aclList.slice(0, 10).map(([iface, count], i) => (
+                      <div key={i} className="px-4 py-2.5 flex items-center justify-between">
+                        <span className="text-xs font-medium text-slate-700">{iface}</span>
+                        <span className="text-xs font-bold text-slate-600">{count.toLocaleString()} pkts</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Aruba CX: Hardware Health (fans + PSUs) */}
+      {(() => {
+        const psus = hist?.cx_psus ?? []
+        const fans = hist?.cx_fans ?? []
+        if (psus.length === 0 && fans.length === 0) return null
+        const faultPSUs = psus.filter(p => !p.ok)
+        const faultFans = fans.filter(f => !f.ok)
+        const allOK = faultPSUs.length === 0 && faultFans.length === 0
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Hardware Health</p>
+            <div className="space-y-3">
+              {/* PSUs */}
+              {psus.length > 0 && (
+                <div className={`rounded-2xl border overflow-hidden ${faultPSUs.length > 0 ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+                  <div className={`px-5 py-3 border-b flex items-center gap-2 ${faultPSUs.length > 0 ? 'border-red-200' : 'border-slate-100'}`}>
+                    <svg className={`w-4 h-4 shrink-0 ${faultPSUs.length > 0 ? 'text-red-500' : 'text-green-500'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                    </svg>
+                    <span className={`text-xs font-semibold ${faultPSUs.length > 0 ? 'text-red-700' : 'text-slate-700'}`}>
+                      Power Supplies
+                    </span>
+                    <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${faultPSUs.length > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
+                      {faultPSUs.length > 0 ? `${faultPSUs.length} fault` : 'All OK'}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {psus.map((p, i) => (
+                      <div key={i} className="px-5 py-3 flex items-center gap-3">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${p.ok ? 'bg-green-400' : 'bg-red-500'}`} />
+                        <span className="text-xs font-semibold text-slate-700 flex-1">{p.name}</span>
+                        {p.max_w > 0 ? (
+                          <div className="flex items-center gap-2">
+                            <div className="w-20 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full bg-amber-400"
+                                style={{ width: `${Math.min(p.max_w > 0 ? p.power_w / p.max_w * 100 : 0, 100)}%` }} />
+                            </div>
+                            <span className="text-[10px] text-slate-500 shrink-0">{p.power_w}W / {p.max_w}W</span>
+                          </div>
+                        ) : p.power_w > 0 ? (
+                          <span className="text-[10px] text-slate-500">{p.power_w}W</span>
+                        ) : null}
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${p.ok ? 'bg-green-50 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                          {p.ok ? 'OK' : 'FAULT'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Fans */}
+              {fans.length > 0 && (
+                <div className={`rounded-2xl border overflow-hidden ${faultFans.length > 0 ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+                  <div className={`px-5 py-3 border-b flex items-center gap-2 ${faultFans.length > 0 ? 'border-red-200' : 'border-slate-100'}`}>
+                    <svg className={`w-4 h-4 shrink-0 ${faultFans.length > 0 ? 'text-red-500' : 'text-green-500'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M12 12c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2z"/><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/>
+                    </svg>
+                    <span className={`text-xs font-semibold ${faultFans.length > 0 ? 'text-red-700' : 'text-slate-700'}`}>
+                      Fans
+                    </span>
+                    <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${faultFans.length > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
+                      {faultFans.length > 0 ? `${faultFans.length} fault` : 'All OK'}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-slate-100">
+                    {fans.map((f, i) => (
+                      <div key={i} className="px-5 py-3 flex items-center gap-3">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${f.ok ? 'bg-green-400' : 'bg-red-500'}`} />
+                        <span className="text-xs font-semibold text-slate-700 flex-1">{f.name}</span>
+                        {f.speed_pct > 0 && (
+                          <div className="flex items-center gap-2">
+                            <div className="w-16 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full bg-cyan-400"
+                                style={{ width: `${Math.min(f.speed_pct, 100)}%` }} />
+                            </div>
+                            <span className="text-[10px] text-slate-500 shrink-0">{f.speed_pct}%</span>
+                          </div>
+                        )}
+                        {f.rpm > 0 && <span className="text-[10px] text-slate-400 shrink-0">{f.rpm.toLocaleString()} RPM</span>}
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${f.ok ? 'bg-green-50 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                          {f.ok ? 'OK' : 'FAULT'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Aruba CX: VSX State */}
+      {(() => {
+        const vsx = hist?.cx_vsx ?? null
+        if (!vsx) return null
+        const stateColor = vsx.state === 'in-sync' ? 'text-green-700 bg-green-100' : vsx.state === 'standalone' ? 'text-slate-600 bg-slate-100' : 'text-red-600 bg-red-100'
+        return (
+          <div className="bg-white rounded-2xl border border-slate-200 px-5 py-4 flex items-center gap-4">
+            <div className="w-8 h-8 rounded-xl bg-violet-100 flex items-center justify-center shrink-0">
+              <svg className="w-4 h-4 text-violet-600" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/>
+                <path d="M10 7h4M7 10v4M17 10v4M10 17h4"/>
+              </svg>
+            </div>
+            <div>
+              <p className="text-xs text-slate-400 font-medium uppercase tracking-wide">VSX (Virtual Switching)</p>
+              <div className="flex items-center gap-2 mt-0.5">
+                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${stateColor}`}>{vsx.state}</span>
+                <span className="text-xs text-slate-500">{vsx.role}</span>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Aruba CX: CoPP Drops */}
+      {(() => {
+        const copp = hist?.cx_copp ?? []
+        if (copp.length === 0) return null
+        const total = copp.reduce((s, r) => s + r.drop_pkts, 0)
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Control Plane Policing (CoPP) Drops</p>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-700">Top classes by dropped packets</span>
+                <span className="text-[10px] text-slate-400">{total.toLocaleString()} total drops</span>
+              </div>
+              <div className="divide-y divide-slate-50">
+                {copp.map((r, i) => {
+                  const pct = total > 0 ? r.drop_pkts / total * 100 : 0
+                  return (
+                    <div key={i} className="px-5 py-2.5 flex items-center gap-3">
+                      <span className="text-xs font-medium text-slate-700 flex-1 truncate">{r.class}</span>
+                      <div className="w-20 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                        <div className="h-full bg-orange-400 rounded-full" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-xs font-bold text-slate-600 w-20 text-right shrink-0">{r.drop_pkts.toLocaleString()}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Aruba CX: Loop Protection */}
+      {(() => {
+        const loops = hist?.cx_loops ?? []
+        if (loops.length === 0) return null
+        return (
+          <div className="bg-red-50 rounded-xl border border-red-200 overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-red-200 flex items-center gap-2">
+              <svg className="w-3.5 h-3.5 text-red-600 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4m0 4h.01"/>
+              </svg>
+              <span className="text-xs font-semibold text-red-700">Loop Detected ({loops.length} port{loops.length !== 1 ? 's' : ''})</span>
+            </div>
+            <div className="px-4 py-2.5 flex flex-wrap gap-2">
+              {loops.map((iface, i) => (
+                <span key={i} className="text-xs font-semibold text-red-700 bg-red-100 px-2 py-1 rounded-lg">{iface}</span>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Cisco: Hardware Health (fans + PSUs via CISCO-ENVMON-MIB) */}
+      {(() => {
+        const fans = hist?.cisco_fans ?? []
+        const psus = hist?.cisco_psus ?? []
+        if (fans.length === 0 && psus.length === 0) return null
+        const faultFans = fans.filter(f => !f.ok)
+        const faultPSUs = psus.filter(p => !p.ok)
+        const renderRow = (unit: { name: string; ok: boolean }, i: number) => (
+          <div key={i} className="px-5 py-2.5 flex items-center gap-3">
+            <span className={`w-2 h-2 rounded-full shrink-0 ${unit.ok ? 'bg-green-400' : 'bg-red-500'}`} />
+            <span className="text-xs font-medium text-slate-700 flex-1">{unit.name}</span>
+            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${unit.ok ? 'bg-green-50 text-green-700' : 'bg-red-100 text-red-600'}`}>
+              {unit.ok ? 'OK' : 'FAULT'}
+            </span>
+          </div>
+        )
+        const hasFault = faultFans.length > 0 || faultPSUs.length > 0
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Hardware Health</p>
+            <div className="space-y-3">
+              {psus.length > 0 && (
+                <div className={`rounded-2xl border overflow-hidden ${faultPSUs.length > 0 ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+                  <div className={`px-5 py-3 border-b flex items-center gap-2 ${faultPSUs.length > 0 ? 'border-red-200' : 'border-slate-100'}`}>
+                    <svg className={`w-4 h-4 shrink-0 ${faultPSUs.length > 0 ? 'text-red-500' : 'text-green-500'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                    </svg>
+                    <span className={`text-xs font-semibold ${faultPSUs.length > 0 ? 'text-red-700' : 'text-slate-700'}`}>Power Supplies</span>
+                    <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${faultPSUs.length > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
+                      {faultPSUs.length > 0 ? `${faultPSUs.length} fault` : 'All OK'}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-slate-100">{psus.map(renderRow)}</div>
+                </div>
+              )}
+              {fans.length > 0 && (
+                <div className={`rounded-2xl border overflow-hidden ${faultFans.length > 0 ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+                  <div className={`px-5 py-3 border-b flex items-center gap-2 ${faultFans.length > 0 ? 'border-red-200' : 'border-slate-100'}`}>
+                    <svg className={`w-4 h-4 shrink-0 ${faultFans.length > 0 ? 'text-red-500' : 'text-green-500'}`} fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M12 12c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2z"/><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 18a8 8 0 1 1 8-8 8 8 0 0 1-8 8z"/>
+                    </svg>
+                    <span className={`text-xs font-semibold ${faultFans.length > 0 ? 'text-red-700' : 'text-slate-700'}`}>Fans</span>
+                    <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full ${faultFans.length > 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
+                      {faultFans.length > 0 ? `${faultFans.length} fault` : 'All OK'}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-slate-100">{fans.map(renderRow)}</div>
+                </div>
+              )}
+              {!hasFault && (
+                <p className="text-[10px] text-slate-400 px-1">All hardware units reporting normal via CISCO-ENVMON-MIB</p>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Cisco: Memory Pools */}
+      {(() => {
+        const pools = hist?.cisco_mem_pools ?? []
+        if (pools.length === 0) return null
+        const fmtBytes = (b: number) => b >= 1_073_741_824 ? `${(b/1_073_741_824).toFixed(1)}G` : b >= 1_048_576 ? `${(b/1_048_576).toFixed(0)}M` : `${(b/1024).toFixed(0)}K`
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Memory Pools</p>
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden divide-y divide-slate-100">
+              {pools.map((p, i) => (
+                <div key={i} className="px-5 py-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-xs font-semibold text-slate-700">{p.pool}</span>
+                    <span className={`text-xs font-bold shrink-0 ml-3 ${p.pct >= 90 ? 'text-red-600' : p.pct >= 75 ? 'text-amber-500' : 'text-slate-700'}`}>
+                      {p.pct.toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full rounded-full transition-all"
+                        style={{ width: `${Math.min(p.pct, 100)}%`, backgroundColor: p.pct >= 90 ? '#dc2626' : p.pct >= 75 ? '#f59e0b' : '#2563eb' }} />
+                    </div>
+                    <span className="text-[10px] text-slate-400 shrink-0 w-28 text-right">
+                      {fmtBytes(p.used)} / {fmtBytes(p.used + p.free)}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
+
+      {/* Cisco: Interface Queue Drops + Resets */}
+      {(() => {
+        const inDrops  = hist?.cisco_if_in_drops  ?? {}
+        const outDrops = hist?.cisco_if_out_drops ?? {}
+        const resets   = hist?.cisco_if_resets    ?? {}
+        const inList   = Object.entries(inDrops).filter(([,v]) => v > 0).sort((a,b) => b[1]-a[1])
+        const outList  = Object.entries(outDrops).filter(([,v]) => v > 0).sort((a,b) => b[1]-a[1])
+        const resetList = Object.entries(resets).filter(([,v]) => v > 0).sort((a,b) => b[1]-a[1])
+        if (inList.length === 0 && outList.length === 0 && resetList.length === 0) return null
+        return (
+          <div>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Interface Statistics</p>
+            <div className="space-y-3">
+              {resetList.length > 0 && (
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5 text-amber-500 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                    </svg>
+                    <span className="text-xs font-semibold text-slate-700">Interface Resets (since boot)</span>
+                  </div>
+                  <div className="divide-y divide-slate-50">
+                    {resetList.slice(0, 10).map(([iface, count], i) => (
+                      <div key={i} className="px-4 py-2.5 flex items-center justify-between">
+                        <span className="text-xs font-medium text-slate-700">{iface}</span>
+                        <span className={`text-xs font-bold ${count >= 10 ? 'text-red-600' : count >= 3 ? 'text-amber-500' : 'text-slate-500'}`}>
+                          {count} reset{count !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+                    ))}
+                    {resetList.length > 10 && <div className="px-4 py-2 text-[10px] text-slate-400">+{resetList.length - 10} more</div>}
+                  </div>
+                </div>
+              )}
+              {(inList.length > 0 || outList.length > 0) && (
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                  <div className="px-4 py-2.5 border-b border-slate-100 flex items-center gap-2">
+                    <svg className="w-3.5 h-3.5 text-slate-500 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                    </svg>
+                    <span className="text-xs font-semibold text-slate-700">Queue Drops</span>
+                  </div>
+                  <div className="divide-y divide-slate-50">
+                    {Array.from(new Set([...inList.map(([k])=>k), ...outList.map(([k])=>k)])).slice(0,10).map((iface, i) => {
+                      const inD  = inDrops[iface]  ?? 0
+                      const outD = outDrops[iface] ?? 0
+                      return (
+                        <div key={i} className="px-4 py-2.5 flex items-center gap-3">
+                          <span className="text-xs font-medium text-slate-700 flex-1">{iface}</span>
+                          {inD > 0  && <span className="text-[10px] bg-orange-50 text-orange-600 px-1.5 py-0.5 rounded font-medium">↓ {inD.toLocaleString()} in</span>}
+                          {outD > 0 && <span className="text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded font-medium">↑ {outD.toLocaleString()} out</span>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
       {/* ICMP Latency */}
       {(() => {
         const hasRtt  = (latency?.rtt_avg_ms?.length ?? 0) > 0
@@ -1715,6 +2208,20 @@ export default function DeviceDetail() {
     queryFn: () => fetchDevice(id!),
     enabled: !!id,
   })
+
+  // Used to detect "status is bad but no device_down alert has fired yet" —
+  // surfaces an explicit Pending pill so operators don't think alerting broke.
+  const { data: openDeviceAlerts } = useQuery({
+    queryKey: ['device-open-alerts', id],
+    queryFn: () => fetchAlerts({ device_id: id!, status: 'open', limit: 50 }),
+    enabled: !!id,
+    refetchInterval: 15_000,
+  })
+  const hasOpenDeviceDown = !!openDeviceAlerts?.items?.some(
+    a => (a.context?.metric as string | undefined) === 'device_down',
+  )
+  const pendingDeviceDown =
+    !!device && ['unreachable', 'down'].includes(device.status) && !hasOpenDeviceDown
 
   const { data: health } = useQuery({
     queryKey: ['device-health', id],
@@ -1876,6 +2383,15 @@ export default function DeviceDetail() {
                 <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: sc }} />
                 {statusLabel[device.status] ?? device.status}
               </span>
+              {pendingDeviceDown && (
+                <span
+                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                  title="The device is unreachable but the device_down rule's duration gate hasn't expired yet. An alert will fire if the failure continues."
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  Alert pending
+                </span>
+              )}
               <MaintenanceBadge deviceId={id!} />
             </div>
 
@@ -2490,7 +3006,7 @@ export default function DeviceDetail() {
           )}
           {tab === 'config' && id && (
             <div className="p-5">
-              <DeviceConfigTab deviceId={id} vendor={device?.vendor} />
+              <DeviceConfigTab deviceId={id} vendor={device?.vendor} hostname={device?.fqdn ?? device?.hostname} />
             </div>
           )}
           {tab === 'traps' && id && (
@@ -2880,12 +3396,85 @@ function BGPSection({ deviceId }: { deviceId: string }) {
 
 // ── Device Config Tab ─────────────────────────────────────────────────────────
 
-function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: string }) {
+// Mirror of the backend _vendor_key() + supported-vendor set (configmgmt/
+// rollback.py + collector.py).  Kept in sync so the Rollback button only shows
+// when the API would actually accept the rollback — otherwise the user fills
+// out the whole confirm modal only to get a 422.
+const ROLLBACK_NETMIKO_KEYS = [
+  'arista', 'cisco_ios', 'cisco_iosxe', 'cisco_iosxr', 'cisco_nxos',
+  'juniper', 'procurve', 'hp_procurve', 'aruba_cx', 'fortios', 'ubiquiti',
+]
+const ROLLBACK_SUPPORTED_KEYS = new Set([
+  'aruba_cx', 'arista', 'cisco_ios', 'cisco_iosxe', 'cisco_iosxr', 'cisco_nxos', 'juniper',
+])
+
+function rollbackVendorKey(vendor?: string): string {
+  const v = (vendor ?? '').toLowerCase()
+  for (const k of ROLLBACK_NETMIKO_KEYS) if (v.includes(k)) return k
+  if (v.includes('eos') || v.includes('arista')) return 'arista'
+  if (v.includes('ios') || v.includes('cisco')) return 'cisco_ios'
+  return 'cisco_ios'  // backend's safe fallback
+}
+
+function rollbackSupported(vendor?: string): boolean {
+  return ROLLBACK_SUPPORTED_KEYS.has(rollbackVendorKey(vendor))
+}
+
+function goldenScoreStyle(score: number) {
+  if (score >= 90) return { badge: 'bg-green-100 text-green-700', bar: '#16a34a' }
+  if (score >= 70) return { badge: 'bg-yellow-100 text-yellow-700', bar: '#ca8a04' }
+  return { badge: 'bg-red-100 text-red-700', bar: '#dc2626' }
+}
+
+function DeviceGoldenResultRow({ result }: { result: GoldenConfigResult }) {
+  const [open, setOpen] = useState(false)
+  const score = Number(result.score)
+  const style = goldenScoreStyle(score)
+
+  return (
+    <div className={score < 70 ? 'bg-red-50/30' : ''}>
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition-colors text-left">
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${style.badge}`}>
+          {score.toFixed(0)}%
+        </span>
+        <span className="text-sm text-slate-700 flex-1 truncate">{result.golden_config_name}</span>
+        <div className="w-24 h-1.5 rounded-full bg-slate-100 overflow-hidden shrink-0">
+          <div className="h-full rounded-full" style={{ width: `${score}%`, backgroundColor: style.bar }} />
+        </div>
+        <span className="text-xs text-slate-400 shrink-0 w-24 text-right">{result.matched_lines}/{result.total_lines} lines</span>
+        <span className="text-xs text-slate-400 shrink-0">{formatAge(result.checked_at)}</span>
+        <svg className={`w-3.5 h-3.5 text-slate-300 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}
+          fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+      {open && (
+        <div className="px-5 pb-4">
+          {result.missing_lines.length === 0 ? (
+            <p className="text-xs text-green-600 px-3 py-2">All golden lines present.</p>
+          ) : (
+            <div className="space-y-1">
+              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-1">Missing lines ({result.missing_lines.length})</p>
+              {result.missing_lines.map((line, i) => (
+                <div key={i} className="font-mono text-[11px] text-red-700 bg-red-50 px-3 py-1.5 rounded-lg whitespace-pre-wrap">
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DeviceConfigTab({ deviceId, vendor, hostname }: { deviceId: string; vendor?: string; hostname?: string }) {
   const qc = useQueryClient()
   const [view, setView] = useState<'history' | 'compliance' | 'deploy'>('history')
   const [selectedDiffId, setSelectedDiffId] = useState<string | null>(null)
   const [selectedBackupId, setSelectedBackupId] = useState<string | null>(null)
+  const [selectedGitCommit, setSelectedGitCommit] = useState<string | null>(null)
   const [collecting, setCollecting] = useState(false)
+  const [rollbackTarget, setRollbackTarget] = useState<ConfigBackupMeta | null>(null)
 
   const { data: status } = useQuery({
     queryKey: ['config-status', deviceId],
@@ -2921,6 +3510,24 @@ function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: stri
     queryKey: ['compliance-results', deviceId],
     queryFn:  () => fetchComplianceResults(deviceId),
     enabled:  view === 'compliance',
+  })
+
+  const { data: goldenResults = [] } = useQuery({
+    queryKey: ['golden-config-results', deviceId],
+    queryFn:  () => fetchGoldenConfigResults(deviceId),
+    enabled:  view === 'compliance',
+  })
+
+  const { data: gitLog = [] } = useQuery({
+    queryKey: ['git-log', deviceId],
+    queryFn:  () => fetchGitLog(deviceId),
+    enabled:  view === 'history',
+  })
+
+  const { data: gitShow } = useQuery({
+    queryKey: ['git-show', deviceId, selectedGitCommit],
+    queryFn:  () => fetchGitShow(deviceId, selectedGitCommit!),
+    enabled:  !!selectedGitCommit,
   })
 
   const handleCollect = async () => {
@@ -3003,14 +3610,34 @@ function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: stri
             ) : (
               <div className="divide-y divide-slate-50 max-h-96 overflow-y-auto">
                 {backups.map(b => (
-                  <button key={b.id} onClick={() => setSelectedBackupId(b.id === selectedBackupId ? null : b.id)}
-                    className={`w-full flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition-colors text-left ${selectedBackupId === b.id ? 'bg-blue-50' : ''}`}>
+                  <div key={b.id}
+                    onClick={() => { setSelectedBackupId(b.id === selectedBackupId ? null : b.id); setSelectedDiffId(null); setSelectedGitCommit(null) }}
+                    className={`w-full flex items-center gap-3 px-5 py-3 hover:bg-slate-50 transition-colors text-left cursor-pointer ${selectedBackupId === b.id ? 'bg-blue-50' : ''}`}>
                     <div className="flex-1 min-w-0">
                       <div className="text-xs font-medium text-slate-700">{fmtTime(b.collected_at)}</div>
                       <div className="text-[10px] font-mono text-slate-400 mt-0.5">{b.config_hash.slice(0, 12)}… · {(b.size_bytes / 1024).toFixed(1)} KB</div>
                     </div>
-                    {b.is_latest && <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded shrink-0">latest</span>}
-                  </button>
+                    {b.is_latest ? (
+                      <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 py-0.5 rounded shrink-0">latest</span>
+                    ) : rollbackSupported(vendor) ? (
+                      <button
+                        onClick={e => { e.stopPropagation(); setRollbackTarget(b) }}
+                        className="text-[10px] font-semibold text-amber-700 border border-amber-200 bg-amber-50 hover:bg-amber-100 rounded px-2 py-0.5 transition-colors shrink-0"
+                        title="Roll the device's running config back to this snapshot"
+                      >
+                        ⟲ Rollback
+                      </button>
+                    ) : (
+                      <button
+                        disabled
+                        onClick={e => e.stopPropagation()}
+                        className="text-[10px] font-semibold text-slate-400 border border-slate-200 bg-slate-50 rounded px-2 py-0.5 shrink-0 cursor-not-allowed"
+                        title={`Rollback isn't available for ${vendor ?? 'this vendor'} — ProCurve needs TFTP; FortiOS/Ubiquiti need vendor APIs. HTTP config-replace isn't supported on this platform.`}
+                      >
+                        ⟲ Rollback
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
             )}
@@ -3029,7 +3656,7 @@ function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: stri
               ) : (
                 <div className="divide-y divide-slate-50 max-h-48 overflow-y-auto">
                   {diffs.map(d => (
-                    <button key={d.id} onClick={() => setSelectedDiffId(d.id === selectedDiffId ? null : d.id)}
+                    <button key={d.id} onClick={() => { setSelectedDiffId(d.id === selectedDiffId ? null : d.id); setSelectedBackupId(null); setSelectedGitCommit(null) }}
                       className={`w-full flex items-center gap-3 px-5 py-2.5 hover:bg-slate-50 transition-colors text-left ${selectedDiffId === d.id ? 'bg-blue-50' : ''}`}>
                       <div className="flex-1">
                         <div className="text-xs font-medium text-slate-700">{fmtTime(d.created_at)}</div>
@@ -3042,7 +3669,34 @@ function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: stri
               )}
             </div>
 
-            {/* Selected diff or backup text */}
+            {/* Git history */}
+            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+              <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-slate-800">Git history</h3>
+                <span className="text-xs text-slate-400">{gitLog.length} commit{gitLog.length !== 1 ? 's' : ''}</span>
+              </div>
+              {gitLog.length === 0 ? (
+                <div className="px-5 py-6 text-center text-sm text-slate-400">No git history yet</div>
+              ) : (
+                <div className="divide-y divide-slate-50 max-h-48 overflow-y-auto">
+                  {gitLog.map(c => {
+                    const triggeredBy = c.body.split('\n').find(l => l.startsWith('Triggered-by:'))?.replace('Triggered-by:', '').trim()
+                    return (
+                      <button key={c.hash} onClick={() => { setSelectedGitCommit(c.hash === selectedGitCommit ? null : c.hash); setSelectedDiffId(null); setSelectedBackupId(null) }}
+                        className={`w-full flex items-center gap-3 px-5 py-2.5 hover:bg-slate-50 transition-colors text-left ${selectedGitCommit === c.hash ? 'bg-blue-50' : ''}`}>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs font-medium text-slate-700 truncate">{c.subject}</div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">{fmtTime(c.date)}{triggeredBy ? ` · ${triggeredBy}` : ''}</div>
+                        </div>
+                        <span className="text-[10px] font-mono text-slate-400 shrink-0">{c.hash.slice(0, 8)}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Selected diff, backup, or git revision text */}
             {selectedDiff && (
               <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
                 <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
@@ -3074,42 +3728,311 @@ function DeviceConfigTab({ deviceId, vendor }: { deviceId: string; vendor?: stri
                 <pre className="p-4 text-[11px] font-mono overflow-auto max-h-96 bg-slate-950 text-green-400 leading-relaxed">{selectedBackup.config_text}</pre>
               </div>
             )}
+
+            {gitShow && !selectedDiff && !selectedBackup && (
+              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+                <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+                  <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Config @ {gitShow.commit.slice(0, 10)}</h3>
+                  <button onClick={() => setSelectedGitCommit(null)} className="text-slate-300 hover:text-slate-500">
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+                  </button>
+                </div>
+                <pre className="p-4 text-[11px] font-mono overflow-auto max-h-96 bg-slate-950 text-green-400 leading-relaxed">{gitShow.config_text}</pre>
+              </div>
+            )}
           </div>
         </div>
       )}
 
       {view === 'compliance' && (
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-slate-800">Compliance</h3>
-            <Link to="/config" className="text-xs text-blue-600 hover:underline">Manage policies →</Link>
+        <div className="space-y-4">
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-800">Compliance</h3>
+              <Link to="/config" className="text-xs text-blue-600 hover:underline">Manage policies →</Link>
+            </div>
+            {compliance.length === 0 ? (
+              <div className="px-5 py-8 text-center text-sm text-slate-400">
+                No compliance results — <Link to="/config" className="text-blue-600 hover:underline">create a policy</Link> to get started
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-50">
+                {compliance.map(r => (
+                  <div key={r.id} className="px-5 py-3 flex items-center gap-3">
+                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize shrink-0 ${
+                      r.status === 'pass' ? 'bg-green-100 text-green-700' : r.status === 'fail' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-500'
+                    }`}>{r.status}</span>
+                    <span className="text-sm text-slate-700 flex-1">{r.policy_name}</span>
+                    {r.status === 'fail' && (
+                      <span className="text-xs text-red-500">{r.findings.filter((f: any) => f.status === 'fail').length} failing</span>
+                    )}
+                    <span className="text-xs text-slate-400">{new Date(r.checked_at).toLocaleDateString()}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          {compliance.length === 0 ? (
-            <div className="px-5 py-8 text-center text-sm text-slate-400">
-              No compliance results — <Link to="/config" className="text-blue-600 hover:underline">create a policy</Link> to get started
+
+          {/* Golden config drift */}
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-slate-100 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-800">Golden config drift</h3>
+              <Link to="/config" className="text-xs text-blue-600 hover:underline">Manage golden configs →</Link>
             </div>
-          ) : (
-            <div className="divide-y divide-slate-50">
-              {compliance.map(r => (
-                <div key={r.id} className="px-5 py-3 flex items-center gap-3">
-                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full capitalize shrink-0 ${
-                    r.status === 'pass' ? 'bg-green-100 text-green-700' : r.status === 'fail' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-500'
-                  }`}>{r.status}</span>
-                  <span className="text-sm text-slate-700 flex-1">{r.policy_name}</span>
-                  {r.status === 'fail' && (
-                    <span className="text-xs text-red-500">{r.findings.filter((f: any) => f.status === 'fail').length} failing</span>
-                  )}
-                  <span className="text-xs text-slate-400">{new Date(r.checked_at).toLocaleDateString()}</span>
-                </div>
-              ))}
-            </div>
-          )}
+            {goldenResults.length === 0 ? (
+              <div className="px-5 py-8 text-center text-sm text-slate-400">
+                No golden config results — <Link to="/config" className="text-blue-600 hover:underline">create a golden config</Link> to get started
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-50">
+                {goldenResults.map(r => <DeviceGoldenResultRow key={r.id} result={r} />)}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
       {view === 'deploy' && (
         <DeployPanel deviceId={deviceId} vendor={vendor} />
       )}
+
+      {rollbackTarget && (
+        <RollbackModal
+          deviceId={deviceId}
+          deviceHostname={hostname ?? ''}
+          target={rollbackTarget}
+          onClose={() => setRollbackTarget(null)}
+          onSuccess={() => {
+            setRollbackTarget(null)
+            qc.invalidateQueries({ queryKey: ['config-backups', deviceId] })
+            qc.invalidateQueries({ queryKey: ['config-diffs', deviceId] })
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── Rollback modal ────────────────────────────────────────────────────────────
+
+function RollbackModal({
+  deviceId, deviceHostname, target, onClose, onSuccess,
+}: {
+  deviceId: string
+  deviceHostname: string
+  target:   ConfigBackupMeta
+  onClose:  () => void
+  onSuccess: () => void
+}) {
+  const fmtTime = (iso: string) => new Date(iso).toLocaleString()
+  const [reason, setReason]   = useState('')
+  const [save, setSave]       = useState(true)
+  const [hostConfirm, setHostConfirm] = useState('')
+  const [busy, setBusy]       = useState(false)
+  const [elapsed, setElapsed] = useState(0)
+  const [error, setError]     = useState<string | null>(null)
+  const [result, setResult]   = useState<{vendor: string; vrf: string; output: string} | null>(null)
+
+  // Tick a 1-second elapsed counter while the rollback is in flight.  The device
+  // fetches the snapshot over HTTP and applies its native replace — Aruba CX in
+  // particular can take a couple of minutes — this lets the operator see the
+  // request is still active rather than staring at a frozen spinner.
+  useEffect(() => {
+    if (!busy) return
+    setElapsed(0)
+    const start = Date.now()
+    const iv = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000)
+    return () => clearInterval(iv)
+  }, [busy])
+
+  // Pull both the target backup and the current latest so we can render a diff preview.
+  const { data: targetFull } = useQuery({
+    queryKey: ['config-backup', target.id],
+    queryFn:  () => fetchBackup(target.id),
+  })
+  const { data: backups = [] } = useQuery({
+    queryKey: ['config-backups', deviceId],
+    queryFn:  () => fetchBackups(deviceId),
+  })
+  const latest = backups.find(b => b.is_latest)
+  const { data: latestFull } = useQuery({
+    queryKey: ['config-backup', latest?.id],
+    queryFn:  () => fetchBackup(latest!.id),
+    enabled:  !!latest,
+  })
+
+  const diff = useMemo(() => {
+    if (!targetFull?.config_text || !latestFull?.config_text) return null
+    const curLines = latestFull.config_text.split('\n')
+    const tgtLines = targetFull.config_text.split('\n')
+    const curSet = new Set(curLines)
+    const tgtSet = new Set(tgtLines)
+    const removed = curLines.filter(l => !tgtSet.has(l) && l.trim())
+    const added   = tgtLines.filter(l => !curSet.has(l) && l.trim())
+    return { added, removed }
+  }, [targetFull, latestFull])
+
+  const hostMatch = hostConfirm === deviceHostname
+
+  async function doRollback() {
+    if (!reason.trim()) {
+      setError('Please provide a reason — it goes to the audit log.')
+      return
+    }
+    if (!hostMatch) {
+      setError(`Type the device hostname exactly to confirm: ${deviceHostname}`)
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await rollbackConfig(deviceId, target.id, reason, deviceHostname, save)
+      setResult({ vendor: r.vendor, vrf: r.vrf, output: r.output })
+    } catch (e) {
+      const err = e as { response?: { data?: { detail?: string } } }
+      setError(err.response?.data?.detail ?? (e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl max-w-3xl w-full max-h-[90vh] overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <div>
+            <h3 className="text-base font-bold text-slate-800">Roll back to snapshot</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {fmtTime(target.collected_at)} — <span className="font-mono">{target.config_hash.slice(0, 12)}…</span>
+            </p>
+          </div>
+          <button onClick={onClose} className="text-slate-300 hover:text-slate-500 text-xl leading-none">×</button>
+        </div>
+
+        {result ? (
+          <div className="p-6 flex-1 overflow-y-auto">
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-4">
+              <p className="text-sm font-semibold text-emerald-700">✓ Rollback applied</p>
+              <p className="text-xs text-emerald-600 mt-1">{result.vendor} native config-replace over HTTP via the <span className="font-mono">{result.vrf}</span> table, {save ? 'saved to startup-config' : 'running-config only — not saved'}.</p>
+            </div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Device output</p>
+            <pre className="text-[11px] font-mono bg-slate-50 border border-slate-100 rounded-lg p-3 max-h-72 overflow-y-auto whitespace-pre-wrap">{result.output || '(no output)'}</pre>
+            <div className="mt-4 flex justify-end">
+              <button onClick={() => { onSuccess() }} className="text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg px-4 py-2 transition-colors">Close</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="p-6 flex-1 overflow-y-auto space-y-4">
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs">
+                <p className="font-semibold text-amber-800 mb-1">⚠ Vendor-native config replace</p>
+                <p className="text-amber-700 leading-relaxed">
+                  The hub instructs the device to fetch this snapshot over HTTP and apply it
+                  with its own atomic replace command (<span className="font-mono">configure replace</span> on
+                  Cisco/Arista, a <span className="font-mono">checkpoint</span> replace on Aruba CX,
+                  <span className="font-mono"> load override</span> + <span className="font-mono">commit</span> on
+                  Juniper). This is a true replace — anything in the running config but not in
+                  this snapshot <span className="font-semibold">will be removed</span>. Review the diff
+                  below before confirming.
+                </p>
+              </div>
+
+              {diff && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="border border-slate-100 rounded-lg overflow-hidden">
+                    <div className="px-3 py-1.5 bg-red-50 text-[10px] font-semibold text-red-600 uppercase tracking-wide">
+                      Will be removed ({diff.removed.length} lines)
+                    </div>
+                    <pre className="text-[11px] font-mono p-3 max-h-48 overflow-y-auto whitespace-pre-wrap text-slate-700">
+                      {diff.removed.slice(0, 100).join('\n') || '(none)'}
+                      {diff.removed.length > 100 && `\n… ${diff.removed.length - 100} more`}
+                    </pre>
+                  </div>
+                  <div className="border border-slate-100 rounded-lg overflow-hidden">
+                    <div className="px-3 py-1.5 bg-emerald-50 text-[10px] font-semibold text-emerald-700 uppercase tracking-wide">
+                      Will reintroduce ({diff.added.length} lines)
+                    </div>
+                    <pre className="text-[11px] font-mono p-3 max-h-48 overflow-y-auto whitespace-pre-wrap text-slate-700">
+                      {diff.added.slice(0, 100).join('\n') || '(none)'}
+                      {diff.added.length > 100 && `\n… ${diff.added.length - 100} more`}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">
+                  Reason <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={reason}
+                  onChange={e => setReason(e.target.value)}
+                  rows={2}
+                  placeholder="Why are you rolling back? This is audit-logged."
+                  className="w-full text-sm border border-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-slate-400"
+                />
+              </div>
+
+              <label className="flex items-start gap-2 text-xs cursor-pointer">
+                <input type="checkbox" checked={save} onChange={e => setSave(e.target.checked)} className="mt-0.5" />
+                <span>
+                  <span className="font-semibold text-slate-700">Save to startup-config after deploy</span>
+                  <span className="block text-slate-400 mt-0.5">Persist the change so it survives reboot. Uncheck to test in running-config only.</span>
+                </span>
+              </label>
+
+              <div className="border-t border-slate-100 pt-4">
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">
+                  Type the device hostname to confirm <span className="text-red-500">*</span>
+                </label>
+                <p className="text-[11px] text-slate-500 mb-2">
+                  Type <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded">{deviceHostname}</span> exactly. This is the only safeguard against rolling back the wrong device.
+                </p>
+                <input
+                  value={hostConfirm}
+                  onChange={e => setHostConfirm(e.target.value)}
+                  placeholder={deviceHostname}
+                  className={`w-full text-sm font-mono border rounded-lg px-3 py-2 focus:outline-none transition-colors ${
+                    hostConfirm === ''      ? 'border-slate-200 focus:border-slate-400' :
+                    hostMatch                ? 'border-emerald-400 bg-emerald-50' :
+                                               'border-red-300 bg-red-50'
+                  }`}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </div>
+
+              {error && (
+                <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">{error}</div>
+              )}
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 flex items-center justify-between gap-3 bg-slate-50">
+              <button onClick={onClose} disabled={busy}
+                className="text-sm font-semibold text-slate-600 border border-slate-200 bg-white hover:bg-slate-50 rounded-lg px-4 py-2 disabled:opacity-50">
+                Cancel
+              </button>
+              {busy && (
+                <span className="text-[11px] text-slate-500 flex-1 text-center">
+                  {deviceHostname} is fetching the snapshot over HTTP and replacing its config —
+                  Aruba CX can take a minute or two. Don't close this tab.
+                </span>
+              )}
+              <button onClick={doRollback} disabled={busy || !reason.trim() || !hostMatch}
+                className="text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-lg px-4 py-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2">
+                {busy ? (
+                  <>
+                    <span className="inline-block w-3 h-3 border-2 border-amber-200 border-t-white rounded-full animate-spin" />
+                    Rolling back… {Math.floor(elapsed / 60)}m {elapsed % 60}s
+                  </>
+                ) : (
+                  '⟲ Confirm rollback'
+                )}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   )
 }

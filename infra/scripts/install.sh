@@ -20,7 +20,9 @@
 #   14. Builds the frontend production bundle (npm)
 #   14. Generates TLS certificate (self-signed CA + server cert)
 #   15. Configures nginx with HTTPS
-#   16. Sets up WireGuard hub interface (wg0)
+#   16. Sets up WireGuard hub interface (wg0) + sudoers grant for wg commands
+#   16b. Installs anthrimon-backup / anthrimon-restore CLI + sudoers grant for tar
+#   16c. Opens firewall ports 5050-5054 for config rollback (device-pulls-from-HTTP)
 #   17. Installs the API systemd unit + seeds platform settings
 #   18. Starts everything and prints a summary
 
@@ -138,12 +140,12 @@ hdr "System packages"
 apt-get update -qq
 apt-get install -y -qq \
     curl wget gnupg2 ca-certificates lsb-release apt-transport-https \
-    git build-essential openssl \
+    git build-essential openssl zstd \
     python3 python3-pip python3-venv python3-dev \
-    libpq-dev \
+    libpq-dev postgresql-client \
     nginx \
     wireguard wireguard-tools \
-    net-tools iproute2 \
+    net-tools iproute2 traceroute mtr iputils-ping \
     jq unzip
 ok "System packages installed"
 
@@ -773,6 +775,70 @@ sed "s/__API_USER__/${REAL_USER}/g" \
 chmod 440 "${SUDOERS_DST}"
 visudo -cf "${SUDOERS_DST}" && ok "sudoers rule written: ${SUDOERS_DST}" \
     || { rm -f "${SUDOERS_DST}"; warn "sudoers syntax check failed — skipping"; }
+
+# ── 16b. Backup tool (CLI + sudoers for tar) ─────────────────────────────────
+
+hdr "Backup tool"
+
+# Make anthrimon-backup / anthrimon-restore callable from anywhere — both as
+# CLI tools for ops staff and as targets for the API service when an admin
+# clicks the "Backup & download" button on the Platform Health page.
+install -m 0755 "${REPO_DIR}/scripts/anthrimon-backup"     /usr/local/bin/anthrimon-backup
+install -m 0755 "${REPO_DIR}/scripts/anthrimon-restore"    /usr/local/bin/anthrimon-restore
+install -m 0755 "${REPO_DIR}/scripts/show_suppression.py"  /usr/local/bin/anthrimon-show-suppression
+ok "anthrimon-backup / anthrimon-restore / anthrimon-show-suppression installed to /usr/local/bin"
+
+# Staging dir for backups uploaded via the UI.  Owned by the API user so the
+# API can write to it; readable by root so the restore CLI (run as root via
+# sudo) can pick them up.
+install -d -m 0755 -o "${REAL_USER}" -g "${REAL_USER}" /var/lib/anthrimon/uploaded-backups
+ok "backup upload staging dir: /var/lib/anthrimon/uploaded-backups"
+
+# Sudoers grant so the API user (running non-interactively) can sudo tar to
+# read root-owned files like TLS keys and .env files during a backup.
+BACKUP_SUDOERS_DST="/etc/sudoers.d/anthrimon-backup"
+sed "s/__API_USER__/${REAL_USER}/g" \
+    "${REPO_DIR}/infra/sudoers.d/anthrimon-backup" > "${BACKUP_SUDOERS_DST}"
+chmod 440 "${BACKUP_SUDOERS_DST}"
+visudo -cf "${BACKUP_SUDOERS_DST}" && ok "sudoers rule written: ${BACKUP_SUDOERS_DST}" \
+    || { rm -f "${BACKUP_SUDOERS_DST}"; warn "sudoers syntax check failed — skipping"; }
+
+# ── 16c. Config rollback firewall (device-pulls-from-HTTP) ───────────────────
+
+hdr "Config rollback firewall"
+
+# Config rollback works by spinning up an ephemeral HTTP server on the hub
+# bound to the device-facing IP, telling the device "fetch config from this
+# URL", and tearing the server down after one request.  The server picks a
+# port from this range — open it so devices can reach it.
+ROLLBACK_PORTS_LOW=5050
+ROLLBACK_PORTS_HIGH=5054
+ROLLBACK_PORT_RANGE="${ROLLBACK_PORTS_LOW}:${ROLLBACK_PORTS_HIGH}"
+
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+    ufw allow ${ROLLBACK_PORT_RANGE}/tcp comment "anthrimon config rollback" >/dev/null 2>&1 \
+        && ok "ufw rule added: ${ROLLBACK_PORT_RANGE}/tcp" \
+        || warn "ufw allow failed — open ${ROLLBACK_PORT_RANGE}/tcp manually if rollback fails to reach devices"
+elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --add-port=${ROLLBACK_PORT_RANGE//:/-}/tcp >/dev/null 2>&1 \
+        && firewall-cmd --reload >/dev/null 2>&1 \
+        && ok "firewalld rule added: ${ROLLBACK_PORT_RANGE//:/-}/tcp" \
+        || warn "firewalld add-port failed — open ${ROLLBACK_PORT_RANGE//:/-}/tcp manually"
+else
+    info "No active host firewall detected — rollback port range ${ROLLBACK_PORT_RANGE//:/-}/tcp left open by default"
+fi
+
+# Ensure the port range is also visible to the API process as an env hint.
+# (Default in code is 5050-5054 so this is redundant in normal installs, but
+# explicit env makes operator overrides easier.)
+ROLLBACK_ENV_DROPIN="/etc/systemd/system/anthrimon-api.service.d/rollback-ports.conf"
+mkdir -p "$(dirname "${ROLLBACK_ENV_DROPIN}")"
+cat > "${ROLLBACK_ENV_DROPIN}" <<EOF
+[Service]
+Environment="ANTHRIMON_ROLLBACK_PORTS=${ROLLBACK_PORTS_LOW}-${ROLLBACK_PORTS_HIGH}"
+EOF
+chmod 644 "${ROLLBACK_ENV_DROPIN}"
+ok "rollback port range written to ${ROLLBACK_ENV_DROPIN}"
 
 # ── 17. API systemd unit ──────────────────────────────────────────────────────
 

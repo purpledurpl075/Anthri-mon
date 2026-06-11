@@ -6,15 +6,17 @@ from typing import Optional
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, desc, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_current_user, get_db
+from ..dependencies import (
+    get_current_principal, get_db, Principal,
+    accessible_device_ids_subquery, assert_device_access, _tenant_device_ids,
+)
 from ..models.bgp import BGPSession, BGPSessionEvent
 from ..models.device import Device
 from ..models.interface import OSPFNeighbor, ISISNeighbor, ISISArea
-from ..models.tenant import User
 
 VM_BASE = "http://localhost:8428"
 
@@ -63,13 +65,13 @@ def _session_out(s: BGPSession, device_name: str = "") -> dict:
 @router.get("/sessions", summary="All BGP sessions across tenant devices")
 async def list_all_sessions(
     state:        Optional[str] = Query(default=None),
-    current_user: User          = Depends(get_current_user),
+    principal:    Principal     = Depends(get_current_principal),
     db:           AsyncSession  = Depends(get_db),
 ) -> list[dict]:
     q = (
         select(BGPSession, Device)
         .join(Device, BGPSession.device_id == Device.id)
-        .where(Device.tenant_id == current_user.tenant_id)
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)))
         .order_by(Device.hostname, BGPSession.peer_ip)
     )
     if state:
@@ -81,14 +83,15 @@ async def list_all_sessions(
 @router.get("/devices/{device_id}/sessions", summary="BGP sessions for a device")
 async def device_sessions(
     device_id:    uuid.UUID,
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal    = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> list[dict]:
+    await assert_device_access(principal, device_id, "readonly", db)
     dev = (await db.execute(
-        select(Device).where(Device.id == device_id, Device.tenant_id == current_user.tenant_id)
+        select(Device).where(Device.id == device_id)
     )).scalar_one_or_none()
     if dev is None:
-        return []
+        raise HTTPException(status_code=404, detail="Device not found")
     rows = (await db.execute(
         select(BGPSession).where(BGPSession.device_id == device_id).order_by(BGPSession.peer_ip)
     )).scalars().all()
@@ -100,14 +103,14 @@ async def device_sessions(
 async def session_events(
     session_id:   str,
     limit:        int  = Query(default=50, ge=1, le=500),
-    current_user: User = Depends(get_current_user),
+    principal:    Principal = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> list[dict]:
-    # Verify session belongs to this tenant via device join.
+    # Verify session belongs to an accessible device via device join.
     sess = (await db.execute(
         select(BGPSession)
         .join(Device, BGPSession.device_id == Device.id)
-        .where(BGPSession.id == session_id, Device.tenant_id == current_user.tenant_id)
+        .where(BGPSession.id == session_id, Device.id.in_(accessible_device_ids_subquery(principal)))
     )).scalar_one_or_none()
     if sess is None:
         return []
@@ -130,13 +133,13 @@ async def session_events(
 
 @router.get("/summary", summary="BGP health summary across all tenant devices")
 async def bgp_summary(
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal     = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> dict:
     rows = (await db.execute(
         select(BGPSession.session_state, func.count().label("n"))
         .join(Device, BGPSession.device_id == Device.id)
-        .where(Device.tenant_id == current_user.tenant_id)
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)))
         .group_by(BGPSession.session_state)
     )).all()
     by_state = {r.session_state: r.n for r in rows}
@@ -148,7 +151,7 @@ async def bgp_summary(
     flappers = (await db.execute(
         select(BGPSession, Device)
         .join(Device, BGPSession.device_id == Device.id)
-        .where(Device.tenant_id == current_user.tenant_id, BGPSession.flap_count > 1)
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)), BGPSession.flap_count > 1)
         .order_by(desc(BGPSession.flap_count))
         .limit(5)
     )).all()
@@ -174,9 +177,10 @@ async def bgp_summary(
 
 @router.get("/prefix-totals", summary="Total BGP prefixes received and advertised across all sessions")
 async def bgp_prefix_totals(
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal     = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> dict:
+    device_ids = await _tenant_device_ids(principal, db)
     rows = (await db.execute(text("""
         SELECT
             COUNT(*)                                                        AS sessions,
@@ -185,14 +189,14 @@ async def bgp_prefix_totals(
             COUNT(*) FILTER (WHERE s.session_state = 'established'::bgp_session_state) AS established
         FROM bgp_sessions s
         JOIN devices d ON d.id = s.device_id
-        WHERE d.tenant_id = :tid
-    """), {"tid": str(current_user.tenant_id)})).mappings().one()
+        WHERE d.id = ANY(:device_ids)
+    """), {"device_ids": device_ids})).mappings().one()
 
     top = (await db.execute(
         select(BGPSession, Device)
         .join(Device, BGPSession.device_id == Device.id)
         .where(
-            Device.tenant_id == current_user.tenant_id,
+            Device.id.in_(accessible_device_ids_subquery(principal)),
             text("bgp_sessions.session_state = 'established'::bgp_session_state"),
             BGPSession.prefixes_received.isnot(None),
         )
@@ -221,7 +225,7 @@ async def bgp_prefix_totals(
 async def bgp_prefix_history(
     device_id:    uuid.UUID,
     hours:        int  = Query(default=24, ge=1, le=168),
-    current_user: User = Depends(get_current_user),
+    principal:    Principal = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> dict:
     """
@@ -230,12 +234,11 @@ async def bgp_prefix_history(
       - update_rate:   rate(anthrimon_bgp_in_updates_total[5m]) — incoming UPDATE msg/s
     Both sampled at 5-min resolution over the requested window.
     """
-    # Verify device belongs to tenant
+    await assert_device_access(principal, device_id, "readonly", db)
     dev = (await db.execute(
-        select(Device).where(Device.id == device_id, Device.tenant_id == current_user.tenant_id)
+        select(Device).where(Device.id == device_id)
     )).scalar_one_or_none()
     if not dev:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="Device not found")
 
     import time as _time
@@ -280,7 +283,7 @@ async def bgp_prefix_history(
 @router.get("/flap-log", summary="Recent BGP state transitions")
 async def bgp_flap_log(
     limit:        int  = Query(default=20, ge=1, le=200),
-    current_user: User = Depends(get_current_user),
+    principal:    Principal = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> list[dict]:
     from ..models.bgp import BGPSessionEvent
@@ -290,7 +293,7 @@ async def bgp_flap_log(
         select(BGPSessionEvent, BGPSession, Device)
         .join(BGPSession, BGPSessionEvent.session_id == BGPSession.id)
         .join(Device, BGPSession.device_id == Device.id)
-        .where(Device.tenant_id == current_user.tenant_id)
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)))
         .order_by(sqldesc(BGPSessionEvent.recorded_at))
         .limit(limit)
     )).all()
@@ -310,13 +313,13 @@ async def bgp_flap_log(
 
 @router.get("/ospf-neighbors", summary="All OSPF neighbours across tenant devices")
 async def ospf_neighbors_all(
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal     = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> list[dict]:
     rows = (await db.execute(
         select(OSPFNeighbor, Device)
         .join(Device, OSPFNeighbor.device_id == Device.id)
-        .where(Device.tenant_id == current_user.tenant_id)
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)))
         .order_by(Device.hostname, OSPFNeighbor.area, OSPFNeighbor.neighbor_ip)
     )).all()
     return [
@@ -340,9 +343,10 @@ async def ospf_neighbors_all(
 
 @router.get("/ospf-areas", summary="OSPF neighbor counts grouped by area")
 async def ospf_areas(
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal     = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> list[dict]:
+    device_ids = await _tenant_device_ids(principal, db)
     rows = (await db.execute(text("""
         SELECT
             o.area,
@@ -351,10 +355,10 @@ async def ospf_areas(
             COUNT(*) FILTER (WHERE o.state = 'full'::ospf_neighbor_state)      AS full
         FROM ospf_neighbors o
         JOIN devices d ON d.id = o.device_id
-        WHERE d.tenant_id = :tid
+        WHERE d.id = ANY(:device_ids)
         GROUP BY o.area, o.vrf
         ORDER BY o.area
-    """), {"tid": str(current_user.tenant_id)})).mappings().all()
+    """), {"device_ids": device_ids})).mappings().all()
 
     return [
         {
@@ -372,13 +376,13 @@ async def ospf_areas(
 
 @router.get("/isis-neighbors", summary="All IS-IS adjacencies across tenant devices")
 async def isis_neighbors_all(
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal     = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> list[dict]:
     rows = (await db.execute(
         select(ISISNeighbor, Device)
         .join(Device, ISISNeighbor.device_id == Device.id)
-        .where(Device.tenant_id == current_user.tenant_id)
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)))
         .order_by(Device.hostname, ISISNeighbor.interface_name, ISISNeighbor.sys_id)
     )).all()
     return [
@@ -403,9 +407,10 @@ async def isis_neighbors_all(
 
 @router.get("/isis-summary", summary="IS-IS adjacency counts by device")
 async def isis_summary(
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal     = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> dict:
+    device_ids = await _tenant_device_ids(principal, db)
     rows = (await db.execute(text("""
         SELECT
             COUNT(*)                                                                  AS total,
@@ -415,8 +420,8 @@ async def isis_summary(
             COUNT(DISTINCT i.device_id)                                               AS devices
         FROM isis_neighbors i
         JOIN devices d ON d.id = i.device_id
-        WHERE d.tenant_id = :tid
-    """), {"tid": str(current_user.tenant_id)})).mappings().all()
+        WHERE d.id = ANY(:device_ids)
+    """), {"device_ids": device_ids})).mappings().all()
 
     r = rows[0] if rows else {}
     return {
@@ -429,13 +434,13 @@ async def isis_summary(
 
 @router.get("/isis-areas", summary="IS-IS area addresses per device and instance")
 async def isis_areas(
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal     = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> list[dict]:
     rows = (await db.execute(
         select(ISISArea, Device)
         .join(Device, ISISArea.device_id == Device.id)
-        .where(Device.tenant_id == current_user.tenant_id)
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)))
         .order_by(Device.hostname, ISISArea.instance, ISISArea.area_addr)
     )).all()
     return [

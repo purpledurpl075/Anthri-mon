@@ -9,10 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, get_current_principal, accessible_device_ids_subquery, Principal, assert_device_access
+from ..dependencies import (
+    get_db, get_current_principal, Principal,
+    _tenant_device_ids, _assert_device_in_tenant,
+)
 from ..models.device import Device
 from ..models.interface import Interface
-from ..models.settings import SystemSetting
+from ..alerting.settings import load_platform_defaults
 from ..intel import enrich_ips, get_intel, is_private
 
 logger = structlog.get_logger(__name__)
@@ -46,20 +49,6 @@ async def _ch(query: str) -> list[dict]:
 
 
 # ── Tenant device helpers ─────────────────────────────────────────────────────
-
-async def _tenant_device_ids(principal: Principal, db: AsyncSession) -> list[str]:
-    """Return accessible active device UUIDs for this principal as strings."""
-    rows = (await db.execute(
-        accessible_device_ids_subquery(principal)
-        .where(Device.is_active == True)  # noqa: E712
-    )).scalars().all()
-    return [str(r) for r in rows]
-
-
-async def _assert_device_in_tenant(device_id: str, principal: Principal, db: AsyncSession) -> None:
-    import uuid as _uuid
-    await assert_device_access(principal, _uuid.UUID(device_id), "readonly", db)
-
 
 def _device_filter(device_ids: list[str], alias: str = "") -> str:
     """Build a ClickHouse WHERE clause fragment for device ID filtering."""
@@ -1401,12 +1390,8 @@ async def tcp_flags_summary(
 # ── Intel helpers ─────────────────────────────────────────────────────────────
 
 async def _get_abuseipdb_key(db: AsyncSession) -> str:
-    row = (await db.execute(
-        text("SELECT value FROM system_settings WHERE key = 'platform'")
-    )).scalar_one_or_none()
-    if row:
-        return (row or {}).get("abuseipdb_api_key", "")
-    return ""
+    platform = await load_platform_defaults(db)
+    return platform.get("abuseipdb_api_key", "")
 
 
 def _attach_intel(ip: str, intel: dict) -> dict:

@@ -64,7 +64,7 @@ func GenerateWGKeypair() (privKey, pubKey string, err error) {
 // Bootstrap performs the one-time registration with the hub.
 // It reads the CA certificate from cfg.CACert, posts the registration request,
 // and returns a populated State on success.
-func Bootstrap(cfg *config.Config, hostname, version string) (*state.State, error) {
+func Bootstrap(cfg *config.Config, hostname, version string, capabilities []string) (*state.State, error) {
 	privKey, pubKey, err := GenerateWGKeypair()
 	if err != nil {
 		return nil, fmt.Errorf("generate wg keypair: %w", err)
@@ -80,7 +80,7 @@ func Bootstrap(cfg *config.Config, hostname, version string) (*state.State, erro
 		WGPublicKey:  pubKey,
 		Hostname:     hostname,
 		Version:      version,
-		Capabilities: []string{"snmp", "flow", "syslog"},
+		Capabilities: capabilities,
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {

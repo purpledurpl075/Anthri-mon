@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import {
   ReactFlow, ReactFlowProvider, Controls, Background, MiniMap, Panel, useReactFlow,
   EdgeLabelRenderer, getStraightPath, applyNodeChanges,
@@ -207,6 +207,7 @@ type NodeData = TopologyNode & {
   alerts:    { count: number; severity: string } | null
   dimmed:    boolean
   searchHit: boolean
+  pathOrder: number | null
 }
 
 function DeviceNode({ data, selected }: NodeProps) {
@@ -248,12 +249,22 @@ function DeviceNode({ data, selected }: NodeProps) {
           </div>
         )}
 
-        {/* Search highlight ring */}
-        {d.searchHit && (
+        {/* Search / path highlight ring */}
+        {(d.searchHit || d.pathOrder != null) && (
           <div
             className="absolute -inset-1 rounded-full pointer-events-none"
             style={{ boxShadow: '0 0 0 2.5px #3b82f6, 0 0 10px #3b82f640' }}
           />
+        )}
+
+        {/* Path order badge */}
+        {d.pathOrder != null && (
+          <div
+            className="absolute -bottom-1 -left-1 z-10 min-w-[18px] h-[18px] rounded-full flex items-center justify-center text-[9px] font-bold text-white px-1 bg-blue-600"
+            style={{ boxShadow: '0 0 0 2px white' }}
+          >
+            {d.pathOrder}
+          </div>
         )}
 
         {/* Circle */}
@@ -364,6 +375,15 @@ type EdgeData = {
   util_pct?: number | null
   util_in_pct?: number | null
   util_out_pct?: number | null
+}
+
+// Path-trace overlay, passed via router state from PathTracePage's
+// "View on topology" action.
+interface PathTraceHighlight {
+  deviceIds: string[]
+  srcIp: string
+  dstIp: string
+  exitsToCloud: boolean
 }
 
 function TopologyEdge({
@@ -856,7 +876,14 @@ export default function TopologyPage() {
 
 function TopologyPageInner() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { fitView } = useReactFlow()
+
+  // Path-trace overlay (set once from router state on first mount)
+  const [pathHighlight, setPathHighlight] = useState<PathTraceHighlight | null>(() => {
+    const state = location.state as { pathTrace?: PathTraceHighlight } | null
+    return state?.pathTrace ?? null
+  })
 
   const [selectedId,     setSelectedId]    = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
@@ -944,6 +971,41 @@ function TopologyPageInner() {
     return () => clearTimeout(timer)
   }, [searchMatchIds])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Path-trace overlay derived data ────────────────────────────────────
+  const pathNodeIdSet = useMemo(
+    () => new Set(pathHighlight?.deviceIds ?? []),
+    [pathHighlight]
+  )
+
+  const pathOrderMap = useMemo(() => {
+    const m = new Map<string, number>()
+    pathHighlight?.deviceIds.forEach((id, i) => { if (!m.has(id)) m.set(id, i + 1) })
+    return m
+  }, [pathHighlight])
+
+  const pathEdgeIdSet = useMemo(() => {
+    const set = new Set<string>()
+    if (!pathHighlight || !data) return set
+    const ids = pathHighlight.deviceIds
+    for (let i = 0; i < ids.length - 1; i++) {
+      const a = ids[i], b = ids[i + 1]
+      const edge = data.edges.find(e =>
+        (e.source === a && e.target === b) || (e.source === b && e.target === a)
+      )
+      if (edge) set.add(edge.id)
+    }
+    return set
+  }, [pathHighlight, data])
+
+  // ── Fit view to the traced path ────────────────────────────────────────
+  useEffect(() => {
+    if (pathNodeIdSet.size === 0) return
+    const timer = setTimeout(() => {
+      fitView({ nodes: rfNodes.filter(n => pathNodeIdSet.has(n.id)), padding: 0.3, duration: 400 })
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [pathNodeIdSet])  // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Build ReactFlow nodes + edges ─────────────────────────────────────
   const nodesById = Object.fromEntries((data?.nodes ?? []).map(n => [n.id, n]))
   const deviceTypes = [...new Set((data?.nodes ?? []).map(n => n.device_type))].filter(Boolean)
@@ -952,7 +1014,8 @@ function TopologyPageInner() {
     if (!data) return
 
     const visible = data.nodes.filter(n =>
-      !hiddenTypes.has(n.device_type) && !hiddenNodeIds.has(n.id) && (showIsolated || n.connected)
+      pathNodeIdSet.has(n.id) ||
+      (!hiddenTypes.has(n.device_type) && !hiddenNodeIds.has(n.id) && (showIsolated || n.connected))
     )
     const { pos, layer } = hierLayout(visible, data.edges)
     const nodeIds = new Set(visible.map(n => n.id))
@@ -981,6 +1044,12 @@ function TopologyPageInner() {
         })
       : null
 
+    const isPathMode = pathNodeIdSet.size > 0
+    // Path ends at the WAN gateway with traffic exiting to an unmonitored
+    // next hop (e.g. a default route to the internet) — highlight the cloud too.
+    const pathExitsToCloud = isPathMode && !!pathHighlight?.exitsToCloud &&
+      !!wanGateway && pathHighlight.deviceIds.at(-1) === wanGateway.id
+
     setRfNodes(prev => {
       const prevById = Object.fromEntries(prev.map(n => [n.id, n]))
 
@@ -988,6 +1057,7 @@ function TopologyPageInner() {
         const isSearchDimmed  = searchMatchIds !== null && !searchMatchIds.has(n.id)
         const isSearchHit     = searchMatchIds !== null && searchMatchIds.has(n.id)
         const isIssuesDimmed  = showIssuesOnly && !alertingIds.has(n.id) && !issuesNeighbourIds.has(n.id)
+        const isPathHit       = isPathMode && pathNodeIdSet.has(n.id)
         return {
           id:       n.id,
           type:     'device',
@@ -996,8 +1066,9 @@ function TopologyPageInner() {
           data: {
             ...n,
             alerts:    alertsByDevice[n.id] ?? null,
-            dimmed:    isSearchDimmed || isIssuesDimmed,
-            searchHit: isSearchHit,
+            dimmed:    isPathMode ? !isPathHit : (isSearchDimmed || isIssuesDimmed),
+            searchHit: isPathMode ? false : isSearchHit,
+            pathOrder: isPathHit ? (pathOrderMap.get(n.id) ?? null) : null,
           } as unknown as Record<string, unknown>,
           draggable: true,
         }
@@ -1012,8 +1083,9 @@ function TopologyPageInner() {
           ?? savedLayout[CLOUD_NODE_ID]
           ?? fallback
 
-        const isCloudDimmed = (searchMatchIds !== null && searchMatchIds.size > 0) ||
-          showIssuesOnly
+        const isCloudDimmed = isPathMode
+          ? !pathExitsToCloud
+          : (searchMatchIds !== null && searchMatchIds.size > 0) || showIssuesOnly
 
         cloudRfNode.push({
           id:        CLOUD_NODE_ID,
@@ -1057,8 +1129,11 @@ function TopologyPageInner() {
           }
         }
 
-        const edgeDimmed = (!!selectedId && !isAdj) ||
-          (searchMatchIds !== null && !searchMatchIds.has(e.source) && !searchMatchIds.has(e.target))
+        const isPathEdge = isPathMode && pathEdgeIdSet.has(e.id)
+        const edgeDimmed = isPathMode
+          ? !isPathEdge
+          : (!!selectedId && !isAdj) ||
+            (searchMatchIds !== null && !searchMatchIds.has(e.source) && !searchMatchIds.has(e.target))
 
         return {
           id: e.id, source: e.source, target: e.target,
@@ -1066,7 +1141,7 @@ function TopologyPageInner() {
           data: {
             label,
             protocol:        e.protocol,
-            highlighted:     !!selectedId && isAdj,
+            highlighted:     isPathMode ? isPathEdge : (!!selectedId && isAdj),
             dimmed:          edgeDimmed,
             source_port:     e.source_port,
             target_port:     e.target_port,
@@ -1096,7 +1171,9 @@ function TopologyPageInner() {
       })
       // We can't know the WAN interface name without the full interface list,
       // but we label the edge with the gateway hostname so it's clear.
-      const wanDimmed = (searchMatchIds !== null && searchMatchIds.size > 0) || showIssuesOnly
+      const wanDimmed = isPathMode
+        ? !pathExitsToCloud
+        : (searchMatchIds !== null && searchMatchIds.size > 0) || showIssuesOnly
       wanEdges = [{
         id:     `wan-edge-${wanGateway.id}`,
         source: CLOUD_NODE_ID,
@@ -1105,7 +1182,7 @@ function TopologyPageInner() {
         data:   {
           label:           showLabels ? 'WAN' : '',
           protocol:        'wan',
-          highlighted:     false,
+          highlighted:     pathExitsToCloud,
           dimmed:          wanDimmed,
           source_port:     'Internet',
           target_port:     wanGateway.hostname,
@@ -1119,7 +1196,8 @@ function TopologyPageInner() {
 
     setRfEdges([...apiEdges, ...wanEdges])
   }, [data, showIsolated, showIssuesOnly, hiddenTypes, selectedId, protocolFilter, showLabels,
-      alertsByDevice, utilBatch, searchMatchIds, savedLayout])
+      alertsByDevice, utilBatch, searchMatchIds, savedLayout,
+      pathHighlight, pathNodeIdSet, pathEdgeIdSet, pathOrderMap])
 
   // ── Drag with localStorage persistence ───────────────────────────────
   const onNodesChange = useCallback((changes: NodeChange[]) => {
@@ -1392,6 +1470,26 @@ function TopologyPageInner() {
               ? <span className="text-red-500">No devices match "{search}"</span>
               : <span>{searchMatchIds.size} device{searchMatchIds.size !== 1 ? 's' : ''} matched</span>
             }
+          </div>
+        )}
+
+        {/* Path-trace overlay banner */}
+        {pathHighlight && (
+          <div className="mt-1.5 flex items-center gap-2">
+            <span className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-blue-50 border border-blue-200 text-blue-700 text-xs font-medium">
+              <svg className="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
+              Path trace: <span className="font-mono">{pathHighlight.srcIp}</span> → <span className="font-mono">{pathHighlight.dstIp}</span>
+              <span className="text-blue-400">· {pathHighlight.deviceIds.length} hop{pathHighlight.deviceIds.length !== 1 ? 's' : ''}</span>
+            </span>
+            <button
+              onClick={() => setPathHighlight(null)}
+              className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600"
+            >
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth={2.5} viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              Clear
+            </button>
           </div>
         )}
       </div>

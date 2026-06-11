@@ -11,11 +11,12 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import cast, func, select, text, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_current_user, get_db
-from ..models.alert import Alert
+from ..dependencies import (
+    get_current_principal, get_db, Principal,
+    accessible_device_ids_subquery, _tenant_device_ids, _is_tenant_wide,
+)
 from ..models.device import Device
 from ..models.interface import Interface
-from ..models.tenant import User
 from ..database import AsyncSessionLocal
 
 _VM_URL = "http://localhost:8428"
@@ -31,7 +32,7 @@ _CACHE_TTL = 10  # seconds
 
 # ── Parallel query helpers ────────────────────────────────────────────────────
 
-async def _fetch_device_stats(tid) -> dict:
+async def _fetch_device_stats(device_ids: list[str]) -> dict:
     """Device counts, poll health, last poll — 2 queries in one session."""
     async with AsyncSessionLocal() as db:
         # status + type counts + poll health in a single aggregation pass
@@ -43,14 +44,14 @@ async def _fetch_device_stats(tid) -> dict:
                 SUM(CASE WHEN last_polled > NOW() - INTERVAL '2 minutes' THEN 1 ELSE 0 END) AS polled_recently,
                 MAX(last_polled) AS max_last_polled
             FROM devices
-            WHERE tenant_id = :tid AND is_active = true
+            WHERE id = ANY(:device_ids) AND is_active = true
             GROUP BY status, device_type
-        """), {"tid": str(tid)})).mappings().all()
+        """), {"device_ids": device_ids})).mappings().all()
 
         problem_rows = (await db.execute(text("""
             SELECT id::text, hostname, fqdn, mgmt_ip::text, vendor, device_type, status::text, last_seen
             FROM devices
-            WHERE tenant_id = :tid
+            WHERE id = ANY(:device_ids)
               AND is_active = true
               AND (
                 status IN ('down'::device_status, 'unreachable'::device_status)
@@ -59,7 +60,7 @@ async def _fetch_device_stats(tid) -> dict:
               )
             ORDER BY last_seen ASC NULLS FIRST
             LIMIT 8
-        """), {"tid": str(tid)})).mappings().all()
+        """), {"device_ids": device_ids})).mappings().all()
 
     status_counts: dict[str, int] = {}
     type_counts:   dict[str, int] = {}
@@ -97,35 +98,40 @@ async def _fetch_device_stats(tid) -> dict:
     }
 
 
-async def _fetch_alert_stats(tid) -> dict:
+async def _fetch_alert_stats(tid, device_ids: list[str]) -> dict:
     """All alert data — 4 queries in one session."""
     async with AsyncSessionLocal() as db:
+        params = {"tid": str(tid), "device_ids": device_ids}
+
         # severity counts
         sev_rows = (await db.execute(text("""
             SELECT severity::text, COUNT(*) AS n
             FROM alerts
             WHERE tenant_id = :tid AND status = 'open'::alert_status
+              AND (device_id IS NULL OR device_id = ANY(:device_ids))
             GROUP BY severity
-        """), {"tid": str(tid)})).mappings().all()
+        """), params)).mappings().all()
 
         # recent open alerts
         recent_rows = (await db.execute(text("""
             SELECT id::text, title, severity::text, triggered_at, device_id::text
             FROM alerts
             WHERE tenant_id = :tid AND status = 'open'::alert_status
+              AND (device_id IS NULL OR device_id = ANY(:device_ids))
             ORDER BY CASE severity
                 WHEN 'critical' THEN 1 WHEN 'major' THEN 2 WHEN 'minor' THEN 3 WHEN 'warning' THEN 4 ELSE 5
             END, triggered_at DESC
             LIMIT 8
-        """), {"tid": str(tid)})).mappings().all()
+        """), params)).mappings().all()
 
         # alert trend (hourly last 24h)
         trend_rows = (await db.execute(text("""
             SELECT date_trunc('hour', triggered_at) AS hour, COUNT(id) AS n
             FROM alerts
             WHERE tenant_id = :tid AND triggered_at > NOW() - INTERVAL '24 hours'
+              AND (device_id IS NULL OR device_id = ANY(:device_ids))
             GROUP BY 1 ORDER BY 1
-        """), {"tid": str(tid)})).mappings().all()
+        """), params)).mappings().all()
 
         # recently resolved
         resolved_rows = (await db.execute(text("""
@@ -134,9 +140,10 @@ async def _fetch_alert_stats(tid) -> dict:
             WHERE tenant_id = :tid
               AND status = 'resolved'::alert_status
               AND resolved_at > NOW() - INTERVAL '1 hour'
+              AND (device_id IS NULL OR device_id = ANY(:device_ids))
             ORDER BY resolved_at DESC
             LIMIT 8
-        """), {"tid": str(tid)})).mappings().all()
+        """), params)).mappings().all()
 
         # top alerting devices
         top_rows = (await db.execute(text("""
@@ -145,11 +152,11 @@ async def _fetch_alert_stats(tid) -> dict:
             JOIN devices d ON d.id = a.device_id
             WHERE a.tenant_id = :tid
               AND a.status = 'open'::alert_status
-              AND a.device_id IS NOT NULL
+              AND a.device_id = ANY(:device_ids)
             GROUP BY a.device_id, d.hostname, d.fqdn, d.device_type
             ORDER BY COUNT(a.id) DESC
             LIMIT 5
-        """), {"tid": str(tid)})).mappings().all()
+        """), params)).mappings().all()
 
     sev_counts = {r["severity"]: r["n"] for r in sev_rows}
     return {
@@ -180,28 +187,39 @@ async def _fetch_alert_stats(tid) -> dict:
     }
 
 
-async def _fetch_interfaces_down(tid) -> int:
+async def _fetch_interfaces_down(device_ids: list[str]) -> int:
     async with AsyncSessionLocal() as db:
         result = (await db.execute(text("""
             SELECT COUNT(*) FROM interfaces i
-            JOIN devices d ON d.id = i.device_id
-            WHERE d.tenant_id = :tid
-              AND d.is_active = true
+            WHERE i.device_id = ANY(:device_ids)
               AND i.oper_status  = 'down'::if_status
               AND i.admin_status = 'up'::if_status
-        """), {"tid": str(tid)})).scalar_one()
+        """), {"device_ids": device_ids})).scalar_one()
     return result or 0
+
+
+# ── Cache scoping ─────────────────────────────────────────────────────────────
+
+def _cache_scope(principal: Principal) -> str:
+    """A stable string identifying the principal's accessible-device scope, for cache keys."""
+    if _is_tenant_wide(principal):
+        return "all"
+    site_ids = set(principal.site_role_map)
+    if principal.token_site_ids:
+        site_ids &= set(principal.token_site_ids)
+    return ",".join(sorted(str(s) for s in site_ids))
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/overview", summary="Dashboard summary stats")
 async def overview(
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tid = current_user.tenant_id
-    cache_key = str(tid)
+    tid = principal.active_tenant_id
+    device_ids = await _tenant_device_ids(principal, db)
+    cache_key = f"{tid}:{_cache_scope(principal)}"
 
     # Return cached result if fresh
     entry = _overview_cache.get(cache_key)
@@ -210,9 +228,9 @@ async def overview(
 
     # Run the three independent query groups in parallel
     device_stats, alert_stats, ifaces_down = await asyncio.gather(
-        _fetch_device_stats(tid),
-        _fetch_alert_stats(tid),
-        _fetch_interfaces_down(tid),
+        _fetch_device_stats(device_ids),
+        _fetch_alert_stats(tid, device_ids),
+        _fetch_interfaces_down(device_ids),
     )
 
     sc = device_stats["status_counts"]
@@ -260,16 +278,14 @@ async def overview(
 async def top_bandwidth(
     limit: int = Query(default=8, ge=1, le=20),
     window_minutes: int = Query(default=30, ge=1, le=360),
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tid = current_user.tenant_id
-
     iface_rows = (await db.execute(
         select(Interface.id, Interface.device_id, Interface.if_index,
                Interface.name, Interface.speed_bps)
         .join(Device, Interface.device_id == Device.id)
-        .where(Device.tenant_id == tid, Device.is_active == True)  # noqa: E712
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)), Device.is_active == True)  # noqa: E712
     )).all()
 
     if not iface_rows:
@@ -277,7 +293,7 @@ async def top_bandwidth(
 
     dev_rows = (await db.execute(
         select(Device.id, Device.hostname, Device.fqdn, Device.device_type)
-        .where(Device.tenant_id == tid, Device.is_active == True)  # noqa: E712
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)), Device.is_active == True)  # noqa: E712
     )).all()
     device_info = {
         str(r.id): {"hostname": r.fqdn or r.hostname, "device_type": r.device_type or "unknown"}
@@ -392,14 +408,12 @@ async def top_bandwidth(
 @router.get("/overview/top-resources", summary="Top devices by CPU and memory right now")
 async def top_resources(
     limit: int = Query(default=5, ge=1, le=20),
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    tid = current_user.tenant_id
-
     dev_rows = (await db.execute(
         select(Device.id, Device.hostname, Device.fqdn, Device.device_type)
-        .where(Device.tenant_id == tid, Device.is_active == True)  # noqa: E712
+        .where(Device.id.in_(accessible_device_ids_subquery(principal)), Device.is_active == True)  # noqa: E712
     )).all()
     if not dev_rows:
         return {"cpu": [], "memory": []}
@@ -445,12 +459,13 @@ async def top_resources(
 
 @router.get("/overview/widget-data", summary="Aggregated data for dashboard widgets")
 async def widget_data(
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Returns multiple widget data in one request to minimize API calls."""
     from sqlalchemy import text as sq_text
-    tid = current_user.tenant_id
+    tid = principal.active_tenant_id
+    device_ids = await _tenant_device_ids(principal, db)
 
     # Run all queries in parallel
     async def _iface_health():
@@ -462,22 +477,21 @@ async def widget_data(
                 SUM(CASE WHEN i.admin_status = 'down'::if_status THEN 1 ELSE 0 END) AS admin_down,
                 COUNT(*) AS total
             FROM interfaces i
-            JOIN devices d ON d.id = i.device_id
-            WHERE d.tenant_id = :tid AND d.is_active = true
-        """), {"tid": str(tid)})).mappings().one()
+            WHERE i.device_id = ANY(:device_ids)
+        """), {"device_ids": device_ids})).mappings().one()
         return {k: int(v or 0) for k, v in r.items()}
 
     async def _routing_health():
         bgp = (await db.execute(sq_text("""
             SELECT session_state::text, COUNT(*) AS n
-            FROM bgp_sessions s JOIN devices d ON d.id = s.device_id
-            WHERE d.tenant_id = :tid GROUP BY session_state
-        """), {"tid": str(tid)})).all()
+            FROM bgp_sessions s
+            WHERE s.device_id = ANY(:device_ids) GROUP BY session_state
+        """), {"device_ids": device_ids})).all()
         ospf = (await db.execute(sq_text("""
             SELECT state::text, COUNT(*) AS n
-            FROM ospf_neighbors o JOIN devices d ON d.id = o.device_id
-            WHERE d.tenant_id = :tid GROUP BY state
-        """), {"tid": str(tid)})).all()
+            FROM ospf_neighbors o
+            WHERE o.device_id = ANY(:device_ids) GROUP BY state
+        """), {"device_ids": device_ids})).all()
         bgp_by  = {r[0]: r[1] for r in bgp}
         ospf_by = {r[0]: r[1] for r in ospf}
         return {
@@ -492,12 +506,12 @@ async def widget_data(
             FROM config_backups cb
             JOIN devices d ON d.id = cb.device_id
             LEFT JOIN config_diffs cd ON cd.curr_backup_id = cb.id
-            WHERE d.tenant_id = :tid
+            WHERE cb.device_id = ANY(:device_ids)
               AND cb.is_latest = true
               AND cb.collected_at >= NOW() - INTERVAL '24 hours'
             ORDER BY cb.collected_at DESC
             LIMIT 10
-        """), {"tid": str(tid)})).mappings().all()
+        """), {"device_ids": device_ids})).mappings().all()
         return [
             {
                 "device_id":    r["id"],

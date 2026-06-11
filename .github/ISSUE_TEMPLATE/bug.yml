@@ -1,0 +1,96 @@
+name: 🐛 Bug report
+description: Something in Anthrimon is broken or behaving unexpectedly.
+title: "bug: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. The more specific you can be, the faster we can fix it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: |
+        Describe the bug in one or two sentences, then show what you actually saw.
+        Logs, screenshots, and copy-pasted CLI output all help.
+      placeholder: |
+        After clicking "Discover" on a device, the engine ID stayed empty and the UI showed "failed — check SSH creds" even though SSH backup for the same device works fine.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      placeholder: The engine ID field should populate within a few seconds.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Be specific. We need to be able to recreate this.
+      placeholder: |
+        1. Add a device with vendor=cisco_ios and a working SSH credential
+        2. Open the device detail page
+        3. Click "Discover" next to Engine ID
+        4. Observe the failure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Anthrimon version / commit
+      description: Output of `git rev-parse --short HEAD` or the release tag you're running.
+      placeholder: "v1.0.0  or  e9c31ce"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-type
+    attributes:
+      label: How is it installed?
+      options:
+        - Bare-metal installer (Ubuntu 22.04/24.04)
+        - Built from source
+        - Docker / Compose
+        - Other (describe in environment box)
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Hub OS + version, Postgres / ClickHouse / VictoriaMetrics versions if non-default, any remote collectors involved.
+      value: |
+        - Hub OS:
+        - Hub CPU / RAM:
+        - PostgreSQL version:
+        - ClickHouse version:
+        - VictoriaMetrics version:
+        - Remote collectors (count + OS):
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        `journalctl -u anthrimon-api --no-pager -n 100` for backend issues,
+        `journalctl -u snmp-collector` for polling, `journalctl -u anthrimon-collector` for remote collectors.
+        Please redact passwords, JWTs, and customer device IPs.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Final checks
+      options:
+        - label: I searched existing issues and didn't find a duplicate.
+          required: true
+        - label: I'm not reporting a security vulnerability here (those go through Private Vulnerability Reporting — see SECURITY.md).
+          required: true

@@ -235,13 +235,13 @@ async def get_current_user(
     return user
 
 
-async def get_current_user_sse(
+async def get_current_principal_sse(
     request: Request,
     token_param: Optional[str] = Query(default=None, alias="token"),
     db: AsyncSession = Depends(get_db),
-) -> User:
-    """Like get_current_user but also accepts ?token= for SSE / EventSource clients
-    that cannot set the Authorization header."""
+) -> Principal:
+    """Like get_current_principal but also accepts ?token= for SSE / EventSource
+    clients that cannot set the Authorization header."""
     credentials_exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or missing authentication credentials",
@@ -261,6 +261,17 @@ async def get_current_user_sse(
         principal = await _principal_from_api_token(raw_token, db)
     if principal is None:
         raise credentials_exc
+    return principal
+
+
+async def get_current_user_sse(
+    request: Request,
+    token_param: Optional[str] = Query(default=None, alias="token"),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    """Like get_current_user but also accepts ?token= for SSE / EventSource clients
+    that cannot set the Authorization header."""
+    principal = await get_current_principal_sse(request, token_param, db)
     return principal.user
 
 
@@ -413,3 +424,23 @@ def accessible_device_ids_subquery(principal: Principal):
     return base.where(
         or_(Device.site_id.in_(accessible_sites), Device.site_id.is_(None))
     )
+
+
+async def _tenant_device_ids(principal: Principal, db: AsyncSession) -> list[str]:
+    """Return accessible active device UUIDs for this principal as strings."""
+    from .models.device import Device  # local import to avoid circular dependency
+
+    rows = (await db.execute(
+        accessible_device_ids_subquery(principal)
+        .where(Device.is_active == True)  # noqa: E712
+    )).scalars().all()
+    return [str(r) for r in rows]
+
+
+async def _assert_device_in_tenant(device_id: str, principal: Principal, db: AsyncSession) -> None:
+    await assert_device_access(principal, uuid.UUID(device_id), "readonly", db)
+
+
+def _is_tenant_wide(principal: Principal) -> bool:
+    """True if the principal sees the full tenant device set (no site restriction)."""
+    return principal.is_platform_admin or _has_tenant_role(principal, "tenant_admin")

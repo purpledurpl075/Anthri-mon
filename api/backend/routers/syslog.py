@@ -9,7 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_db, get_current_principal, accessible_device_ids_subquery, Principal, assert_device_access
+from ..dependencies import (
+    get_db, get_current_principal, Principal,
+    _tenant_device_ids, _assert_device_in_tenant,
+)
 from ..models.device import Device
 
 logger = structlog.get_logger(__name__)
@@ -55,19 +58,6 @@ async def _ch(query: str) -> list[dict]:
     except Exception as exc:
         logger.error("clickhouse_query_failed", error=str(exc))
         raise HTTPException(status_code=503, detail="Syslog data unavailable") from exc
-
-
-async def _assert_device_in_tenant(device_id: str, principal: Principal, db: AsyncSession) -> None:
-    import uuid as _uuid
-    await assert_device_access(principal, _uuid.UUID(device_id), "readonly", db)
-
-
-async def _tenant_device_ids(principal: Principal, db: AsyncSession) -> list[str]:
-    rows = (await db.execute(
-        accessible_device_ids_subquery(principal)
-        .where(Device.is_active == True)  # noqa: E712
-    )).scalars().all()
-    return [str(r) for r in rows]
 
 
 def _device_filter(device_ids: list[str]) -> str:

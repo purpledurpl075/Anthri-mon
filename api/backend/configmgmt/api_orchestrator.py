@@ -241,20 +241,56 @@ async def probe_method(ip: str, method: str) -> tuple[bool, Optional[str]]:
     return False, last_err
 
 
+async def _collector_for_device(device_id: str) -> Optional[tuple[str, str]]:
+    """Return (wg_ip, api_key_hash) for the collector that owns this device, or None."""
+    from ..models.site import RemoteCollector
+    async with AsyncSessionLocal() as db:
+        from ..models.device import Device as _Device
+        dev = (await db.execute(
+            select(_Device).where(_Device.id == device_id)
+        )).scalar_one_or_none()
+        if dev is None or dev.collector_id is None:
+            return None
+        col = (await db.execute(
+            select(RemoteCollector).where(RemoteCollector.id == dev.collector_id)
+        )).scalar_one_or_none()
+        if col is None or not col.wg_ip:
+            return None
+        return str(col.wg_ip).split("/")[0], col.api_key_hash
+
+
 async def probe_and_save(device_id: str, method: str, ip: str) -> dict:
-    """Run probe and update device_api_methods row. Returns updated row dict."""
-    reachable, error = await probe_method(ip, method)
+    """Run probe and upsert device_api_methods row. Returns updated row dict.
+
+    For collector-managed devices the probe is delegated to the collector's
+    /api-probe endpoint so the HTTP check runs from the collector's LAN.
+    Auto-enables the method when reachable so pre-configured devices are
+    detected without a manual Configure step.
+    """
+    col = await _collector_for_device(device_id)
+    if col:
+        from . import proxy as _proxy
+        wg_ip, key_hash = col
+        reachable, error = await _proxy.api_probe(
+            wg_ip=wg_ip, api_key_hash=key_hash,
+            device_ip=ip, method=method,
+        )
+    else:
+        reachable, error = await probe_method(ip, method)
     now = datetime.now(timezone.utc)
 
     async with AsyncSessionLocal() as db:
         await db.execute(text("""
-            UPDATE device_api_methods
-               SET reachable      = :reachable,
-                   last_probe_at  = :now,
-                   probe_error    = :error,
-                   updated_at     = :now
-             WHERE device_id = CAST(:did AS uuid)
-               AND method    = :method
+            INSERT INTO device_api_methods
+                        (device_id, method, enabled, reachable, last_probe_at, probe_error, updated_at)
+            VALUES      (CAST(:did AS uuid), :method, :reachable, :reachable, :now, :error, :now)
+            ON CONFLICT (device_id, method) DO UPDATE
+               SET reachable     = EXCLUDED.reachable,
+                   last_probe_at = EXCLUDED.last_probe_at,
+                   probe_error   = EXCLUDED.probe_error,
+                   enabled       = CASE WHEN EXCLUDED.reachable = true THEN true
+                                        ELSE device_api_methods.enabled END,
+                   updated_at    = EXCLUDED.updated_at
         """), {
             "did": device_id, "method": method,
             "reachable": reachable, "error": error, "now": now,
@@ -272,6 +308,7 @@ async def configure_method(device_id: str, method: str) -> dict:
     Returns {"status": "success"|"failed", "output": str}.
     """
     from .collector import _deploy_ssh, _vendor_key
+    from ..models.site import RemoteCollector
     from .. import crypto
 
     async with AsyncSessionLocal() as db:
@@ -304,6 +341,13 @@ async def configure_method(device_id: str, method: str) -> dict:
             except Exception:
                 pass
 
+        # Load collector if device is not hub-managed
+        collector = None
+        if dev.collector_id is not None:
+            collector = (await db.execute(
+                select(RemoteCollector).where(RemoteCollector.id == dev.collector_id)
+            )).scalar_one_or_none()
+
     host = dev.mgmt_ip_str
     vkey = _vendor_key(dev)
 
@@ -320,25 +364,54 @@ async def configure_method(device_id: str, method: str) -> dict:
             "output": f"no auto-configure commands defined for vendor={vendor} method={method}",
         }
 
-    # Mark as running
+    # Mark as running (UPSERT in case seed_device_methods hasn't run yet)
     now = datetime.now(timezone.utc)
     async with AsyncSessionLocal() as db:
         await db.execute(text("""
-            UPDATE device_api_methods
+            INSERT INTO device_api_methods
+                        (device_id, method, enabled, configure_status, configure_at, updated_at)
+            VALUES      (CAST(:did AS uuid), :method, false, 'running', :now, :now)
+            ON CONFLICT (device_id, method) DO UPDATE
                SET configure_status = 'running', configure_at = :now, updated_at = :now
-             WHERE device_id = CAST(:did AS uuid) AND method = :method
         """), {"did": device_id, "method": method, "now": now})
         await db.commit()
 
-    # Run SSH configure in thread pool (synchronous Netmiko)
-    loop = asyncio.get_event_loop()
+    # Run SSH configure — delegate through collector for remote devices
     try:
-        output = await loop.run_in_executor(
-            None, _deploy_ssh, host, 22, vkey, cred_data, commands, True
-        )
+        if collector is not None:
+            from . import proxy as _proxy
+            from ..routers.config_mgmt import _deploy_steps
+            if not collector.wg_ip or not collector.api_key_hash:
+                raise RuntimeError("collector has no WireGuard IP — cannot delegate configure")
+            payload = {
+                "operation":          "deploy",
+                "device_ip":          host,
+                "ssh_port":           22,
+                "vendor":             vkey,
+                "username":           cred_data.get("username", ""),
+                "password":           cred_data.get("password", ""),
+                "enable_secret":      cred_data.get("enable_secret", "") or "",
+                "enter_enable":       vkey in _proxy.ENABLE_VENDORS,
+                "serve_config":       "",
+                "expected_source_ip": "",
+                "steps":              _deploy_steps(vkey, commands, save=True),
+                "final_read_command": "",
+            }
+            data = await _proxy.config_exec(
+                wg_ip=str(collector.wg_ip),
+                api_key_hash=collector.api_key_hash,
+                payload=payload,
+            )
+            output = data.get("output", "")
+        else:
+            loop = asyncio.get_event_loop()
+            output = await loop.run_in_executor(
+                None, _deploy_ssh, host, 22, vkey, cred_data, commands, True
+            )
         status = "success"
         logger.info("api_method_configured",
-                    device_id=device_id, method=method, vendor=vkey)
+                    device_id=device_id, method=method, vendor=vkey,
+                    via="collector" if collector else "hub")
     except Exception as exc:
         output = str(exc)
         status = "failed"
@@ -400,6 +473,24 @@ async def seed_device_methods(device_id: str, vendor: str) -> None:
 
 # ── Background probe sweep ────────────────────────────────────────────────────
 
+async def _seed_missing_devices() -> None:
+    """One-time back-fill: seed api_method rows for devices that pre-date auto-seeding."""
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(text("""
+            SELECT d.id::text, d.vendor::text
+            FROM   devices d
+            WHERE  d.is_active = true
+            AND    NOT EXISTS (
+                SELECT 1 FROM device_api_methods dam WHERE dam.device_id = d.id
+            )
+        """))).all()
+    for device_id, vendor in rows:
+        try:
+            await seed_device_methods(device_id, vendor or "unknown")
+        except Exception:
+            logger.exception("seed_missing_device_failed", device_id=device_id)
+
+
 async def _probe_sweep() -> None:
     """Probe all non-SNMP API method rows and update reachability."""
     async with AsyncSessionLocal() as db:
@@ -409,7 +500,6 @@ async def _probe_sweep() -> None:
             JOIN devices d ON d.id = dam.device_id
             WHERE dam.method != 'snmp'
               AND d.is_active = true
-              AND d.collector_id IS NULL
         """))).all()
 
     if not rows:
@@ -426,6 +516,7 @@ async def _probe_sweep() -> None:
 
 
 async def _probe_loop(interval_s: int) -> None:
+    await _seed_missing_devices()
     while True:
         await asyncio.sleep(interval_s)
         try:

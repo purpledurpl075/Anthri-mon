@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from typing import Optional
 
 import structlog
@@ -11,11 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..configmgmt.api_orchestrator import (
     METHOD_LABELS, VENDOR_METHODS, configure_method, probe_and_save,
 )
-from ..dependencies import get_current_user, get_db
+from ..dependencies import (
+    get_current_principal, get_db, Principal,
+    accessible_device_ids_subquery, assert_device_access, _tenant_device_ids,
+)
 from ..models.api_method import DeviceApiMethod
 from ..models.credential import Credential, DeviceCredential
 from ..models.device import Device
-from ..models.tenant import User
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api-methods", tags=["api-methods"])
@@ -50,11 +53,11 @@ def _has_ssh_cred(creds: list) -> bool:
 
 @router.get("/", summary="All devices with their API method status")
 async def list_all(
-    current_user: User         = Depends(get_current_user),
-    db:           AsyncSession = Depends(get_db),
+    principal: Principal     = Depends(get_current_principal),
+    db:        AsyncSession = Depends(get_db),
 ) -> list[dict]:
     devs = (await db.execute(
-        select(Device).where(Device.tenant_id == current_user.tenant_id, Device.is_active == True)  # noqa
+        select(Device).where(Device.id.in_(accessible_device_ids_subquery(principal)), Device.is_active == True)  # noqa
         .order_by(Device.vendor, Device.hostname)
     )).scalars().all()
 
@@ -102,10 +105,10 @@ async def list_all(
 async def probe(
     device_id:    str,
     method:       str,
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal    = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> dict:
-    dev = await _get_device(device_id, current_user, db)
+    dev = await _get_device(device_id, principal, db, "readonly")
     ip = dev.mgmt_ip_str
     return await probe_and_save(device_id, method, ip)
 
@@ -114,10 +117,10 @@ async def probe(
 async def toggle(
     device_id:    str,
     method:       str,
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal    = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> dict:
-    dev = await _get_device(device_id, current_user, db)
+    dev = await _get_device(device_id, principal, db, "operator")
 
     row = (await db.execute(
         select(DeviceApiMethod)
@@ -142,7 +145,7 @@ async def toggle(
 async def get_commands(
     device_id:    str,
     method:       str,
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal    = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> dict:
     from ..configmgmt.api_orchestrator import (
@@ -153,7 +156,7 @@ async def get_commands(
     import json
 
     if method in ("arista_eapi", "aruba_cx_rest"):
-        dev = await _get_device(device_id, current_user, db)
+        dev = await _get_device(device_id, principal, db, "operator")
         cred_row = (await db.execute(
             select(Credential)
             .join(DeviceCredential, DeviceCredential.credential_id == Credential.id)
@@ -182,26 +185,26 @@ async def get_commands(
 async def configure(
     device_id:    str,
     method:       str,
-    current_user: User         = Depends(get_current_user),
+    principal:    Principal    = Depends(get_current_principal),
     db:           AsyncSession = Depends(get_db),
 ) -> dict:
-    await _get_device(device_id, current_user, db)
+    await _get_device(device_id, principal, db, "operator")
     return await configure_method(device_id, method)
 
 
 @router.post("/probe-all", summary="Probe all non-SNMP methods for tenant devices")
 async def probe_all(
-    current_user: User         = Depends(get_current_user),
-    db:           AsyncSession = Depends(get_db),
+    principal: Principal     = Depends(get_current_principal),
+    db:        AsyncSession = Depends(get_db),
 ) -> dict:
+    device_ids = await _tenant_device_ids(principal, db)
     rows = (await db.execute(text("""
         SELECT dam.device_id::text, dam.method, d.mgmt_ip::text
         FROM device_api_methods dam
         JOIN devices d ON d.id = dam.device_id
         WHERE dam.method != 'snmp'
-          AND d.is_active = true
-          AND d.tenant_id = CAST(:tid AS uuid)
-    """), {"tid": str(current_user.tenant_id)})).all()
+          AND dam.device_id = ANY(:device_ids)
+    """), {"device_ids": device_ids})).all()
 
     import asyncio
     from ..configmgmt.api_orchestrator import probe_and_save as _pas
@@ -215,9 +218,10 @@ async def probe_all(
 
 # ── Auth helper ───────────────────────────────────────────────────────────────
 
-async def _get_device(device_id: str, user: User, db: AsyncSession) -> Device:
+async def _get_device(device_id: str, principal: Principal, db: AsyncSession, min_role: str = "readonly") -> Device:
+    await assert_device_access(principal, uuid.UUID(device_id), min_role, db)
     dev = (await db.execute(
-        select(Device).where(Device.id == device_id, Device.tenant_id == user.tenant_id)
+        select(Device).where(Device.id == device_id)
     )).scalar_one_or_none()
     if dev is None:
         raise HTTPException(404, "device not found")

@@ -1,0 +1,73 @@
+name: ✨ Feature request
+description: Suggest a new capability or improvement.
+title: "feat: "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing a feature request, please skim the [project backlog](https://github.com/purpledurpl075/Anthri-mon/issues?q=is%3Aopen+label%3Aenhancement) — we may already be tracking it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: |
+        Describe the operator-level pain, not a proposed solution.
+        "I can't tell which suppressed alerts are children of a given device_down" is a useful problem; "Add a children-per-parent badge" is a proposed solution.
+      placeholder: |
+        When a switch goes down at 3am I get 47 emails — one for the switch and one per port. I want a single page summary.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would solve it?
+      description: |
+        Concrete proposal. UI sketches, API shape, or behaviour description are all fine.
+      placeholder: |
+        On the parent alert, list each suppressed child inline with a link to its detail page.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Other approaches you weighed and why they're worse.
+      placeholder: |
+        Could just hide suppressed alerts from the email — but operators want to know children exist, just not 47 separate pages.
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Which part of the system does this touch?
+      multiple: true
+      options:
+        - SNMP polling / collectors
+        - Flow ingest
+        - Syslog ingest
+        - SNMP traps
+        - Alerting / suppression
+        - Notifications
+        - Config management
+        - Topology
+        - Remote collectors / WireGuard
+        - Frontend / UX
+        - API
+        - Authentication / RBAC
+        - Installer / deployment
+        - Other
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Final checks
+      options:
+        - label: I searched existing issues and discussions and didn't find a duplicate.
+          required: true
+        - label: I'm willing to help test a draft implementation.
+          required: false

@@ -10,6 +10,14 @@ apt-get install -y nginx
 
 echo "==> Writing nginx site config..."
 cat > "$NGINX_CONF" << 'NGINX'
+# WebSocket upgrade map — `Connection: upgrade` when the client requests an
+# Upgrade, `Connection: close` otherwise.  Lets the same /api/ proxy block
+# handle both regular HTTP requests and WebSocket upgrades (e.g. /probes/ws).
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen 80 default_server;
     server_name _;
@@ -37,10 +45,18 @@ server {
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header   X-Forwarded-Proto $scheme;
 
-        # SSE / long-poll — disable buffering, extend timeout
-        proxy_set_header   Connection        '';
+        # SSE / long-poll / WebSocket — disable buffering, extend timeout
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        $connection_upgrade;
         proxy_buffering    off;
         proxy_read_timeout 3600s;
+
+        # Backup upload (Platform Health → Upload backup) can be multi-GiB;
+        # match the API's 10 GiB cap, stream through nginx instead of
+        # buffering, and give slow uploads up to an hour.
+        client_max_body_size      10G;
+        proxy_request_buffering   off;
+        proxy_send_timeout        3600s;
     }
 }
 NGINX

@@ -15,8 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .. import crypto
 from ..alerting.notify import _build_test_email, _send_smtp
-from ..dependencies import get_db, require_role, require_tenant_user
-from ..models.settings import SystemSetting
+from ..alerting.settings import TENANT_OVERRIDABLE_KEYS, get_effective_alerting_settings, load_platform_defaults
+from ..dependencies import get_db, require_role, require_tenant_user, require_platform, Principal
+from ..models.settings import PlatformSetting, SystemSetting
 from ..models.tenant import Tenant, User
 from ..schemas.admin import SmtpSettingsRead, SmtpSettingsWrite
 
@@ -25,77 +26,6 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 _SMTP_KEY     = "smtp"
 _TEMPLATE_KEY = "email_template"
-_PLATFORM_KEY = "platform"
-
-PLATFORM_DEFAULTS: dict = {
-    # General
-    "base_url":                      "",
-    "platform_name":                 "Anthrimon",
-    "timezone":                      "UTC",
-    # Session & security
-    "session_timeout_hours":         24,
-    # Alerting engine
-    "alert_eval_interval_s":         15,
-    "default_renotify_s":            3600,
-    "max_alerts_per_device_per_hour": 0,
-    "auto_close_stale_days":         0,
-    "device_down_stale_min_s":       45,
-    # Notifications
-    "notifications_paused":          False,
-    "notifications_paused_until":    None,
-    "business_hours_enabled":        False,
-    "business_hours_start":          8,
-    "business_hours_end":            18,
-    "business_days":                 [0, 1, 2, 3, 4],
-    # Data
-    "alert_retention_days":          90,
-    # Threat intelligence
-    "abuseipdb_api_key":             "",
-    # Remote collectors
-    "wg_public_endpoint":            "",
-}
-
-
-class PlatformSettingsRead(BaseModel):
-    base_url:                       str
-    platform_name:                  str
-    timezone:                       str
-    session_timeout_hours:          int
-    alert_eval_interval_s:          int
-    default_renotify_s:             int
-    max_alerts_per_device_per_hour: int
-    auto_close_stale_days:          int
-    device_down_stale_min_s:        int
-    notifications_paused:           bool
-    notifications_paused_until:     Optional[str]
-    business_hours_enabled:         bool
-    business_hours_start:           int
-    business_hours_end:             int
-    business_days:                  list[int]
-    alert_retention_days:           int
-    abuseipdb_api_key:              str        = ""
-    wg_public_endpoint:             str        = ""
-
-
-class PlatformSettingsWrite(BaseModel):
-    base_url:                       str        = ""
-    platform_name:                  str        = "Anthrimon"
-    timezone:                       str        = "UTC"
-    session_timeout_hours:          int        = 24
-    alert_eval_interval_s:          int        = 15
-    default_renotify_s:             int        = 3600
-    max_alerts_per_device_per_hour: int        = 0
-    auto_close_stale_days:          int        = 0
-    device_down_stale_min_s:        int        = 45
-    notifications_paused:           bool       = False
-    notifications_paused_until:     Optional[str] = None
-    business_hours_enabled:         bool       = False
-    business_hours_start:           int        = 8
-    business_hours_end:             int        = 18
-    business_days:                  list[int]  = [0, 1, 2, 3, 4]
-    alert_retention_days:           int        = 90
-    abuseipdb_api_key:              str        = ""
-    wg_public_endpoint:             str        = ""
 
 DEFAULT_SUBJECT  = "[{{tag}}] {{title}}"
 
@@ -636,6 +566,77 @@ async def save_tenant_settings(
     )
 
 
+# ── Tenant alerting settings (per-tenant overrides of platform defaults) ───────
+
+class TenantAlertingSettings(BaseModel):
+    device_down_stale_min_s:        int
+    max_alerts_per_device_per_hour: int
+    auto_close_stale_days:          int
+    alert_retention_days:           int
+    notifications_paused:           bool
+    notifications_paused_until:     Optional[str] = None
+    business_hours_enabled:         bool
+    business_hours_start:           int
+    business_hours_end:             int
+    business_days:                  list[int]
+
+
+class TenantAlertingSettingsRead(TenantAlertingSettings):
+    # The platform-wide defaults for these same keys, so the UI can show
+    # which fields this tenant has overridden vs. inherited.
+    platform_defaults: dict
+
+
+@router.get("/settings/alerting", response_model=TenantAlertingSettingsRead,
+            summary="Get this tenant's effective alerting settings")
+async def get_tenant_alerting_settings(
+    current_user: User = Depends(require_tenant_user("tenant_admin")),
+    db: AsyncSession = Depends(get_db),
+) -> TenantAlertingSettingsRead:
+    platform_defaults = await load_platform_defaults(db)
+    effective = await get_effective_alerting_settings(db, current_user.tenant_id, platform_defaults)
+    return TenantAlertingSettingsRead(
+        **effective,
+        platform_defaults={k: platform_defaults[k] for k in TENANT_OVERRIDABLE_KEYS},
+    )
+
+
+@router.put("/settings/alerting", response_model=TenantAlertingSettingsRead,
+            summary="Set this tenant's alerting setting overrides")
+async def save_tenant_alerting_settings(
+    body: TenantAlertingSettings,
+    current_user: User = Depends(require_tenant_user("tenant_admin")),
+    db: AsyncSession = Depends(get_db),
+) -> TenantAlertingSettingsRead:
+    if not 1 <= body.alert_retention_days <= 3650:
+        raise HTTPException(status_code=400, detail="alert_retention_days must be 1–3650")
+
+    platform_defaults = await load_platform_defaults(db)
+
+    # Only persist values that differ from the platform default, so this
+    # tenant continues to track future platform-default changes for any
+    # field it hasn't explicitly customized.
+    overrides = {}
+    for key in TENANT_OVERRIDABLE_KEYS:
+        val = getattr(body, key)
+        if val != platform_defaults[key]:
+            overrides[key] = val
+
+    tenant = (await db.execute(
+        select(Tenant).where(Tenant.id == current_user.tenant_id)
+    )).scalar_one()
+    tenant.settings = {**(tenant.settings or {}), "alerting": overrides}
+    await db.commit()
+    logger.info("tenant_alerting_settings_updated",
+                tenant_id=str(current_user.tenant_id), overrides=sorted(overrides.keys()))
+
+    effective = {**{k: platform_defaults[k] for k in TENANT_OVERRIDABLE_KEYS}, **overrides}
+    return TenantAlertingSettingsRead(
+        **effective,
+        platform_defaults={k: platform_defaults[k] for k in TENANT_OVERRIDABLE_KEYS},
+    )
+
+
 # ── Sites ──────────────────────────────────────────────────────────────────────
 
 import uuid as _uuid
@@ -808,47 +809,6 @@ async def get_unassigned_devices(
             for d in devices]
 
 
-# ── Platform settings ──────────────────────────────────────────────────────────
-
-async def load_platform_settings(db: AsyncSession) -> dict:
-    """Return merged platform settings (stored overrides + defaults)."""
-    row = (await db.execute(
-        select(SystemSetting).where(SystemSetting.key == _PLATFORM_KEY)
-    )).scalar_one_or_none()
-    stored = row.value if row else {}
-    return {**PLATFORM_DEFAULTS, **stored}
-
-
-@router.get("/settings/platform", response_model=PlatformSettingsRead,
-            summary="Get platform-wide configuration")
-async def get_platform_settings(
-    _: User = Depends(require_tenant_user("tenant_admin")),
-    db: AsyncSession = Depends(get_db),
-) -> PlatformSettingsRead:
-    cfg = await load_platform_settings(db)
-    return PlatformSettingsRead(**cfg)
-
-
-@router.put("/settings/platform", response_model=PlatformSettingsRead,
-            summary="Save platform-wide configuration")
-async def save_platform_settings(
-    body: PlatformSettingsWrite,
-    _: User = Depends(require_tenant_user("tenant_admin")),
-    db: AsyncSession = Depends(get_db),
-) -> PlatformSettingsRead:
-    value = body.model_dump()
-    row = (await db.execute(
-        select(SystemSetting).where(SystemSetting.key == _PLATFORM_KEY)
-    )).scalar_one_or_none()
-    if row:
-        row.value = value
-    else:
-        db.add(SystemSetting(key=_PLATFORM_KEY, value=value))
-    await db.commit()
-    logger.info("platform_settings_updated")
-    return PlatformSettingsRead(**value)
-
-
 # ── Data management ────────────────────────────────────────────────────────────
 
 _CH_URL = "http://localhost:8123"
@@ -864,7 +824,7 @@ async def _ch_admin(query: str) -> list[dict]:
 
 @router.get("/data/stats", summary="Storage usage stats across alerts, flow, and syslog")
 async def data_stats(
-    _: User = Depends(require_tenant_user("tenant_admin")),
+    _: Principal = Depends(require_platform()),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     import re as _re
@@ -884,7 +844,7 @@ async def data_stats(
         "SELECT pg_size_pretty(pg_total_relation_size('config_backups'))"
     ))).scalar_one()
 
-    platform = await load_platform_settings(db)
+    platform = await load_platform_defaults(db)
 
     # ClickHouse queries — degrade gracefully if unavailable
     ch_flow: list[dict] = []
@@ -963,26 +923,25 @@ class RetentionUpdate(BaseModel):
 @router.put("/data/retention/alerts", summary="Set alert retention days")
 async def set_alert_retention(
     body: RetentionUpdate,
-    current_user: User = Depends(require_tenant_user("tenant_admin")),
+    _: Principal = Depends(require_platform()),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     if not 1 <= body.retention_days <= 3650:
         raise HTTPException(status_code=400, detail="retention_days must be 1–3650")
-    settings = await load_platform_settings(db)
-    settings["alert_retention_days"] = body.retention_days
     row = (await db.execute(
-        select(SystemSetting).where(SystemSetting.key == _PLATFORM_KEY)
+        select(PlatformSetting).where(PlatformSetting.key == "alert_retention_days")
     )).scalar_one_or_none()
     if row:
-        row.value = settings
+        row.value = body.retention_days
+        row.updated_at = datetime.utcnow()
     else:
-        db.add(SystemSetting(key=_PLATFORM_KEY, value=settings))
+        db.add(PlatformSetting(key="alert_retention_days", value=body.retention_days))
     await db.commit()
     return {"retention_days": body.retention_days}
 
 
 @router.put("/data/retention/flow", summary="Set flow data TTL in ClickHouse")
-async def set_flow_retention(body: RetentionUpdate, _: User = Depends(require_tenant_user("tenant_admin"))) -> dict:
+async def set_flow_retention(body: RetentionUpdate, _: Principal = Depends(require_platform())) -> dict:
     if not 1 <= body.retention_days <= 3650:
         raise HTTPException(status_code=400, detail="retention_days must be 1–3650")
     d = body.retention_days
@@ -1000,7 +959,7 @@ async def set_flow_retention(body: RetentionUpdate, _: User = Depends(require_te
 
 
 @router.put("/data/retention/syslog", summary="Set syslog data TTL in ClickHouse")
-async def set_syslog_retention(body: RetentionUpdate, _: User = Depends(require_tenant_user("tenant_admin"))) -> dict:
+async def set_syslog_retention(body: RetentionUpdate, _: Principal = Depends(require_platform())) -> dict:
     if not 1 <= body.retention_days <= 3650:
         raise HTTPException(status_code=400, detail="retention_days must be 1–3650")
     d = body.retention_days

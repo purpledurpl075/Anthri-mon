@@ -118,8 +118,11 @@ func (s *Server) Run(ctx context.Context) error {
 	mux.HandleFunc("/update", s.handleUpdate)
 	mux.HandleFunc("/live", s.handleLive)
 	mux.HandleFunc("/probe", s.handleProbe)
+	mux.HandleFunc("/probe-icmp", s.handleProbeICMP)
 	mux.HandleFunc("/sweep", s.handleSweep)
 	mux.HandleFunc("/poll", s.handlePoll)
+	mux.HandleFunc("/config-exec", s.handleConfigExec)
+	mux.HandleFunc("/api-probe", s.handleAPIProbe)
 	mux.HandleFunc("/trap-config", s.handleTrapConfig)
 
 	addr := net.JoinHostPort(s.wgIP, fmt.Sprintf("%d", s.port))
@@ -532,4 +535,218 @@ func (s *Server) handleTrapConfig(w http.ResponseWriter, r *http.Request) {
 		"status":    "restarted",
 		"v3_users":  len(req.Users),
 	})
+}
+
+// ── /probe-icmp ──────────────────────────────────────────────────────────────
+//
+// Runs ping / traceroute / mtr from this collector's vantage point and streams
+// the output back as newline-delimited JSON.  Each line is one of:
+//
+//   {"event": "start",    "command": "...", "source": "<wg-ip>"}
+//   {"event": "line",     "data":    "..."}
+//   {"event": "complete", "exit_code": N}
+//   {"event": "error",    "detail":  "..."}
+//
+// Hub-side router consumes this and forwards events to its own WebSocket client.
+
+type probeICMPReq struct {
+	Type     string `json:"type"`       // "ping" | "traceroute" | "mtr"
+	Target   string `json:"target"`     // hostname or IP
+	Count    int    `json:"count"`      // probes (ping/mtr) — clamped 1..60
+	TimeoutS int    `json:"timeout_s"`  // per-probe seconds — clamped 1..10
+	MaxHops  int    `json:"max_hops"`   // traceroute only — clamped 1..32
+}
+
+func validProbeTarget(s string) bool {
+	if len(s) == 0 || len(s) > 253 || s[0] == '-' {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z',
+			r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9',
+			r == '.', r == ':', r == '-', r == '_':
+			// ok
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo { return lo }
+	if v > hi { return hi }
+	return v
+}
+
+func (s *Server) handleProbeICMP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.checkAuth(w, r) {
+		return
+	}
+
+	var req probeICMPReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !validProbeTarget(req.Target) {
+		http.Error(w, "invalid target", http.StatusBadRequest)
+		return
+	}
+	count := clampInt(req.Count, 1, 60)
+	timeoutS := clampInt(req.TimeoutS, 1, 10)
+	maxHops := clampInt(req.MaxHops, 1, 32)
+	if count == 0 { count = 5 }
+	if timeoutS == 0 { timeoutS = 3 }
+	if maxHops == 0 { maxHops = 24 }
+
+	var cmd *exec.Cmd
+	switch req.Type {
+	case "ping":
+		cmd = exec.Command("ping", "-n", "-c", strconv.Itoa(count), "-W", strconv.Itoa(timeoutS), req.Target)
+	case "traceroute":
+		// Drop -n so inetutils-traceroute (which doesn't support it) works
+		// alongside the modern traceroute package.  The parser accepts both
+		// IPs and hostnames.
+		cmd = exec.Command("traceroute", "-w", strconv.Itoa(timeoutS), "-q", "1",
+			"-m", strconv.Itoa(maxHops), req.Target)
+	case "mtr":
+		// Long-form flags — work on mtr (full) and mtr-tiny.  If mtr-tiny
+		// glibc-aborts anyway, the hub-side runner detects the abort line
+		// and surfaces a clear install message.
+		cmd = exec.Command("mtr", "--report", "--report-cycles", strconv.Itoa(count),
+			"--no-dns", req.Target)
+	default:
+		http.Error(w, "type must be ping|traceroute|mtr", http.StatusBadRequest)
+		return
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		http.Error(w, "pipe: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	cmd.Stderr = cmd.Stdout
+
+	// Stream newline-JSON.  Disable buffering on the response writer so each line
+	// reaches the hub immediately.
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("X-Accel-Buffering", "no")
+	flusher, _ := w.(http.Flusher)
+
+	writeEvent := func(ev map[string]any) bool {
+		buf, _ := json.Marshal(ev)
+		buf = append(buf, '\n')
+		if _, err := w.Write(buf); err != nil {
+			return false
+		}
+		if flusher != nil { flusher.Flush() }
+		return true
+	}
+
+	wgIP, _ := getOutboundIP()
+	// Hide the absolute path of the binary in the displayed command.
+	displayArgs := append([]string{}, cmd.Args...)
+	if len(displayArgs) > 0 {
+		if i := strings.LastIndex(displayArgs[0], "/"); i >= 0 {
+			displayArgs[0] = displayArgs[0][i+1:]
+		}
+	}
+	writeEvent(map[string]any{
+		"event":   "start",
+		"command": strings.Join(displayArgs, " "),
+		"source":  wgIP,
+	})
+
+	if err := cmd.Start(); err != nil {
+		writeEvent(map[string]any{"event": "error", "detail": "start: " + err.Error()})
+		return
+	}
+
+	// Stream stdout line-by-line.  Watch for glibc fortify-check aborts
+	// (`*** buffer overflow detected *** : terminated`) which Ubuntu's
+	// mtr-tiny throws — surface a clean error instead of the abort line.
+	buf := make([]byte, 4096)
+	leftover := []byte{}
+	glibcAbort := false
+	for {
+		n, err := stdout.Read(buf)
+		if n > 0 {
+			leftover = append(leftover, buf[:n]...)
+			for {
+				i := bytesIndexNewline(leftover)
+				if i < 0 { break }
+				line := strings.TrimRight(string(leftover[:i]), "\r")
+				leftover = leftover[i+1:]
+				if line == "" { continue }
+				if strings.Contains(line, "buffer overflow detected") ||
+					strings.Contains(line, "stack smashing detected") {
+					glibcAbort = true
+					continue
+				}
+				if !writeEvent(map[string]any{"event": "line", "data": line}) {
+					_ = cmd.Process.Kill()
+					return
+				}
+			}
+		}
+		if err != nil { break }
+	}
+	if len(leftover) > 0 {
+		tail := strings.TrimRight(string(leftover), "\r")
+		if !strings.Contains(tail, "buffer overflow detected") &&
+			!strings.Contains(tail, "stack smashing detected") {
+			writeEvent(map[string]any{"event": "line", "data": tail})
+		} else {
+			glibcAbort = true
+		}
+	}
+	if glibcAbort && req.Type == "mtr" {
+		writeEvent(map[string]any{
+			"event":  "error",
+			"detail": "mtr crashed with a glibc fortify abort — install full mtr (sudo apt-get install -y mtr) on the collector.",
+		})
+		_ = cmd.Wait()
+		return
+	}
+
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(10 * time.Second))
+
+	exitCode := 0
+	if err := cmd.Wait(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			exitCode = ee.ExitCode()
+		} else {
+			writeEvent(map[string]any{"event": "error", "detail": "wait: " + err.Error()})
+			return
+		}
+	}
+	writeEvent(map[string]any{"event": "complete", "exit_code": exitCode})
+}
+
+func bytesIndexNewline(b []byte) int {
+	for i, c := range b {
+		if c == '\n' { return i }
+	}
+	return -1
+}
+
+// getOutboundIP returns the IP address used by the host to reach the public
+// internet — used to label the "source" of probe events.  Falls back to the
+// hostname if no UDP connect succeeds.
+func getOutboundIP() (string, error) {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		h, _ := os.Hostname()
+		return h, err
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String(), nil
 }

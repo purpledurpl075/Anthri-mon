@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Question or discussion
+    url: https://github.com/purpledurpl075/Anthri-mon/discussions
+    about: For "how do I…" questions, deployment help, or general discussion.
+  - name: 🔒 Security vulnerability
+    url: https://github.com/purpledurpl075/Anthri-mon/security/advisories/new
+    about: Report security issues privately. Please do not file a public bug.

@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, Text, func
 from sqlalchemy.dialects.postgresql import ENUM as PgEnum, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -68,3 +68,33 @@ class ComplianceResult(Base):
     status:     Mapped[str]               = mapped_column(Text, nullable=False)  # pass / fail / error
     findings:   Mapped[list]              = mapped_column(JSONB, nullable=False, default=list)
     created_at: Mapped[datetime]          = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class GoldenConfig(Base):
+    __tablename__ = "golden_configs"
+
+    id:              Mapped[uuid.UUID]          = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id:       Mapped[uuid.UUID]          = mapped_column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=False)
+    site_id:         Mapped[Optional[uuid.UUID]]= mapped_column(UUID(as_uuid=True), ForeignKey("sites.id", ondelete="SET NULL"))
+    name:            Mapped[str]               = mapped_column(Text, nullable=False)
+    description:     Mapped[Optional[str]]     = mapped_column(Text)
+    is_enabled:      Mapped[bool]              = mapped_column(Boolean, nullable=False, default=True)
+    device_selector: Mapped[Optional[dict]]    = mapped_column(JSONB)
+    template_text:   Mapped[str]               = mapped_column(Text, nullable=False, default="")
+    created_at:      Mapped[datetime]          = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at:      Mapped[datetime]          = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class GoldenConfigResult(Base):
+    __tablename__ = "golden_config_results"
+
+    id:               Mapped[uuid.UUID]          = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id:        Mapped[uuid.UUID]          = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False)
+    golden_config_id: Mapped[uuid.UUID]          = mapped_column(UUID(as_uuid=True), ForeignKey("golden_configs.id", ondelete="CASCADE"), nullable=False)
+    backup_id:        Mapped[Optional[uuid.UUID]]= mapped_column(UUID(as_uuid=True), ForeignKey("config_backups.id", ondelete="SET NULL"), nullable=True)
+    checked_at:       Mapped[datetime]           = mapped_column(DateTime(timezone=True), nullable=False)
+    score:            Mapped[float]              = mapped_column(Numeric(5, 2), nullable=False)
+    matched_lines:    Mapped[int]                = mapped_column(Integer, nullable=False, default=0)
+    total_lines:      Mapped[int]                = mapped_column(Integer, nullable=False, default=0)
+    missing_lines:    Mapped[list]               = mapped_column(JSONB, nullable=False, default=list)
+    created_at:       Mapped[datetime]           = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

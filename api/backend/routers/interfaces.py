@@ -12,9 +12,11 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..dependencies import get_current_user, get_current_user_sse, get_db, require_role
+from ..dependencies import (
+    get_current_principal, get_current_principal_sse, get_db, Principal,
+    assert_device_access,
+)
 from ..models.interface import Interface
-from ..models.tenant import User
 from ..schemas.interface import InterfaceRead, InterfaceUpdate
 
 logger = structlog.get_logger(__name__)
@@ -26,10 +28,10 @@ _VM_URL = "http://localhost:8428"
 @router.get("/{interface_id}", response_model=InterfaceRead, summary="Get a single interface")
 async def get_interface(
     interface_id: uuid.UUID,
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> InterfaceRead:
-    iface = await _get_interface_for_tenant(interface_id, current_user.tenant_id, db)
+    iface = await _get_interface_for_tenant(interface_id, principal, db, "readonly")
     return InterfaceRead.model_validate(iface)
 
 
@@ -37,10 +39,10 @@ async def get_interface(
 async def update_interface(
     interface_id: uuid.UUID,
     body: InterfaceUpdate,
-    current_user: User = Depends(require_role("admin", "superadmin", "operator")),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> InterfaceRead:
-    iface = await _get_interface_for_tenant(interface_id, current_user.tenant_id, db)
+    iface = await _get_interface_for_tenant(interface_id, principal, db, "operator")
 
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(iface, field, value)
@@ -55,10 +57,10 @@ async def update_interface(
 async def get_interface_utilisation(
     interface_id: uuid.UUID,
     hours: float = Query(default=0.5, ge=0.1, le=720.0),
-    current_user: User = Depends(get_current_user),
+    principal: Principal = Depends(get_current_principal),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    iface = await _get_interface_for_tenant(interface_id, current_user.tenant_id, db)
+    iface = await _get_interface_for_tenant(interface_id, principal, db, "readonly")
     device_id = str(iface.device_id)
     if_index = str(iface.if_index)
 
@@ -160,17 +162,17 @@ _PRIV_PROTO = {
 @router.get("/{interface_id}/live", summary="Live SNMP counter stream (Server-Sent Events)")
 async def interface_live_stream(
     interface_id: uuid.UUID,
-    current_user: User = Depends(get_current_user_sse),
+    principal: Principal = Depends(get_current_principal_sse),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     from ..models.device import Device
     from ..models.credential import Credential, DeviceCredential
     from ..models.site import RemoteCollector
 
-    iface = await _get_interface_for_tenant(interface_id, current_user.tenant_id, db)
+    iface = await _get_interface_for_tenant(interface_id, principal, db, "readonly")
 
     device = (await db.execute(
-        select(Device).where(Device.id == iface.device_id, Device.tenant_id == current_user.tenant_id)
+        select(Device).where(Device.id == iface.device_id, Device.tenant_id == principal.active_tenant_id)
     )).scalar_one_or_none()
     if device is None:
         raise HTTPException(status_code=404, detail="Device not found")
@@ -180,7 +182,7 @@ async def interface_live_stream(
         rc = (await db.execute(
             select(RemoteCollector).where(
                 RemoteCollector.id == device.collector_id,
-                RemoteCollector.tenant_id == current_user.tenant_id,
+                RemoteCollector.tenant_id == principal.active_tenant_id,
             )
         )).scalar_one_or_none()
         if rc is None or not rc.wg_ip:
@@ -476,17 +478,19 @@ async def _stream_proxy(
 
 async def _get_interface_for_tenant(
     interface_id: uuid.UUID,
-    tenant_id: uuid.UUID,
+    principal: Principal,
     db: AsyncSession,
+    min_role: str = "readonly",
 ) -> Interface:
-    """Fetch an interface, enforcing tenant isolation via the device relationship."""
+    """Fetch an interface, enforcing tenant + site-role isolation via the device relationship."""
     from ..models.device import Device
     result = await db.execute(
         select(Interface)
         .join(Device, Interface.device_id == Device.id)
-        .where(Interface.id == interface_id, Device.tenant_id == tenant_id)
+        .where(Interface.id == interface_id, Device.tenant_id == principal.active_tenant_id)
     )
     iface = result.scalar_one_or_none()
     if iface is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Interface not found")
+    await assert_device_access(principal, iface.device_id, min_role, db)
     return iface

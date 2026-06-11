@@ -1,0 +1,26 @@
+# /etc/sudoers.d/anthrimon-backup
+#
+# Grants the Anthrimon API user passwordless sudo for the specific commands
+# the backup tool needs to read root-owned files (TLS keys, .env files,
+# WireGuard keys, systemd unit files).
+#
+# Install:
+#     sudo install -m 0440 infra/sudoers.d/anthrimon-backup /etc/sudoers.d/anthrimon-backup
+#     sudo visudo -c   # verify
+#
+# Security model: tar arguments aren't restricted by sudoers (would be brittle
+# and easy to bypass).  Treat the API service account as having read access to
+# the entire filesystem — which is consistent with the fact that it can
+# already dump every secret stored in /etc/anthrimon by configuration.
+#
+# Adjust the `Cmnd_Alias ANTHRIMON_BACKUP_USER` line if your install runs the
+# API as a different user (default: poly).
+#
+# Reload after editing:  sudo systemctl restart anthrimon-api
+
+Cmnd_Alias ANTHRIMON_BACKUP_CMDS = \
+    /usr/bin/tar, \
+    /bin/tar, \
+    /usr/bin/systemctl
+
+__API_USER__ ALL=(root) NOPASSWD: ANTHRIMON_BACKUP_CMDS

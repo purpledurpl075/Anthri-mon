@@ -160,7 +160,7 @@ Network devices (hub site)
   SNMP polling  ◀────── snmp-collector (Go)
   NetFlow/sFlow ───────▶ flow-collector (Go)             :2055 / :6343
   Syslog        ───────▶ syslog-collector (Go)           :514 UDP/TCP
-  SNMP traps    ───────▶ anthrimon-trap-receiver (Go)    :162 UDP
+  SNMP traps    ───────▶ snmptrapd + anthrimon-traphandler  :162 UDP
 
 Remote sites (WireGuard tunnel 10.100.0.0/24)
   wg0: 10.100.0.1 ◀──── anthrimon-collector (Go)          SNMP + flow + syslog + trap forwarding
@@ -181,9 +181,9 @@ Remote sites (WireGuard tunnel 10.100.0.0/24)
 | SNMP collector | Go 1.22 |
 | Flow collector | Go 1.22 — NetFlow v5/v9, IPFIX, sFlow v5 |
 | Syslog collector | Go 1.22 — RFC 3164 + RFC 5424 |
-| Hub trap receiver | Go 1.22 — direct UDP :162 listener |
+| Hub trap receiver | net-snmp `snmptrapd` (:162) → `anthrimon-traphandler` (Go) |
 | Remote collector | Go 1.22 — SNMP + flow + syslog + trap forwarding |
-| Trap handler | Go 1.22 — snmptrapd exec handler for remote sites |
+| Trap handler | Go 1.22 — snmptrapd exec handler (hub + remote sites) |
 | Reverse proxy | nginx — HTTPS with self-signed CA |
 | VPN | WireGuard — remote collector tunnels |
 
@@ -196,7 +196,7 @@ systemctl status anthrimon-api            # FastAPI backend (127.0.0.1:8001)
 systemctl status snmp-collector           # SNMP polling daemon
 systemctl status flow-collector           # NetFlow/sFlow listener (:2055, :6343)
 systemctl status syslog-collector         # Syslog listener (:514 UDP/TCP)
-systemctl status anthrimon-trap-receiver  # SNMP trap receiver (:162 UDP)
+systemctl status snmptrapd                # SNMP trap receiver (:162 UDP) → anthrimon-traphandler
 systemctl status nginx                    # HTTPS frontend + API proxy (:443)
 systemctl status victoria-metrics         # Time-series store (:8428)
 systemctl status clickhouse-server        # Flow/syslog/trap analytics store
@@ -301,7 +301,7 @@ collectors/
     cmd/
       remote-collector/   Remote collector agent (WireGuard + SNMP + flow + syslog + trap forwarding)
       trap-handler/       snmptrapd exec handler (deployed to remote sites)
-      trap-receiver/      Hub-side standalone UDP trap receiver
+      trap-receiver/      Standalone UDP trap receiver (legacy — hub now uses snmptrapd)
 api/
   backend/
     routers/      FastAPI endpoints
@@ -323,6 +323,25 @@ infra/
 ```
 
 </details>
+
+---
+
+## Documentation
+
+- **[API Reference](https://purpledurpl075.github.io/Anthri-mon/)** — interactive endpoint browser with request/response schemas, generated from the running API's OpenAPI 3.1 spec (190 endpoints)
+- **[Wiki](WIKI.md)** — operator guide for SNMP, flow, syslog, alerts, config management, topology
+
+## Contributing
+
+Bug reports, feature requests, and pull requests are all welcome.
+
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — how to get a dev environment, code style, PR process, DCO sign-off
+- **[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)** — Contributor Covenant 2.1
+- **[SECURITY.md](SECURITY.md)** — how to report vulnerabilities privately
+
+## License
+
+Anthrimon is licensed under the [Apache License 2.0](LICENSE). Third-party dependencies are listed in [NOTICE](NOTICE).
 
 ---
 

@@ -13,16 +13,83 @@ export const fetchDeviceInterfaces = (id: string) =>
 export const fetchDeviceHealth = (id: string) =>
   api.get<HealthData>(`/devices/${id}/health`).then((r) => r.data)
 
+export interface TcamRow {
+  resource: string
+  feature:  string
+  chip:     string
+  used:     number
+  max:      number
+  pct:      number
+}
+
+export interface ErrDisabledPort {
+  if_name: string
+  reason:  string
+}
+
+export interface CxPSU {
+  name:    string
+  ok:      boolean
+  power_w: number
+  max_w:   number
+}
+
+export interface CxFan {
+  name:      string
+  ok:        boolean
+  rpm:       number
+  speed_pct: number
+}
+
+export interface CxVSX {
+  state: string
+  role:  string
+}
+
+export interface CxCoPP {
+  class:     string
+  drop_pkts: number
+}
+
+export interface CiscoEnvUnit {
+  name: string
+  ok:   boolean
+}
+
+export interface CiscoMemPool {
+  pool: string
+  used: number
+  free: number
+  pct:  number
+}
+
 export interface HealthHistory {
-  cpu_pct:     [number, number][]
-  mem_pct:     [number, number][]
-  mem_used:    [number, number][]
-  mem_total:   [number, number][]
-  temp_series: Record<string, [number, number][]>
-  dom_tx:      Record<string, [number, number][]>
-  dom_rx:      Record<string, [number, number][]>
-  dom_tx_now:  Record<string, number>
-  dom_rx_now:  Record<string, number>
+  cpu_pct:          [number, number][]
+  mem_pct:          [number, number][]
+  mem_used:         [number, number][]
+  mem_total:        [number, number][]
+  temp_series:      Record<string, [number, number][]>
+  dom_tx:           Record<string, [number, number][]>
+  dom_rx:           Record<string, [number, number][]>
+  dom_tx_now:       Record<string, number>
+  dom_rx_now:       Record<string, number>
+  if_flaps:         Record<string, number>
+  if_acl_drops:     Record<string, number>
+  if_err_disabled:  ErrDisabledPort[]
+  fib_routes:       Record<string, number>
+  fib_trend:        Record<string, [number, number][]>
+  tcam:             TcamRow[]
+  cx_psus:          CxPSU[]
+  cx_fans:          CxFan[]
+  cx_vsx:           CxVSX | null
+  cx_copp:          CxCoPP[]
+  cx_loops:         string[]
+  cisco_fans:         CiscoEnvUnit[]
+  cisco_psus:         CiscoEnvUnit[]
+  cisco_if_in_drops:  Record<string, number>
+  cisco_if_out_drops: Record<string, number>
+  cisco_if_resets:    Record<string, number>
+  cisco_mem_pools:    CiscoMemPool[]
 }
 
 export const fetchDeviceHealthHistory = (id: string, hours: number) =>

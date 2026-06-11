@@ -174,6 +174,73 @@ export default function AlertDetailPage() {
           <h1 className="text-xl font-bold text-slate-900 mb-1">{alert.title}</h1>
           {alert.message && <p className="text-sm text-slate-500 mb-4">{alert.message}</p>}
 
+          {/* Parent-of-children callout */}
+          {alert.suppressed_child_count > 0 && (
+            <div className="mb-3 bg-blue-50 border border-blue-200 rounded-xl px-4 py-3">
+              <div className="flex items-start gap-3">
+                <span className="text-lg leading-none mt-0.5">↓</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-blue-700">
+                    Root cause — suppressing {alert.suppressed_child_count} child alert{alert.suppressed_child_count === 1 ? '' : 's'}
+                  </p>
+                  <p className="text-[11px] text-blue-600 mt-0.5">
+                    When this alert resolves, the suppressed children will be re-evaluated automatically.
+                  </p>
+                </div>
+              </div>
+              {alert.suppressed_children && alert.suppressed_children.length > 0 && (
+                <div className="mt-3 border-t border-blue-100 pt-2.5 space-y-1.5">
+                  {alert.suppressed_children.map(c => (
+                    <div
+                      key={c.id}
+                      onClick={() => navigate(`/alerts/${c.id}`)}
+                      className="flex items-center gap-2 text-xs cursor-pointer hover:bg-blue-100/60 rounded-md px-2 py-1.5 transition-colors"
+                    >
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{
+                          backgroundColor:
+                            c.severity === 'critical' ? '#dc2626' :
+                            c.severity === 'major'    ? '#ea580c' :
+                            c.severity === 'minor'    ? '#d97706' :
+                            c.severity === 'warning'  ? '#ca8a04' :
+                                                        '#0891b2',
+                        }}
+                      />
+                      {c.metric && (
+                        <span className="font-mono text-[10px] bg-blue-100 text-blue-700 rounded px-1.5 py-0.5 shrink-0">
+                          {c.metric}
+                        </span>
+                      )}
+                      <span className="text-slate-700 truncate flex-1">{c.title}</span>
+                      <span className="text-[10px] text-blue-500 shrink-0">view →</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Suppressed-by callout */}
+          {alert.suppressed_by_alert_id && (
+            <div className="mb-4 bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 flex items-start gap-3">
+              <span className="text-lg leading-none mt-0.5">↑</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold text-slate-600">Suppressed by a parent alert</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  This alert is treated as collateral of a root-cause event. It will
+                  re-open automatically when the parent resolves.
+                </p>
+              </div>
+              <button
+                onClick={() => navigate(`/alerts/${alert.suppressed_by_alert_id}`)}
+                className="text-[11px] font-semibold text-slate-600 border border-slate-200 bg-white rounded-lg px-2.5 py-1 hover:bg-slate-100 transition-colors shrink-0"
+              >
+                View parent →
+              </button>
+            </div>
+          )}
+
           {/* Value / threshold */}
           {value !== undefined && (
             <div className="flex flex-wrap gap-3 mt-3">

@@ -706,8 +706,9 @@ export default function Sidebar() {
 
           {/* Analysis — deeper investigation */}
           <Section label="Analysis" icon={I.analysis}>
-            <Item to="/routing" label="Routing" icon={I.bgp} />
-            <Item to="/config"  label="Config"  icon={I.config} />
+            <Item to="/routing"     label="Routing"     icon={I.bgp} />
+            <Item to="/config"      label="Config"      icon={I.config} />
+            <Item to="/path-trace"  label="Path Trace"  icon={I.topology} />
           </Section>
 
           {/* Alerting — alert management / policy authoring */}
@@ -721,12 +722,19 @@ export default function Sidebar() {
           <Section label="System" icon={I.settings} defaultOpen={false}>
             <Item to="/credentials" label="Credentials" icon={I.key} />
             <Item to="/collectors"  label="Collectors"  icon={I.collectors} />
+            <Item to="/probes"      label="Probes"      icon={I.search} />
             <Item to="/wiki"        label="Wiki"         icon={I.wiki} />
             {(hasRole(me?.role ?? 'readonly', 'admin') || me?.is_platform_admin) && (
               <Item to="/users" label="Users" icon={I.users} />
             )}
             {hasRole(me?.role ?? 'readonly', 'admin') && (
               <Item to="/admin" label="Administration" icon={I.settings} />
+            )}
+            {hasRole(me?.role ?? 'readonly', 'admin') && (
+              <Item to="/audit" label="Audit Log" icon={I.list} />
+            )}
+            {hasRole(me?.role ?? 'readonly', 'admin') && (
+              <Item to="/platform-health" label="Platform Health" icon={I.settings} />
             )}
           </Section>
 

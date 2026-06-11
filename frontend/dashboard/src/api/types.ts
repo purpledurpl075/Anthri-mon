@@ -74,8 +74,20 @@ export interface Alert {
   triggered_at: string
   acknowledged_at: string | null
   resolved_at: string | null
+  suppressed_by_alert_id: string | null
+  suppressed_child_count: number
+  suppressed_children?: SuppressedChildSummary[]
   created_at: string
   updated_at: string
+}
+
+export interface SuppressedChildSummary {
+  id: string
+  title: string
+  severity: 'critical' | 'major' | 'minor' | 'warning' | 'info'
+  metric: string | null
+  device_name: string | null
+  triggered_at: string
 }
 
 export interface AlertRule {

@@ -32,16 +32,18 @@ from .configmgmt.rest_state import start_rest_state_collector
 from .configmgmt.api_orchestrator import start_api_probe_loop
 from .configmgmt.eapi_collector import start_eapi_isis_collector
 from .collectors.monitor import start_collector_monitor
-from .routers import (admin_router, platform_router, alerts_router, api_methods_router, auth_router,
+from .routers import (admin_router, platform_router, platform_health_router, alerts_router, api_methods_router, audit_router, auth_router,
                       channels_router, bgp_router, clients_router, collectors_router, config_router,
                       credentials_router, devices_router, discovery_router, flow_router,
                       syslog_router, interfaces_router, maintenance_router, overview_router,
-                      policies_router, search_router, topology_router, traps_router, users_router)
+                      policies_router, probes_router, path_trace_router, search_router, topology_router, traps_router, users_router)
 from .routers.topology import start_topology_refresh_loop
 
 configure_logging()
 logger = structlog.get_logger(__name__)
 _settings = get_settings()
+
+__version__ = "0.9.0"
 
 # ── Startup secret validation ──────────────────────────────────────────────────
 
@@ -113,7 +115,7 @@ def _validate_startup_secrets() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     _validate_startup_secrets()
-    logger.info("anthrimon_api_starting", version="0.1.0")
+    logger.info("anthrimon_api_starting", version=__version__)
     engine_task      = await start_alert_engine()
     topology_task    = await start_topology_refresh_loop(interval_seconds=300)
     config_task      = start_config_collector(interval_s=3600)
@@ -170,7 +172,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="Anthrimon API",
     description="Network monitoring and orchestration platform API",
-    version="0.1.0",
+    version=__version__,
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -192,6 +194,30 @@ app.add_middleware(
 )
 
 
+# ── Self-observability middleware ──────────────────────────────────────────────
+
+@app.middleware("http")
+async def _record_request_metrics(request: Request, call_next):
+    """Counts requests + records latency per (method, route_template, status)."""
+    import time as _time
+    from .platform_health import api_request_duration, api_requests_total
+
+    start = _time.monotonic()
+    response = await call_next(request)
+    elapsed = _time.monotonic() - start
+
+    # Use the matched route template (e.g. "/devices/{device_id}") so we don't
+    # blow up cardinality on UUID-bearing paths.  Fall back to the raw path.
+    route = getattr(request.scope.get("route", None), "path", request.url.path)
+    api_request_duration().observe(elapsed)
+    api_requests_total().inc(
+        method=request.method,
+        route=route,
+        status=str(response.status_code),
+    )
+    return response
+
+
 # ── Global exception handlers ──────────────────────────────────────────────────
 
 @app.exception_handler(Exception)
@@ -207,7 +233,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 @app.get("/health", tags=["meta"], summary="Liveness probe")
 async def health_check() -> dict:
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": __version__}
 
 
 # ── API v1 routers ─────────────────────────────────────────────────────────────
@@ -237,3 +263,7 @@ app.include_router(users_router,       prefix=PREFIX)
 app.include_router(clients_router,     prefix=PREFIX)
 app.include_router(search_router,      prefix=PREFIX)
 app.include_router(traps_router,       prefix=PREFIX)
+app.include_router(audit_router,       prefix=PREFIX)
+app.include_router(platform_health_router, prefix=PREFIX)
+app.include_router(probes_router,      prefix=PREFIX)
+app.include_router(path_trace_router,  prefix=PREFIX)

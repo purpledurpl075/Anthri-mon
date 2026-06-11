@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 import bcrypt as _bcrypt
@@ -11,6 +11,7 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..alerting.settings import load_platform_defaults
 from ..dependencies import Principal, get_db, require_platform
 from ..models.settings import PlatformSetting
 from ..models.tenant import Tenant, User, UserTenantAccess
@@ -29,66 +30,58 @@ def _hash(plain: str) -> str:
 
 
 # ── Platform settings ──────────────────────────────────────────────────────────
-
-_PLATFORM_GLOBAL_DEFAULTS: dict = {
-    "wg_public_endpoint":    "",
-    "session_timeout_hours": 24,
-}
-
+#
+# These are the platform-wide defaults consulted by the alerting engine and
+# notification pipeline (see ../alerting/settings.py). Tenants may override a
+# subset of these per-tenant via /admin/settings/alerting.
 
 class PlatformGlobalSettingsRead(BaseModel):
-    wg_public_endpoint:    str = ""
-    session_timeout_hours: int = 24
+    base_url:                       str           = ""
+    platform_name:                  str           = "Anthrimon"
+    timezone:                       str           = "UTC"
+    device_down_stale_min_s:        int           = 45
+    max_alerts_per_device_per_hour: int           = 0
+    auto_close_stale_days:          int           = 0
+    alert_retention_days:           int           = 90
+    notifications_paused:           bool          = False
+    notifications_paused_until:     Optional[str] = None
+    business_hours_enabled:         bool          = False
+    business_hours_start:           int           = 8
+    business_hours_end:             int           = 18
+    business_days:                  list[int]     = [0, 1, 2, 3, 4]
+    abuseipdb_api_key:               str          = ""
+    wg_public_endpoint:              str          = ""
 
 
-class PlatformGlobalSettingsWrite(BaseModel):
-    wg_public_endpoint:    str = ""
-    session_timeout_hours: int = 24
-
-
-async def _load_platform_global(db: AsyncSession) -> dict:
-    rows = (await db.execute(
-        select(PlatformSetting).where(
-            PlatformSetting.key.in_(list(_PLATFORM_GLOBAL_DEFAULTS.keys()))
-        )
-    )).scalars().all()
-    stored = {r.key: r.value for r in rows}
-    result = dict(_PLATFORM_GLOBAL_DEFAULTS)
-    for k in result:
-        if k in stored:
-            v = stored[k]
-            result[k] = v if not isinstance(v, dict) else v.get("value", result[k])
-    return result
+class PlatformGlobalSettingsWrite(PlatformGlobalSettingsRead):
+    pass
 
 
 @router.get("/settings", response_model=PlatformGlobalSettingsRead,
-            summary="Get platform-level global settings")
+            summary="Get platform-wide setting defaults")
 async def get_platform_global_settings(
     _: Principal = Depends(_PLATFORM_ADMIN),
     db: AsyncSession = Depends(get_db),
 ) -> PlatformGlobalSettingsRead:
-    cfg = await _load_platform_global(db)
+    cfg = await load_platform_defaults(db)
     return PlatformGlobalSettingsRead(**cfg)
 
 
 @router.put("/settings", response_model=PlatformGlobalSettingsRead,
-            summary="Update platform-level global settings")
+            summary="Update platform-wide setting defaults")
 async def update_platform_global_settings(
     body: PlatformGlobalSettingsWrite,
     _: Principal = Depends(_PLATFORM_ADMIN),
     db: AsyncSession = Depends(get_db),
 ) -> PlatformGlobalSettingsRead:
-    updates = {
-        "wg_public_endpoint":    body.wg_public_endpoint,
-        "session_timeout_hours": body.session_timeout_hours,
-    }
+    updates = body.model_dump()
     for key, val in updates.items():
         row = (await db.execute(
             select(PlatformSetting).where(PlatformSetting.key == key)
         )).scalar_one_or_none()
         if row:
             row.value = val
-            row.updated_at = datetime.now(timezone.utc)
+            row.updated_at = datetime.utcnow()
         else:
             db.add(PlatformSetting(key=key, value=val))
     await db.commit()

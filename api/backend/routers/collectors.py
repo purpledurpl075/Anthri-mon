@@ -47,7 +47,7 @@ from ..models.health import DeviceHealthLatest
 from ..models.site import RemoteCollector, WgIpPool
 from ..models.tenant import User
 from ..snmp_probe import detect_vendor, VENDOR_DEVICE_TYPE as _VENDOR_DEVICE_TYPE
-from .admin import load_platform_settings
+from ..alerting.settings import load_platform_defaults
 
 logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/collectors", tags=["collectors"])
@@ -1574,7 +1574,7 @@ async def download_collector_package(
     if token and c.token_hash != _sha256(token):
         raise HTTPException(status_code=400, detail="Token does not match this collector's pending registration token")
 
-    platform = await load_platform_settings(db)
+    platform = await load_platform_defaults(db)
     hub_url   = (platform.get("base_url") or "").rstrip("/")
     ca_cert   = _ca_cert_pem() or ""
 
@@ -1738,7 +1738,7 @@ async def bootstrap(
     logger.info("collector_bootstrapped", collector=c.name, wg_ip=wg_ip,
                 hostname=body.hostname)
 
-    platform = await load_platform_settings(db)
+    platform = await load_platform_defaults(db)
     wg_endpoint = _wg_hub_endpoint(platform.get("wg_public_endpoint", ""))
 
     return {
@@ -1770,6 +1770,9 @@ async def heartbeat(
     collector.status     = "online"
     if body.version:
         collector.version = body.version
+    caps = body.stats.get("capabilities")
+    if isinstance(caps, list) and caps:
+        collector.capabilities = caps
     await db.commit()
     return {"status": "ok", "server_time": datetime.now(timezone.utc).isoformat()}
 
@@ -1894,7 +1897,20 @@ async def ingest_metrics(
             pass
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    recovered_ids: list[uuid.UUID] = []
     if valid_ids:
+        # Capture which devices are about to transition from non-up → up.
+        # These get a fast engine pass so device_down doesn't sit around the
+        # full poll-interval + engine-cycle waiting to auto-resolve.
+        recovered_ids = [
+            r[0] for r in (await db.execute(
+                select(Device.id).where(
+                    Device.id.in_(valid_ids),
+                    Device.tenant_id == collector.tenant_id,
+                    Device.status != "up",
+                )
+            )).all()
+        ]
         await db.execute(
             update(Device)
             .where(
@@ -2103,6 +2119,16 @@ async def ingest_metrics(
         )
 
     await db.commit()
+
+    # If any devices just transitioned non-up → up, kick the alert engine so
+    # device_down resolves within one cycle instead of waiting up to the full
+    # EVAL_INTERVAL on top of the SNMP poll interval.
+    if recovered_ids:
+        try:
+            from ..alerting.engine import _engine
+            _engine.request_immediate_pass(reason=f"device_recovered:{len(recovered_ids)}")
+        except Exception as exc:
+            logger.debug("alert_engine_wake_failed", error=str(exc))
 
     lines = body.count(b"\n")
     logger.debug("collector_metrics_ingested", collector=collector.name, lines=lines)
@@ -2460,6 +2486,57 @@ async def ingest_ospf_neighbors(
             written += len(nbrs)
         except Exception as exc:
             logger.warning("ospf_ingest_failed", collector=collector.name,
+                           device_id=did, error=str(exc))
+
+    return {"written": written}
+
+
+# ── Route table ingest ────────────────────────────────────────────────────────
+
+@router.post("/routes",
+             summary="Ingest route table entries collected by the remote collector")
+async def ingest_routes(
+    request: Request,
+    db:      AsyncSession = Depends(get_db),
+) -> dict:
+    """Accept a list of route table records (each with a device_id field) from a
+    remote collector and upsert them into route_entries, removing any rows for
+    that device that were not part of this batch (mark-and-sweep).
+
+    Each record must include at minimum: device_id, destination, protocol.
+    Optional: next_hop, metric, interface_name.
+    """
+    collector = await _require_collector(request, db)
+    records   = await request.json()
+    if not records:
+        return {"written": 0}
+
+    import uuid as _uuid
+    from ..configmgmt.rest_state import _write_routes
+
+    allowed = {
+        str(did) for (did,) in (await db.execute(
+            select(Device.id).where(
+                Device.collector_id == collector.id,
+                Device.is_active == True,  # noqa: E712
+            )
+        )).all()
+    }
+
+    by_device: dict[str, list] = {}
+    for r in records:
+        did = r.get("device_id")
+        if did and did in allowed:
+            r_clean = {k: v for k, v in r.items() if k != "device_id"}
+            by_device.setdefault(did, []).append(r_clean)
+
+    written = 0
+    for did, routes in by_device.items():
+        try:
+            await _write_routes(_uuid.UUID(did), routes)
+            written += len(routes)
+        except Exception as exc:
+            logger.warning("routes_ingest_failed", collector=collector.name,
                            device_id=did, error=str(exc))
 
     return {"written": written}

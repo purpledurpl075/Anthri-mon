@@ -386,6 +386,45 @@ async def _write_ospf(device_id: uuid.UUID, neighbors: list[dict]) -> None:
         await db.commit()
 
 
+async def _write_routes(device_id: uuid.UUID, routes: list[dict]) -> None:
+    """Upsert route table entries for a device, then purge any rows for that
+    device not refreshed in this batch (mark-and-sweep), matching the
+    behaviour of the hub-local SNMP collector's route writer.
+    """
+    if not routes:
+        return
+    async with AsyncSessionLocal() as db:
+        for r in routes:
+            await db.execute(text("""
+                INSERT INTO route_entries
+                    (device_id, destination, next_hop, protocol, metric, interface_name, updated_at)
+                VALUES
+                    (CAST(:did AS uuid), :destination, :next_hop, :protocol, :metric, :iface, NOW())
+                ON CONFLICT (device_id, destination, next_hop) DO UPDATE SET
+                    protocol       = EXCLUDED.protocol,
+                    metric         = EXCLUDED.metric,
+                    interface_name = EXCLUDED.interface_name,
+                    updated_at     = EXCLUDED.updated_at
+            """), {
+                "did":         str(device_id),
+                "destination": r["destination"],
+                "next_hop":    r.get("next_hop") or "",
+                "protocol":    r.get("protocol", "other"),
+                "metric":      r.get("metric"),
+                "iface":       r.get("interface_name"),
+            })
+
+        # Purge withdrawn routes: any row not refreshed this cycle is gone
+        # from the device's routing table. NOW() is stable for the duration
+        # of the transaction, so it excludes the rows just upserted above.
+        await db.execute(text("""
+            DELETE FROM route_entries
+             WHERE device_id = CAST(:did AS uuid) AND updated_at < NOW()
+        """), {"did": str(device_id)})
+
+        await db.commit()
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _disable_rest(device_id: uuid.UUID, reason: str) -> None:

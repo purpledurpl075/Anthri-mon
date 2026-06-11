@@ -285,11 +285,13 @@ async def create_device(
     # Hub-local: call probe functions directly.
     # Remote-collector: forward to the collector's /probe control endpoint.
     probed_data: dict | None = None
+    probe_attempted = False
     ip   = str(body.mgmt_ip)
     port = body.snmp_port or 161
 
     if not body.collector_id:
         # Hub can reach the device directly.
+        probe_attempted = True
         result = None
         if cred is not None and cred.type == "snmp_v3":
             result = await probe_v3(ip, cred.data, port, timeout=3)
@@ -310,6 +312,7 @@ async def create_device(
             wg_ip = str(col.wg_ip).split("/")[0]
             import ipaddress as _ip
             if _ip.ip_address(wg_ip) in _ip.ip_network("10.100.0.0/24"):
+                probe_attempted = True
                 cred_specs = [_cred_to_spec(cred)] if cred else []
                 try:
                     async with httpx.AsyncClient(timeout=max(3 * len(cred_specs) + 2, 10)) as hc:
@@ -321,7 +324,14 @@ async def create_device(
                     if resp.status_code == 200:
                         probed_data = resp.json()
                 except Exception:
-                    pass  # probe failure is not fatal; backfill happens on first poll
+                    pass
+
+    if probe_attempted and probed_data is None:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Device did not respond to SNMP probe. Verify the IP address, port, and credentials.",
+        )
 
     if probed_data:
         if probed_data.get("hostname"):
@@ -333,11 +343,23 @@ async def create_device(
         if probed_data.get("sys_descr"):
             device.sys_description = probed_data["sys_descr"]
 
+    # Sync snmp_version from the linked credential's type so the device detail
+    # header displays the correct protocol version rather than always defaulting to v2c.
+    if cred is not None and cred.type == "snmp_v3":
+        device.snmp_version = "v3"
+    elif cred is not None and cred.type == "snmp_v2c":
+        device.snmp_version = "v2c"
+
     if cred is not None:
         db.add(DeviceCredential(device_id=device.id, credential_id=body.credential_id, priority=0))
 
     await db.commit()
     await db.refresh(device)
+
+    # Seed api_method rows so the API-methods tab is populated immediately.
+    from ..configmgmt.api_orchestrator import seed_device_methods as _seed
+    asyncio.create_task(_seed(str(device.id), str(device.vendor)))
+
     logger.info("device_created", device_id=str(device.id), hostname=device.hostname,
                 probed=probed_data is not None)
     return DeviceRead.model_validate(device)
@@ -662,13 +684,80 @@ async def get_device_health_history(
         except Exception:
             return {}
 
+    async def vm_instant_label(metric: str, label: str) -> dict[str, float]:
+        """Last-known value keyed by a single label."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(f"{_VM_URL}/api/v1/query",
+                    params={"query": f'{metric}{{device_id="{did}"}}'})
+                r.raise_for_status()
+                return {
+                    s["metric"].get(label, "unknown"): float(s["value"][1])
+                    for s in r.json().get("data", {}).get("result", [])
+                    if s.get("value")
+                }
+        except Exception:
+            return {}
+
+    async def vm_instant_rows(metric: str, *label_keys: str) -> list[dict]:
+        """Last-known value for each series as a list of {labels: {…}, value: float}."""
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(f"{_VM_URL}/api/v1/query",
+                    params={"query": f'{metric}{{device_id="{did}"}}'})
+                r.raise_for_status()
+                return [
+                    {
+                        "labels": {k: s["metric"].get(k, "") for k in label_keys},
+                        "value":  float(s["value"][1]),
+                    }
+                    for s in r.json().get("data", {}).get("result", [])
+                    if s.get("value")
+                ]
+        except Exception:
+            return []
+
     (temp_results, dom_tx_results, dom_rx_results,
-     dom_tx_now, dom_rx_now) = await asyncio.gather(
+     dom_tx_now, dom_rx_now,
+     if_flaps_raw, if_acl_drops_raw, if_err_disabled_raw,
+     fib_routes_raw, tcam_used_raw, tcam_max_raw,
+     fib_trend_results,
+     cx_psu_ok_raw, cx_psu_power_raw, cx_psu_max_raw,
+     cx_fan_ok_raw, cx_fan_rpm_raw, cx_fan_speed_raw,
+     cx_vsx_raw, cx_copp_drop_raw, cx_loop_detect_raw,
+     cisco_fan_raw, cisco_psu_raw,
+     cisco_if_in_drops_raw, cisco_if_out_drops_raw, cisco_if_resets_raw,
+     cisco_mem_used_raw, cisco_mem_free_raw) = await asyncio.gather(
         vm_multi(f'anthrimon_device_temp_celsius{{device_id="{did}"}}'),
         vm_multi(f'anthrimon_if_dom_tx_power_dbm{{device_id="{did}"}}'),
         vm_multi(f'anthrimon_if_dom_rx_power_dbm{{device_id="{did}"}}'),
         vm_instant_iface("anthrimon_if_dom_tx_power_dbm"),
         vm_instant_iface("anthrimon_if_dom_rx_power_dbm"),
+        vm_instant_label("anthrimon_if_flap_count_total", "if_name"),
+        vm_instant_label("anthrimon_if_acl_drops_total", "if_name"),
+        vm_instant_rows("anthrimon_if_err_disabled", "if_name", "reason"),
+        vm_instant_label("anthrimon_fib_routes_total", "af"),
+        vm_instant_rows("anthrimon_arista_hw_util_used", "resource", "feature", "chip"),
+        vm_instant_rows("anthrimon_arista_hw_util_max", "resource", "feature", "chip"),
+        vm_multi(f'anthrimon_fib_routes_total{{device_id="{did}"}}'),
+        # Aruba CX
+        vm_instant_rows("anthrimon_cx_psu_ok",         "psu_name"),
+        vm_instant_rows("anthrimon_cx_psu_power_watts", "psu_name"),
+        vm_instant_rows("anthrimon_cx_psu_max_watts",   "psu_name"),
+        vm_instant_rows("anthrimon_cx_fan_ok",          "fan_name"),
+        vm_instant_rows("anthrimon_cx_fan_rpm",         "fan_name"),
+        vm_instant_rows("anthrimon_cx_fan_speed_pct",   "fan_name"),
+        vm_instant_rows("anthrimon_cx_vsx_oper_state",  "state", "role"),
+        vm_instant_rows("anthrimon_cx_copp_drop_pkts_total", "class"),
+        vm_instant_rows("anthrimon_cx_loop_protect_detected", "if_name"),
+        # Cisco
+        vm_instant_rows("anthrimon_cisco_fan_ok",  "fan_name"),
+        vm_instant_rows("anthrimon_cisco_psu_ok",  "psu_name"),
+        vm_instant_rows("anthrimon_cisco_if_in_queue_drops",  "if_name"),
+        vm_instant_rows("anthrimon_cisco_if_out_queue_drops", "if_name"),
+        vm_instant_rows("anthrimon_cisco_if_resets",          "if_name"),
+        vm_instant_rows("anthrimon_cisco_mem_used_bytes",     "pool"),
+        vm_instant_rows("anthrimon_cisco_mem_free_bytes",     "pool"),
     )
 
     for result in temp_results:
@@ -683,16 +772,149 @@ async def get_device_health_history(
         iface = result["metric"].get("iface", "unknown")
         dom_rx_series[iface] = [[int(v[0]), float(v[1])] for v in result.get("values", [])]
 
+    # Build TCAM lookup: (resource, feature, chip) → value — merge used+max into rows
+    tcam_key = lambda r: (r["labels"]["resource"], r["labels"]["feature"], r["labels"]["chip"])
+    tcam_used_map = {tcam_key(r): r["value"] for r in tcam_used_raw}
+    tcam_max_map  = {tcam_key(r): r["value"] for r in tcam_max_raw}
+    tcam_rows: list[dict] = []
+    for key in sorted(tcam_used_map.keys() | tcam_max_map.keys()):
+        resource, feature, chip = key
+        used = tcam_used_map.get(key, 0.0)
+        maximum = tcam_max_map.get(key, 0.0)
+        if maximum <= 0:
+            continue
+        tcam_rows.append({
+            "resource": resource,
+            "feature":  feature,
+            "chip":     chip,
+            "used":     int(used),
+            "max":      int(maximum),
+            "pct":      round(used / maximum * 100, 1),
+        })
+
+    # FIB trend series keyed by AF
+    fib_trend: dict[str, list] = {}
+    for result in fib_trend_results:
+        af = result["metric"].get("af", "unknown")
+        fib_trend[af] = [[int(v[0]), float(v[1])] for v in result.get("values", [])]
+
+    # Err-disabled: only ports that are currently err-disabled (value == 1)
+    err_disabled = [
+        {"if_name": row["labels"]["if_name"], "reason": row["labels"]["reason"]}
+        for row in if_err_disabled_raw
+        if row["value"] >= 1
+    ]
+
+    # ── Aruba CX hardware health ──────────────────────────────────────────────
+    # Build psu_name-keyed dicts for easy frontend consumption
+    def _by_label(rows: list[dict], key: str) -> dict:
+        return {r["labels"][key]: r["value"] for r in rows if r["labels"].get(key)}
+
+    cx_psu_ok    = _by_label(cx_psu_ok_raw,    "psu_name")
+    cx_psu_power = _by_label(cx_psu_power_raw, "psu_name")
+    cx_psu_max   = _by_label(cx_psu_max_raw,   "psu_name")
+
+    cx_psus: list[dict] = []
+    for psu_name in sorted(cx_psu_ok.keys() | cx_psu_power.keys()):
+        cx_psus.append({
+            "name":       psu_name,
+            "ok":         int(cx_psu_ok.get(psu_name, 0)) == 1,
+            "power_w":    int(cx_psu_power.get(psu_name, 0)),
+            "max_w":      int(cx_psu_max.get(psu_name, 0)),
+        })
+
+    cx_fan_ok_map  = _by_label(cx_fan_ok_raw,    "fan_name")
+    cx_fan_rpm_map = _by_label(cx_fan_rpm_raw,   "fan_name")
+    cx_fan_spd_map = _by_label(cx_fan_speed_raw, "fan_name")
+
+    cx_fans: list[dict] = []
+    for fan_name in sorted(cx_fan_ok_map.keys() | cx_fan_rpm_map.keys()):
+        cx_fans.append({
+            "name":      fan_name,
+            "ok":        int(cx_fan_ok_map.get(fan_name, 0)) == 1,
+            "rpm":       int(cx_fan_rpm_map.get(fan_name, 0)),
+            "speed_pct": int(cx_fan_spd_map.get(fan_name, 0)),
+        })
+
+    # VSX: only set if the metric exists (device has VSX enabled)
+    cx_vsx: dict | None = None
+    if cx_vsx_raw:
+        row = cx_vsx_raw[0]
+        cx_vsx = {
+            "state":          row["labels"].get("state", "unknown"),
+            "role":           row["labels"].get("role", "undefined"),
+        }
+        # Augment with ISL and config-syncing from separate series (use vm_instant_rows)
+        # Those scalars are emitted as separate metrics; pull from the same batch.
+
+    # CoPP: top-20 by drop count descending
+    cx_copp = sorted(
+        [{"class": r["labels"].get("class", "?"), "drop_pkts": int(r["value"])} for r in cx_copp_drop_raw if r["value"] > 0],
+        key=lambda x: -x["drop_pkts"]
+    )[:20]
+
+    # Loop protect: only ports with detected loops
+    cx_loops = [r["labels"].get("if_name", "?") for r in cx_loop_detect_raw if r["value"] >= 1]
+
+    # ── Cisco hardware health + interface stats ───────────────────────────────
+    cisco_fans: list[dict] = sorted(
+        [{"name": r["labels"].get("fan_name", "?"), "ok": r["value"] >= 1.0}
+         for r in cisco_fan_raw],
+        key=lambda x: x["name"]
+    )
+    cisco_psus: list[dict] = sorted(
+        [{"name": r["labels"].get("psu_name", "?"), "ok": r["value"] >= 1.0}
+         for r in cisco_psu_raw],
+        key=lambda x: x["name"]
+    )
+
+    cisco_if_in_drops  = {r["labels"].get("if_name","?"): int(r["value"]) for r in cisco_if_in_drops_raw}
+    cisco_if_out_drops = {r["labels"].get("if_name","?"): int(r["value"]) for r in cisco_if_out_drops_raw}
+    cisco_if_resets    = {r["labels"].get("if_name","?"): int(r["value"]) for r in cisco_if_resets_raw}
+
+    cisco_mem_used_map = {r["labels"].get("pool","?"): int(r["value"]) for r in cisco_mem_used_raw}
+    cisco_mem_free_map = {r["labels"].get("pool","?"): int(r["value"]) for r in cisco_mem_free_raw}
+    cisco_mem_pools: list[dict] = []
+    for pool in sorted(cisco_mem_used_map.keys() | cisco_mem_free_map.keys()):
+        used  = cisco_mem_used_map.get(pool, 0)
+        free  = cisco_mem_free_map.get(pool, 0)
+        total = used + free
+        cisco_mem_pools.append({
+            "pool":      pool,
+            "used":      used,
+            "free":      free,
+            "pct":       round(used / total * 100, 1) if total > 0 else 0.0,
+        })
+
     return {
-        "cpu_pct":     cpu_series,
-        "mem_pct":     mem_pct,
-        "mem_used":    mem_used,
-        "mem_total":   mem_total,
-        "temp_series": temp_series,
-        "dom_tx":      dom_tx_series,
-        "dom_rx":      dom_rx_series,
-        "dom_tx_now":  dom_tx_now,
-        "dom_rx_now":  dom_rx_now,
+        "cpu_pct":       cpu_series,
+        "mem_pct":       mem_pct,
+        "mem_used":      mem_used,
+        "mem_total":     mem_total,
+        "temp_series":   temp_series,
+        "dom_tx":        dom_tx_series,
+        "dom_rx":        dom_rx_series,
+        "dom_tx_now":    dom_tx_now,
+        "dom_rx_now":    dom_rx_now,
+        "if_flaps":      if_flaps_raw,
+        "if_acl_drops":  if_acl_drops_raw,
+        "if_err_disabled": err_disabled,
+        "fib_routes":    fib_routes_raw,
+        "fib_trend":     fib_trend,
+        "tcam":          tcam_rows,
+        # Aruba CX
+        "cx_psus":       cx_psus,
+        "cx_fans":       cx_fans,
+        "cx_vsx":        cx_vsx,
+        "cx_copp":       cx_copp,
+        "cx_loops":      cx_loops,
+        # Cisco
+        "cisco_fans":        cisco_fans,
+        "cisco_psus":        cisco_psus,
+        "cisco_if_in_drops": cisco_if_in_drops,
+        "cisco_if_out_drops":cisco_if_out_drops,
+        "cisco_if_resets":   cisco_if_resets,
+        "cisco_mem_pools":   cisco_mem_pools,
     }
 
 
@@ -832,6 +1054,15 @@ async def link_device_credential(
     except Exception as exc:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Credential already linked to this device") from exc
+
+    # Keep device.snmp_version in sync with the highest-priority SNMP credential.
+    if cred.type in ("snmp_v3", "snmp_v2c"):
+        snmp_v = "v3" if cred.type == "snmp_v3" else "v2c"
+        await db.execute(
+            text("UPDATE devices SET snmp_version = :v WHERE id = :did"),
+            {"v": snmp_v, "did": str(device_id)},
+        )
+        await db.commit()
 
     if cred.type == "snmp_v3":
         collector_id = await _device_collector_id(device_id, db)

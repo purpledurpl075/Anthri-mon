@@ -100,7 +100,7 @@ func (c *AristaEAPICollector) collectAll(ctx context.Context) {
 		password, _ := cred.Data["password"].(string)
 
 		results, err := eapiCall(ctx, dev.MgmtIP, username, password,
-			[]string{"show isis neighbors", "show spanning-tree"})
+			[]string{"show isis neighbors", "show spanning-tree", "show ip route vrf all"})
 		if err != nil {
 			c.logger.Warn().Err(err).Str("device", dev.Hostname).Msg("arista eapi collection failed")
 			continue
@@ -126,6 +126,18 @@ func (c *AristaEAPICollector) collectAll(ctx context.Context) {
 					c.logger.Warn().Err(err).Str("device", dev.Hostname).Msg("stp post to hub failed")
 				} else {
 					c.logger.Info().Str("device", dev.Hostname).Int("ports", len(stpPorts)).Msg("stp ports posted")
+				}
+			}
+		}
+
+		// Route table (result[2])
+		if len(results) > 2 {
+			routes := parseAristaRoutes(dev.ID, results[2])
+			if len(routes) > 0 {
+				if err := c.hubClient.PostRoutes(ctx, routes); err != nil {
+					c.logger.Warn().Err(err).Str("device", dev.Hostname).Msg("routes post to hub failed")
+				} else {
+					c.logger.Info().Str("device", dev.Hostname).Int("routes", len(routes)).Msg("routes posted")
 				}
 			}
 		}
@@ -330,6 +342,84 @@ func parseAristaSTP(deviceID string, result map[string]any) []map[string]any {
 		})
 	}
 	return rows
+}
+
+// parseAristaRoutes converts "show ip route vrf all" JSON output into
+// route_entries-shaped records. Only the "default" VRF is processed —
+// route_entries has no VRF column, and other VRFs (e.g. "MGMT") are not
+// reachable from the default VRF without an explicit route leak, so mixing
+// them in would let path-trace hop through routes that don't actually carry
+// default-VRF traffic. One record is emitted per via (next-hop) so ECMP
+// routes are preserved under route_entries' UNIQUE(device_id, destination,
+// next_hop) constraint.
+func parseAristaRoutes(deviceID string, result map[string]any) []map[string]any {
+	var rows []map[string]any
+
+	vrfs, _ := result["vrfs"].(map[string]any)
+	{
+		vrf, _ := vrfs["default"].(map[string]any)
+		routes, _ := vrf["routes"].(map[string]any)
+		for prefix, routeRaw := range routes {
+			route, _ := routeRaw.(map[string]any)
+			routeTypeRaw, _ := route["routeType"].(string)
+			proto := normEOSRouteType(routeTypeRaw)
+			metric := jsonInt(route["metric"])
+
+			vias, _ := route["vias"].([]any)
+			if len(vias) == 0 {
+				rows = append(rows, map[string]any{
+					"device_id":      deviceID,
+					"destination":    prefix,
+					"next_hop":       "",
+					"protocol":       proto,
+					"metric":         metric,
+					"interface_name": "",
+				})
+				continue
+			}
+
+			for _, viaRaw := range vias {
+				via, _ := viaRaw.(map[string]any)
+				nextHop, _ := via["nexthopAddr"].(string)
+				ifaceName, _ := via["interface"].(string)
+				rows = append(rows, map[string]any{
+					"device_id":      deviceID,
+					"destination":    prefix,
+					"next_hop":       nextHop,
+					"protocol":       proto,
+					"metric":         metric,
+					"interface_name": ifaceName,
+				})
+			}
+		}
+	}
+	return rows
+}
+
+// normEOSRouteType maps EOS "show ip route" routeType strings (e.g.
+// "connected", "static", "eBGP", "iBGP", "OSPF", "OSPF inter area",
+// "ISIS-L1", "ISIS-L2") to the same protocol vocabulary used by SNMP
+// (cidrProtoName): connected, static, bgp, ospf, isis, rip, eigrp, other.
+func normEOSRouteType(raw string) string {
+	lower := strings.ToLower(raw)
+	switch {
+	case lower == "connected":
+		return "connected"
+	case lower == "static":
+		return "static"
+	case strings.Contains(lower, "bgp"):
+		return "bgp"
+	case strings.HasPrefix(lower, "ospf"):
+		return "ospf"
+	case strings.HasPrefix(lower, "isis"):
+		return "isis"
+	case lower == "rip":
+		return "rip"
+	case strings.Contains(lower, "eigrp"):
+		return "eigrp"
+	default:
+		return "other"
+	}
 }
 
 func normStpState(s string) string {
